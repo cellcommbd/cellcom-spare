@@ -39,26 +39,42 @@ export type ItemLookup = {
 }
 
 // ---------- Part type phrases ----------
+// Order matters: LONGEST FIRST so "MIDDLE FRAME WITH FLEX" wins before "MIDDLE FRAME"
 const PART_TYPE_PHRASES = [
   'MIDDLE FRAME WITH FLEX',
+  'ONLY SPEAKER FLEX',
+  'ONLY FLEX',
+  'BATTERY CONNECTOR',
+  'BATTERY CONN.',
+  'BATTERY CONN',
+  'SPEAKER JALI',
+  'SPEAKER FLEX',
+  'CAMERA GLASS',
+  'CAMERA LENS',
+  'CAMERA FLEX',
+  'CHARGING FLEX',
+  'LCD CONNECTOR',
+  'LCD CONN.',
+  'LCD CONN',
+  'BOARD CONN.',
+  'BOARD CONN',
   'MIDDLE FRAME',
   'BACK PANEL',
   'FULL HOUSING',
   'LCD FLEX',
+  'ON OFF SWITCH',
   'ON OFF FLEX',
-  'VOL FLEX',
-  'RINGER BOX',
-  'CAMERA GLASS',
-  'CHARGING FLEX',
-  'SPEAKER JALI',
-  'SPEAKER',
-  'LCD CONNECTOR',
-  'BATTERY CONNECTOR',
-  'CAMERA LENS',
-  'CAMERA FLEX',
+  'OUT SIM TRAY',
+  'OUT SIM TRY',
   'SIM TRAY',
+  'SIM TRY',
+  'RINGER BOX',
+  'VOLUME FLEX',
+  'VOL FLEX',
+  'SPEAKER',
   'VIBRATOR',
   'ANTENNA',
+  'B/C',
   'MIC',
 ]
 
@@ -113,7 +129,7 @@ function extractPartFromDescription(desc: string): {
   for (const phrase of PART_TYPE_PHRASES) {
     if (upper.includes(phrase)) {
       const cleaned = desc
-        .replace(new RegExp(phrase, 'gi'), '')
+        .replace(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '')
         .replace(/\s+/g, ' ')
         .trim()
       return { partText: phrase, cleanedDesc: cleaned }
@@ -135,9 +151,8 @@ function extractQuality(desc: string): {
     return { quality: '100 OG', cleanedDesc: cleaned }
   }
 
-  if (/\bCARE\s*OG\b/i.test(upper) || /\bCARE\b/i.test(upper)) {
+  if (/\bCARE\s*OG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bCARE\s*OG\b/gi, ' ')
-    cleaned = cleaned.replace(/\bCARE\b/gi, ' ')
     return { quality: 'Care OG', cleanedDesc: cleaned }
   }
 
@@ -146,8 +161,12 @@ function extractQuality(desc: string): {
     return { quality: 'ORG', cleanedDesc: cleaned }
   }
 
-  if (/\bOG\b/i.test(upper) || /\bCHINA\s*OG\b/i.test(upper)) {
+  if (/\bCHINA\s*OG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bCHINA\s*OG\b/gi, ' ')
+    return { quality: 'OG', cleanedDesc: cleaned }
+  }
+
+  if (/\bOG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bOG\b/gi, ' ')
     return { quality: 'OG', cleanedDesc: cleaned }
   }
@@ -161,27 +180,21 @@ function extractVariant(desc: string): {
   yearForSku: string | null
   cleanedDesc: string
 } {
-  // Find bracket or paren content
   const notes: string[] = []
-
-  // Brackets
   const bracketRe = /\[([^\]]+)\]/g
   let m: RegExpExecArray | null
   while ((m = bracketRe.exec(desc)) !== null) {
     notes.push(m[1].trim())
   }
 
-  // Remove all brackets from description (they'll go into variant or be dropped)
   let cleaned = desc.replace(/\[[^\]]*\]/g, ' ')
 
-  // Look through notes for a year (4-digit number)
   let variant: string | null = null
   let yearForSku: string | null = null
 
   for (const note of notes) {
     const yearMatch = note.match(/\b(19|20)\d{2}\b/)
     if (yearMatch) {
-      // This note has a year → it's a variant
       variant = note
       yearForSku = yearMatch[0]
       break
@@ -198,7 +211,7 @@ function cleanSupplierNotes(desc: string): string {
   cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
   cleaned = cleaned.replace(/\([^)]*\)/g, ' ')
   cleaned = cleaned.replace(
-    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC)\b/gi,
+    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE)\b/gi,
     ' '
   )
   cleaned = cleaned.replace(/\s+/g, ' ').trim()
@@ -215,35 +228,56 @@ function extractNetwork(text: string): string | null {
 function parseDescriptionParts(
   description: string,
   aliases: AliasMaps
-): { brandCode: string | null; modelName: string | null; network: string | null } {
+): {
+  brandCode: string | null
+  modelName: string | null
+  network: string | null
+} {
   const cleaned = description.toUpperCase().trim()
 
   const network = extractNetwork(cleaned)
 
   let noNet = cleaned.replace(/\((4G|5G)\)/gi, ' ')
   noNet = noNet.replace(/\b(4G|5G)\b/gi, ' ')
-  noNet = noNet.replace(/\+/g, ' PLUS ')
   noNet = noNet.replace(/[-_]/g, ' ')
 
   const words = noNet.split(/\s+/).filter(Boolean)
   if (words.length === 0) return { brandCode: null, modelName: null, network }
 
-  const firstWord = words[0]
+  // Try matching aliases in priority order:
+  // 1. First three words joined (no separator) — e.g. "1 + NORD" -> "1+NORD" won't match, but try "1 +"
+  // 2. First two words joined with space
+  // 3. First two words joined without space
+  // 4. First word
   let brandCode: string | null = null
+  let matchedWords = 0
 
-  if (aliases.brandAliases[firstWord]) {
-    brandCode = aliases.brandAliases[firstWord]
-  } else {
-    const twoWord = words.slice(0, 2).join('')
-    if (aliases.brandAliases[twoWord]) {
-      brandCode = aliases.brandAliases[twoWord]
-      words.splice(0, 2)
-      return { brandCode, modelName: words.join(' ') || null, network }
+  const candidates: { key: string; take: number }[] = []
+
+  if (words.length >= 3) {
+    candidates.push({ key: words.slice(0, 3).join(' '), take: 3 })
+    candidates.push({ key: words.slice(0, 3).join(''), take: 3 })
+  }
+  if (words.length >= 2) {
+    candidates.push({ key: words.slice(0, 2).join(' '), take: 2 })
+    candidates.push({ key: words.slice(0, 2).join(''), take: 2 })
+  }
+  candidates.push({ key: words[0], take: 1 })
+
+  for (const c of candidates) {
+    if (aliases.brandAliases[c.key]) {
+      brandCode = aliases.brandAliases[c.key]
+      matchedWords = c.take
+      break
     }
-    brandCode = firstWord
   }
 
-  const modelWords = words.slice(1)
+  if (!brandCode) {
+    // No alias found — return null so the caller can flag an error
+    return { brandCode: null, modelName: null, network }
+  }
+
+  const modelWords = words.slice(matchedWords)
   return { brandCode, modelName: modelWords.join(' ') || null, network }
 }
 
@@ -376,18 +410,15 @@ export function parseCSV(
 
       if (!rawDescription) continue
 
-      // Extract variant (year-based) FIRST — before other cleanup
       const v = extractVariant(rawDescription)
       variant = v.variant
       yearForSku = v.yearForSku
       let working = v.cleanedDesc
 
-      // Extract quality
       const q = extractQuality(working)
       quality = q.quality
       working = q.cleanedDesc
 
-      // Extract part type
       if (rawType) {
         const typeUpper = rawType.toUpperCase().trim()
         partCode = aliases.partAliases[typeUpper] || null
@@ -409,31 +440,49 @@ export function parseCSV(
       network = parsed.network
     }
 
-    if (!brandCode || !modelName) continue
-
-    const sku = generateSku(
-      brandCode,
-      modelName,
-      partCode,
-      network,
-      quality,
-      yearForSku
-    )
-
+    // ---------- status determination ----------
     let matchedItemId: number | null = null
     let matchedItemSku: string | null = null
     let status: 'matched' | 'new' | 'error' = 'new'
     let errorMessage: string | undefined
 
-    if (!partCode) {
+    if (!brandCode) {
+      status = 'error'
+      errorMessage = `Unknown brand in: "${rawDescription}"`
+    } else if (!modelName) {
+      status = 'error'
+      errorMessage = `Could not extract model from: "${rawDescription}"`
+    } else if (!partCode) {
       status = 'error'
       errorMessage = `Unknown part type: "${rawType}"`
-    } else if (sku && itemBySku[sku.toUpperCase()]) {
-      const found = itemBySku[sku.toUpperCase()]
-      matchedItemId = found.item_id
-      matchedItemSku = found.sku
-      status = 'matched'
+    } else {
+      const sku = generateSku(
+        brandCode,
+        modelName,
+        partCode,
+        network,
+        quality,
+        yearForSku
+      )
+      if (sku && itemBySku[sku.toUpperCase()]) {
+        const found = itemBySku[sku.toUpperCase()]
+        matchedItemId = found.item_id
+        matchedItemSku = found.sku
+        status = 'matched'
+      }
     }
+
+    const finalSku =
+      brandCode && modelName && partCode
+        ? generateSku(
+            brandCode,
+            modelName,
+            partCode,
+            network,
+            quality,
+            yearForSku
+          )
+        : null
 
     result.push({
       rowNumber: i,
@@ -448,7 +497,7 @@ export function parseCSV(
       quality,
       variant,
       yearForSku,
-      generatedSku: sku,
+      generatedSku: finalSku,
       matchedItemId,
       matchedItemSku,
       status,
