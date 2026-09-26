@@ -1,11 +1,20 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, createRef } from 'react'
+import Link from 'next/link'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { ImportCSVDialog } from '../../components/ui/ImportCSVDialog'
 import { ParsedRow } from '../../lib/csv-parser'
-import { Plus, Trash2, Save, X, Upload } from 'lucide-react'
+import {
+  Plus,
+  Trash2,
+  Save,
+  X,
+  Upload,
+  Pencil,
+  AlertTriangle,
+} from 'lucide-react'
 
 type Party = {
   party_id: number
@@ -49,6 +58,7 @@ export default function PurchaseEntryPage() {
   const [suppliers, setSuppliers] = useState<Party[]>([])
   const [items, setItems] = useState<Item[]>([])
   const [recentPurchases, setRecentPurchases] = useState<PurchaseHeader[]>([])
+  const [recentLineCounts, setRecentLineCounts] = useState<Record<number, number>>({})
 
   const [pickedSupplier, setPickedSupplier] = useState<PickedSupplier>({
     id: null,
@@ -65,12 +75,8 @@ export default function PurchaseEntryPage() {
   ])
   const [nextRowId, setNextRowId] = useState(2)
 
-  // Track which new row should be focused after render
-  const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(
-    null
-  )
+  const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(null)
 
-  // One ref per row's combobox input
   const itemRefs = useRef<
     Record<number, React.RefObject<HTMLInputElement | null>>
   >({})
@@ -93,6 +99,10 @@ export default function PurchaseEntryPage() {
   const [showImport, setShowImport] = useState(false)
   const [importing, setImporting] = useState(false)
 
+  // Delete confirmation modal state
+  const [confirmDelete, setConfirmDelete] = useState<PurchaseHeader | null>(null)
+  const [deleting, setDeleting] = useState(false)
+
   const freightInputRef = useRef<HTMLInputElement>(null)
   const invoiceInputRef = useRef<HTMLInputElement>(null)
   const qtyRefs = useRef<Record<number, HTMLInputElement | null>>({})
@@ -101,7 +111,6 @@ export default function PurchaseEntryPage() {
     loadData()
   }, [])
 
-  // Focus the newly-added row after React commits it to the DOM
   useEffect(() => {
     if (pendingFocusRowId == null) return
     const el = itemRefs.current[pendingFocusRowId]?.current
@@ -128,6 +137,22 @@ export default function PurchaseEntryPage() {
     setSuppliers(p.data || [])
     setItems(i.data || [])
     setRecentPurchases(r.data || [])
+
+    // Fetch line counts for the recent purchases
+    if (r.data && r.data.length > 0) {
+      const ids = r.data.map((x: any) => x.purchase_id)
+      const { data: lines } = await supabase
+        .from('purchase_items')
+        .select('purchase_id')
+        .in('purchase_id', ids)
+      const counts: Record<number, number> = {}
+      for (const l of lines || []) {
+        counts[l.purchase_id] = (counts[l.purchase_id] || 0) + 1
+      }
+      setRecentLineCounts(counts)
+    } else {
+      setRecentLineCounts({})
+    }
   }
 
   const supplierOptions = suppliers.map((s) => ({
@@ -204,11 +229,7 @@ export default function PurchaseEntryPage() {
     }
   }
 
-  function handleRateTab(
-    rowId: number,
-    idx: number,
-    e: React.KeyboardEvent
-  ) {
+  function handleRateTab(rowId: number, idx: number, e: React.KeyboardEvent) {
     const isLastRow = idx === rows.length - 1
     if (!isLastRow) return
     const row = rows[idx]
@@ -221,17 +242,12 @@ export default function PurchaseEntryPage() {
       saveBtn?.focus()
     }
   }
+
   async function handleCSVImport(
     matched: ParsedRow[],
     newItems: ParsedRow[],
     margin: number
   ) {
-    console.log('=== IMPORT STARTED ===', {
-      matchedCount: matched.length,
-      newCount: newItems.length,
-      margin,
-    })
-
     setMessage('')
     setImporting(true)
 
@@ -584,19 +600,22 @@ export default function PurchaseEntryPage() {
     setCashPaidTouched(false)
   }
 
-  async function deletePurchase(id: number) {
-    if (!confirm(`Delete purchase #${id}? This will also remove its items.`))
+  async function confirmDeletePurchase() {
+    if (!confirmDelete) return
+    setDeleting(true)
+    const id = confirmDelete.purchase_id
+
+    const { error } = await supabase.rpc('delete_purchase', { p_id: id })
+
+    setDeleting(false)
+    setConfirmDelete(null)
+
+    if (error) {
+      setMessage('Delete error: ' + error.message)
       return
-    await supabase.from('purchase_items').delete().eq('purchase_id', id)
-    const { error } = await supabase
-      .from('purchases')
-      .delete()
-      .eq('purchase_id', id)
-    if (error) setMessage('Delete error: ' + error.message)
-    else {
-      setMessage('Deleted purchase #' + id)
-      await loadData()
     }
+    setMessage('Deleted purchase #' + id + '. Stock reversed.')
+    await loadData()
   }
 
   const supplierName = (id: number) =>
@@ -1145,14 +1164,15 @@ export default function PurchaseEntryPage() {
                   <th className="w-28 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Date</th>
                   <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Supplier</th>
                   <th className="w-28 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Invoice</th>
+                  <th className="w-20 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Lines</th>
                   <th className="w-28 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Total</th>
-                  <th className="w-24 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Action</th>
+                  <th className="w-32 border-b border-slate-200 px-3 py-2 text-center text-xs font-semibold text-slate-600">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {recentPurchases.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-3 py-6 text-center text-sm text-slate-400">
+                    <td colSpan={7} className="px-3 py-6 text-center text-sm text-slate-400">
                       No purchases yet.
                     </td>
                   </tr>
@@ -1163,16 +1183,27 @@ export default function PurchaseEntryPage() {
                       <td className="border-b border-slate-100 px-3 py-2 text-slate-800">{p.purchase_date}</td>
                       <td className="border-b border-slate-100 px-3 py-2 text-slate-800">{supplierName(p.party_id)}</td>
                       <td className="border-b border-slate-100 px-3 py-2 text-slate-800">{p.invoice_no || '—'}</td>
+                      <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-600">{recentLineCounts[p.purchase_id] ?? 0}</td>
                       <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">
                         ₹ {Number(p.total_amount).toFixed(2)}
                       </td>
-                      <td className="border-b border-slate-100 px-3 py-2">
-                        <button
-                          onClick={() => deletePurchase(p.purchase_id)}
-                          className="text-xs font-medium text-red-600 hover:text-red-800"
-                        >
-                          Delete
-                        </button>
+                      <td className="border-b border-slate-100 px-3 py-2 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <Link
+                            href={`/purchases/${p.purchase_id}/edit`}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            Edit
+                          </Link>
+                          <button
+                            onClick={() => setConfirmDelete(p)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-red-600 hover:text-red-800"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1189,6 +1220,83 @@ export default function PurchaseEntryPage() {
         onClose={() => setShowImport(false)}
         onImport={handleCSVImport}
       />
+
+      {/* Delete confirmation modal */}
+      {confirmDelete && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">
+            <div className="flex items-start gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  Delete purchase #{confirmDelete.purchase_id}?
+                </h2>
+                <p className="text-sm text-slate-500 mt-1">
+                  This cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4 space-y-1.5 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Supplier</span>
+                <span className="font-medium text-slate-800">
+                  {supplierName(confirmDelete.party_id)}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Invoice</span>
+                <span className="font-medium text-slate-800">
+                  {confirmDelete.invoice_no || '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Date</span>
+                <span className="font-medium text-slate-800">
+                  {confirmDelete.purchase_date}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Lines</span>
+                <span className="font-medium text-slate-800">
+                  {recentLineCounts[confirmDelete.purchase_id] ?? 0}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-200 pt-1.5">
+                <span className="text-slate-500">Total</span>
+                <span className="font-bold text-slate-900">
+                  ₹ {Number(confirmDelete.total_amount).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mb-4">
+              <strong>Stock reversal:</strong> {recentLineCounts[confirmDelete.purchase_id] ?? 0} line
+              {(recentLineCounts[confirmDelete.purchase_id] ?? 0) === 1 ? '' : 's'} will be removed and
+              item stock reduced by the purchased quantities.
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="flex-1 h-10 text-sm font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDeletePurchase}
+                disabled={deleting}
+                className="flex-1 h-10 text-sm font-semibold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50"
+              >
+                {deleting ? 'Deleting...' : 'Delete purchase'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
