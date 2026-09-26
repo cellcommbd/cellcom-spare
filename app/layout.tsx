@@ -58,18 +58,15 @@ export default function RootLayout({
   const lastCheckRef = useRef<number>(0)
   const menuRef = useRef<HTMLDivElement>(null)
 
-  // Re-read role on every route change (fixes late nav after login)
   useEffect(() => {
     setRoleState(getRole())
     setMounted(true)
   }, [pathname])
 
-  // Close menu on route change
   useEffect(() => {
     setMenuOpen(false)
   }, [pathname])
 
-  // Close menu on outside tap
   useEffect(() => {
     function onDoc(e: MouseEvent) {
       if (!menuOpen) return
@@ -81,7 +78,6 @@ export default function RootLayout({
     return () => document.removeEventListener('mousedown', onDoc)
   }, [menuOpen])
 
-  // Auth check per route change
   useEffect(() => {
     let cancelled = false
 
@@ -110,7 +106,6 @@ export default function RootLayout({
     }
   }, [pathname, router])
 
-  // Periodic version check
   useEffect(() => {
     const interval = setInterval(async () => {
       const r = getRole()
@@ -144,7 +139,6 @@ export default function RootLayout({
           <nav className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800">
             <div className="max-w-7xl mx-auto px-3 sm:px-4">
               <div className="flex items-center h-14 gap-3">
-                {/* Brand */}
                 <Link
                   href="/"
                   className="flex items-center gap-2 shrink-0 group"
@@ -157,7 +151,6 @@ export default function RootLayout({
                   </span>
                 </Link>
 
-                {/* Desktop nav (lg+) */}
                 <div className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto">
                   {navItems.map((item) => {
                     const active = isActive(item.href)
@@ -178,7 +171,6 @@ export default function RootLayout({
                   })}
                 </div>
 
-                {/* Right cluster */}
                 <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
                   {role && (
                     <span className="hidden sm:inline-flex text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
@@ -195,7 +187,6 @@ export default function RootLayout({
                     <span className="hidden md:inline">Logout</span>
                   </button>
 
-                  {/* Mobile: hamburger */}
                   <button
                     onClick={() => setMenuOpen((o) => !o)}
                     aria-label="Menu"
@@ -211,7 +202,6 @@ export default function RootLayout({
               </div>
             </div>
 
-            {/* Mobile dropdown — compact floating card */}
             {menuOpen && (
               <div
                 ref={menuRef}

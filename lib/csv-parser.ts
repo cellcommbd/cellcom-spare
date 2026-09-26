@@ -39,10 +39,11 @@ export type ItemLookup = {
 }
 
 // ---------- Part type phrases ----------
-// Order matters: LONGEST FIRST so "MIDDLE FRAME WITH FLEX" wins before "MIDDLE FRAME"
 const PART_TYPE_PHRASES = [
   'MIDDLE FRAME WITH FLEX',
+  'ON OFF SENSOR CONN',
   'ONLY SPEAKER FLEX',
+  'ONLY SPEAKER',
   'ONLY FLEX',
   'BATTERY CONNECTOR',
   'BATTERY CONN.',
@@ -60,6 +61,10 @@ const PART_TYPE_PHRASES = [
   'BOARD CONN',
   'MIDDLE FRAME',
   'BACK PANEL',
+  'BACK PANLE',
+  'BACK PANAL',
+  'BACK PANNEL',
+  'BACKPANEL',
   'FULL HOUSING',
   'LCD FLEX',
   'ON OFF SWITCH',
@@ -69,6 +74,7 @@ const PART_TYPE_PHRASES = [
   'SIM TRAY',
   'SIM TRY',
   'RINGER BOX',
+  'RINGER',
   'VOLUME FLEX',
   'VOL FLEX',
   'SPEAKER',
@@ -109,7 +115,6 @@ export function splitCSVLines(text: string): string[][] {
   return rows
 }
 
-// ---------- Header detection ----------
 function findColumnIndex(headers: string[], candidates: string[]): number {
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i].toLowerCase().replace(/[^a-z]/g, '')
@@ -120,6 +125,16 @@ function findColumnIndex(headers: string[], candidates: string[]): number {
   return -1
 }
 
+// ---------- Normalize common typos ----------
+function normalizeTypos(desc: string): string {
+  return desc
+    .replace(/\bPANLE\b/gi, 'PANEL')
+    .replace(/\bPANAL\b/gi, 'PANEL')
+    .replace(/\bPANNEL\b/gi, 'PANEL')
+    .replace(/\bBORD\b/gi, 'BOARD')
+    .replace(/\bSENSOR\s+CONN\.?\b/gi, 'ON OFF SENSOR CONN')
+}
+
 // ---------- Extract part type ----------
 function extractPartFromDescription(desc: string): {
   partText: string | null
@@ -127,9 +142,11 @@ function extractPartFromDescription(desc: string): {
 } {
   const upper = desc.toUpperCase()
   for (const phrase of PART_TYPE_PHRASES) {
-    if (upper.includes(phrase)) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i')
+    if (re.test(upper)) {
       const cleaned = desc
-        .replace(new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '')
+        .replace(new RegExp(escaped, 'gi'), ' ')
         .replace(/\s+/g, ' ')
         .trim()
       return { partText: phrase, cleanedDesc: cleaned }
@@ -150,22 +167,18 @@ function extractQuality(desc: string): {
     cleaned = cleaned.replace(/\b100\s*%?\s*OG\b/gi, ' ')
     return { quality: '100 OG', cleanedDesc: cleaned }
   }
-
   if (/\bCARE\s*OG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bCARE\s*OG\b/gi, ' ')
     return { quality: 'Care OG', cleanedDesc: cleaned }
   }
-
   if (/\bORG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bORG\b/gi, ' ')
     return { quality: 'ORG', cleanedDesc: cleaned }
   }
-
   if (/\bCHINA\s*OG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bCHINA\s*OG\b/gi, ' ')
     return { quality: 'OG', cleanedDesc: cleaned }
   }
-
   if (/\bOG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bOG\b/gi, ' ')
     return { quality: 'OG', cleanedDesc: cleaned }
@@ -174,7 +187,7 @@ function extractQuality(desc: string): {
   return { quality: 'Normal', cleanedDesc: cleaned }
 }
 
-// ---------- Extract variant (year / model version) ----------
+// ---------- Extract variant ----------
 function extractVariant(desc: string): {
   variant: string | null
   yearForSku: string | null
@@ -211,7 +224,7 @@ function cleanSupplierNotes(desc: string): string {
   cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
   cleaned = cleaned.replace(/\([^)]*\)/g, ' ')
   cleaned = cleaned.replace(
-    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE)\b/gi,
+    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE|C\+)\b/gi,
     ' '
   )
   cleaned = cleaned.replace(/\s+/g, ' ').trim()
@@ -233,9 +246,12 @@ function parseDescriptionParts(
   modelName: string | null
   network: string | null
 } {
-  const cleaned = description.toUpperCase().trim()
+  let cleaned = description.toUpperCase().trim()
 
   const network = extractNetwork(cleaned)
+
+  // Split 1+6 -> 1+ 6, 1+NORD -> 1+ NORD
+  cleaned = cleaned.replace(/(1\+)([A-Z0-9])/g, '$1 $2')
 
   let noNet = cleaned.replace(/\((4G|5G)\)/gi, ' ')
   noNet = noNet.replace(/\b(4G|5G)\b/gi, ' ')
@@ -244,11 +260,6 @@ function parseDescriptionParts(
   const words = noNet.split(/\s+/).filter(Boolean)
   if (words.length === 0) return { brandCode: null, modelName: null, network }
 
-  // Try matching aliases in priority order:
-  // 1. First three words joined (no separator) — e.g. "1 + NORD" -> "1+NORD" won't match, but try "1 +"
-  // 2. First two words joined with space
-  // 3. First two words joined without space
-  // 4. First word
   let brandCode: string | null = null
   let matchedWords = 0
 
@@ -265,15 +276,15 @@ function parseDescriptionParts(
   candidates.push({ key: words[0], take: 1 })
 
   for (const c of candidates) {
-    if (aliases.brandAliases[c.key]) {
-      brandCode = aliases.brandAliases[c.key]
+    const k = c.key.toUpperCase()
+    if (aliases.brandAliases[k]) {
+      brandCode = aliases.brandAliases[k]
       matchedWords = c.take
       break
     }
   }
 
   if (!brandCode) {
-    // No alias found — return null so the caller can flag an error
     return { brandCode: null, modelName: null, network }
   }
 
@@ -401,16 +412,24 @@ export function parseCSV(
       rawType = partRaw
 
       network = extractNetwork(modelRaw)
-      brandCode = aliases.brandAliases[brandRaw] || brandRaw
+      brandCode =
+        aliases.brandAliases[brandRaw] ||
+        aliases.brandAliases[brandRaw.toUpperCase()] ||
+        brandRaw
       modelName = modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim() || null
-      partCode = aliases.partAliases[partRaw] || null
+      partCode =
+        aliases.partAliases[partRaw] ||
+        aliases.partAliases[partRaw.toUpperCase()] ||
+        null
     } else {
       rawDescription = colDesc >= 0 ? row[colDesc] || '' : ''
       rawType = colType >= 0 ? row[colType] || '' : ''
 
       if (!rawDescription) continue
 
-      const v = extractVariant(rawDescription)
+      const normalized = normalizeTypos(rawDescription)
+
+      const v = extractVariant(normalized)
       variant = v.variant
       yearForSku = v.yearForSku
       let working = v.cleanedDesc
@@ -421,8 +440,12 @@ export function parseCSV(
 
       if (rawType) {
         const typeUpper = rawType.toUpperCase().trim()
-        partCode = aliases.partAliases[typeUpper] || null
-      } else {
+        partCode =
+          aliases.partAliases[typeUpper] ||
+          aliases.partAliases[typeUpper.replace(/\./g, '')] ||
+          null
+      }
+      if (!partCode) {
         const extracted = extractPartFromDescription(working)
         if (extracted.partText) {
           rawType = extracted.partText
@@ -440,7 +463,11 @@ export function parseCSV(
       network = parsed.network
     }
 
-    // ---------- status determination ----------
+    // Fallback: if brand + part exist but no model, use UNKNOWN
+    if (brandCode && !modelName && partCode) {
+      modelName = 'UNKNOWN'
+    }
+
     let matchedItemId: number | null = null
     let matchedItemSku: string | null = null
     let status: 'matched' | 'new' | 'error' = 'new'
@@ -448,13 +475,13 @@ export function parseCSV(
 
     if (!brandCode) {
       status = 'error'
-      errorMessage = `Unknown brand in: "${rawDescription}"`
+      errorMessage = `Unknown brand. raw="${rawDescription}"`
     } else if (!modelName) {
       status = 'error'
-      errorMessage = `Could not extract model from: "${rawDescription}"`
+      errorMessage = `No model. brand=${brandCode} raw="${rawDescription}"`
     } else if (!partCode) {
       status = 'error'
-      errorMessage = `Unknown part type: "${rawType}"`
+      errorMessage = `Unknown part. rawType="${rawType}" raw="${rawDescription}"`
     } else {
       const sku = generateSku(
         brandCode,
@@ -503,6 +530,16 @@ export function parseCSV(
       status,
       errorMessage,
     })
+  }
+
+  const failed = result.filter((r) => r.status === 'error')
+  if (failed.length > 0) {
+    console.log(`\n===== PARSE FAILED ROWS (${failed.length}) =====`)
+    for (const f of failed) {
+      console.log(`Row ${f.rowNumber}: "${f.rawDescription}"`)
+      console.log(`   → ${f.errorMessage}`)
+    }
+    console.log(`===== END =====\n`)
   }
 
   return result
