@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { supabase } from '../lib/supabase'
 import { getRole, Role } from '../lib/auth'
@@ -14,28 +14,65 @@ import {
   BarChart3,
   ArrowRight,
   Receipt,
+  TrendingUp,
+  Calendar,
 } from 'lucide-react'
+
+type Range = { from: string; to: string }
+
+function todayStr() {
+  return new Date().toISOString().slice(0, 10)
+}
+
+function firstOfMonth() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
+}
+
+function lastOfMonth() {
+  const d = new Date()
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0)
+  return last.toISOString().slice(0, 10)
+}
+
+function startOfWeek() {
+  const d = new Date()
+  const day = d.getDay()
+  const diff = d.getDate() - day
+  const start = new Date(d.setDate(diff))
+  return start.toISOString().slice(0, 10)
+}
 
 export default function Home() {
   const [role, setRole] = useState<Role>(null)
   const [loading, setLoading] = useState(true)
 
-  const [todaySales, setTodaySales] = useState(0)
-  const [todaySalesCount, setTodaySalesCount] = useState(0)
-  const [todayPayments, setTodayPayments] = useState(0)
-  const [todayReturns, setTodayReturns] = useState(0)
-  const [todayPurchases, setTodayPurchases] = useState(0)
-  const [todayLosses, setTodayLosses] = useState(0)
+  const [range, setRange] = useState<Range>({
+    from: firstOfMonth(),
+    to: lastOfMonth(),
+  })
+
+  const [sales, setSales] = useState(0)
+  const [salesCount, setSalesCount] = useState(0)
+  const [cogs, setCogs] = useState(0)
+  const [payments, setPayments] = useState(0)
+  const [returns, setReturns] = useState(0)
+  const [purchases, setPurchases] = useState(0)
+  const [losses, setLosses] = useState(0)
   const [pendingKhata, setPendingKhata] = useState(0)
   const [lowStockCount, setLowStockCount] = useState(0)
 
   const [topShops, setTopShops] = useState<any[]>([])
-  const [todayBills, setTodayBills] = useState<any[]>([])
+  const [recentSales, setRecentSales] = useState<any[]>([])
+  const [recentPurchases, setRecentPurchases] = useState<any[]>([])
 
   useEffect(() => {
     setRole(getRole())
-    loadAll()
   }, [])
+
+  useEffect(() => {
+    loadAll()
+  }, [range.from, range.to])
 
   async function loadAll() {
     setLoading(true)
@@ -44,97 +81,199 @@ export default function Home() {
   }
 
   async function loadStats() {
-    const today = new Date().toISOString().slice(0, 10)
+    const { from, to } = range
 
-    const [sales, payments, returns, purchases, losses, parties, items] =
-      await Promise.all([
-        supabase.from('sales').select('total_amount').eq('bill_date', today),
-        supabase.from('payments').select('amount').eq('payment_date', today),
-        supabase.from('returns').select('total_amount').eq('return_date', today),
-        supabase
-          .from('purchases')
-          .select('total_amount')
-          .eq('purchase_date', today),
-        supabase.from('losses').select('total_amount').eq('loss_date', today),
-        supabase
-          .from('parties')
-          .select('current_balance')
-          .eq('party_type', 'Customer'),
-        supabase
-          .from('items')
-          .select('current_stock, reorder_point')
-          .gt('reorder_point', 0),
-      ])
+    const [
+      salesRes,
+      saleItemsRes,
+      paymentsRes,
+      returnsRes,
+      purchasesRes,
+      lossesRes,
+      partiesRes,
+      itemsRes,
+    ] = await Promise.all([
+      supabase
+        .from('sales')
+        .select('total_amount')
+        .gte('bill_date', from)
+        .lte('bill_date', to),
+      supabase
+        .from('sale_items')
+        .select('quantity, cost_at_sale, sale_id, sales!inner(bill_date)')
+        .gte('sales.bill_date', from)
+        .lte('sales.bill_date', to),
+      supabase
+        .from('payments')
+        .select('amount')
+        .gte('payment_date', from)
+        .lte('payment_date', to),
+      supabase
+        .from('returns')
+        .select('total_amount, return_type')
+        .gte('return_date', from)
+        .lte('return_date', to)
+        .eq('return_type', 'Sales'),
+      supabase
+        .from('purchases')
+        .select('total_amount')
+        .gte('purchase_date', from)
+        .lte('purchase_date', to),
+      supabase
+        .from('losses')
+        .select('total_amount')
+        .gte('loss_date', from)
+        .lte('loss_date', to),
+      supabase
+        .from('parties')
+        .select('current_balance')
+        .eq('party_type', 'Customer'),
+      supabase
+        .from('items')
+        .select('current_stock, reorder_point')
+        .gt('reorder_point', 0),
+    ])
 
-    setTodaySales(
-      (sales.data || []).reduce((s, r) => s + Number(r.total_amount), 0)
+    const s = (salesRes.data || []).reduce(
+      (a, r) => a + Number(r.total_amount),
+      0
     )
-    setTodaySalesCount((sales.data || []).length)
-    setTodayPayments(
-      (payments.data || []).reduce((s, r) => s + Number(r.amount), 0)
+    setSales(s)
+    setSalesCount((salesRes.data || []).length)
+
+    // COGS = sum(quantity * cost_at_sale) across sale_items in range
+    const c = (saleItemsRes.data || []).reduce(
+      (a: number, r: any) =>
+        a + Number(r.quantity) * Number(r.cost_at_sale || 0),
+      0
     )
-    setTodayReturns(
-      (returns.data || []).reduce((s, r) => s + Number(r.total_amount), 0)
+    setCogs(c)
+
+    setPayments(
+      (paymentsRes.data || []).reduce((a, r) => a + Number(r.amount), 0)
     )
-    setTodayPurchases(
-      (purchases.data || []).reduce((s, r) => s + Number(r.total_amount), 0)
+    setReturns(
+      (returnsRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
-    setTodayLosses(
-      (losses.data || []).reduce((s, r) => s + Number(r.total_amount), 0)
+    setPurchases(
+      (purchasesRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
+    )
+    setLosses(
+      (lossesRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
     setPendingKhata(
-      (parties.data || []).reduce((s, r) => s + Number(r.current_balance), 0)
+      (partiesRes.data || []).reduce(
+        (a, r) => a + Number(r.current_balance),
+        0
+      )
     )
     setLowStockCount(
-      (items.data || []).filter((it) => it.current_stock <= it.reorder_point)
-        .length
+      (itemsRes.data || []).filter(
+        (it) => it.current_stock <= it.reorder_point
+      ).length
     )
   }
 
   async function loadLists() {
-    const today = new Date().toISOString().slice(0, 10)
+    const { from, to } = range
 
-    const { data: shops } = await supabase
-      .from('parties')
-      .select('party_id, party_name, current_balance')
-      .eq('party_type', 'Customer')
-      .order('current_balance', { ascending: false })
-      .limit(5)
+    const [shopsRes, salesRes, purchasesRes] = await Promise.all([
+      supabase
+        .from('parties')
+        .select('party_id, party_name, current_balance')
+        .eq('party_type', 'Customer')
+        .order('current_balance', { ascending: false })
+        .limit(5),
+      supabase
+        .from('sales')
+        .select('sale_id, party_id, total_amount, status, bill_date')
+        .gte('bill_date', from)
+        .lte('bill_date', to)
+        .order('sale_id', { ascending: false })
+        .limit(6),
+      supabase
+        .from('purchases')
+        .select('purchase_id, party_id, invoice_no, total_amount, purchase_date')
+        .gte('purchase_date', from)
+        .lte('purchase_date', to)
+        .order('purchase_id', { ascending: false })
+        .limit(6),
+    ])
 
-    setTopShops(shops || [])
+    setTopShops(shopsRes.data || [])
 
-    const { data: bills } = await supabase
-      .from('sales')
-      .select('sale_id, party_id, total_amount, status')
-      .eq('bill_date', today)
-      .order('sale_id', { ascending: false })
-      .limit(6)
+    // Resolve party names for both lists
+    const salesRows = salesRes.data || []
+    const purchaseRows = purchasesRes.data || []
+    const partyIds = Array.from(
+      new Set([
+        ...salesRows.map((r) => r.party_id),
+        ...purchaseRows.map((r) => r.party_id),
+      ])
+    ).filter(Boolean)
 
-    if (bills && bills.length > 0) {
-      const partyIds = [...new Set(bills.map((b) => b.party_id))]
-      const { data: partyData } = await supabase
+    let partyMap: Record<number, string> = {}
+    if (partyIds.length > 0) {
+      const { data: pdata } = await supabase
         .from('parties')
         .select('party_id, party_name')
-        .in('party_id', partyIds)
-
-      const partyMap: Record<number, string> = {}
-      for (const p of partyData || []) partyMap[p.party_id] = p.party_name
-
-      setTodayBills(
-        bills.map((b) => ({
-          ...b,
-          party_name: partyMap[b.party_id] || '—',
-        }))
-      )
-    } else {
-      setTodayBills([])
+        .in('party_id', partyIds as number[])
+      for (const p of pdata || []) partyMap[p.party_id] = p.party_name
     }
+
+    setRecentSales(
+      salesRows.map((b) => ({
+        ...b,
+        party_name: partyMap[b.party_id] || '—',
+      }))
+    )
+    setRecentPurchases(
+      purchaseRows.map((p) => ({
+        ...p,
+        party_name: partyMap[p.party_id] || '—',
+      }))
+    )
   }
 
   const money = (n: number) =>
     `₹ ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
 
-  if (loading) {
+  const grossProfit = sales - cogs
+  const profitMargin = sales > 0 ? (grossProfit / sales) * 100 : 0
+
+  const setRangeTo = (mode: 'today' | 'week' | 'month') => {
+    if (mode === 'today') {
+      const t = todayStr()
+      setRange({ from: t, to: t })
+    } else if (mode === 'week') {
+      setRange({ from: startOfWeek(), to: todayStr() })
+    } else {
+      setRange({ from: firstOfMonth(), to: lastOfMonth() })
+    }
+  }
+
+  const isOwner = role === 'owner'
+
+  // Label for the range shown in cards
+  const rangeLabel = useMemo(() => {
+    if (range.from === range.to) {
+      return new Date(range.from).toLocaleDateString('en-IN', {
+        day: 'numeric',
+        month: 'short',
+      })
+    }
+    const f = new Date(range.from).toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    })
+    const t = new Date(range.to).toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    })
+    return `${f} – ${t}`
+  }, [range.from, range.to])
+
+  if (loading && role === null) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
         <div className="text-slate-400 text-sm">Loading dashboard...</div>
@@ -142,14 +281,12 @@ export default function Home() {
     )
   }
 
-  const isOwner = role === 'owner'
-
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-7xl mx-auto">
 
-        {/* HEADER — stacks on phone, side-by-side on tablet+ */}
-        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        {/* HEADER */}
+        <div className="mb-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
               Welcome back
@@ -171,18 +308,72 @@ export default function Home() {
           </div>
         </div>
 
-        {/* STAT CARDS — 1 col phone, 2 col tablet, 4 col desktop */}
+        {/* DATE RANGE BAR */}
+        <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <div className="flex items-center gap-2 text-slate-700 shrink-0">
+              <Calendar className="w-4 h-4 text-slate-500" />
+              <span className="text-sm font-medium">Date range</span>
+            </div>
+
+            <div className="flex items-center gap-2 flex-1">
+              <input
+                type="date"
+                value={range.from}
+                onChange={(e) =>
+                  setRange((r) => ({ ...r, from: e.target.value }))
+                }
+                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <span className="text-slate-400 text-sm">to</span>
+              <input
+                type="date"
+                value={range.to}
+                onChange={(e) =>
+                  setRange((r) => ({ ...r, to: e.target.value }))
+                }
+                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setRangeTo('today')}
+                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Today
+              </button>
+              <button
+                onClick={() => setRangeTo('week')}
+                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Week
+              </button>
+              <button
+                onClick={() => setRangeTo('month')}
+                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Month
+              </button>
+            </div>
+          </div>
+          <div className="text-xs text-slate-500 mt-2">
+            Showing <strong className="text-slate-700">{rangeLabel}</strong>
+          </div>
+        </div>
+
+        {/* MAIN STAT CARDS */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
           <StatCard
-            label="Today's Sales"
-            value={money(todaySales)}
-            sub={`${todaySalesCount} bill${todaySalesCount === 1 ? '' : 's'}`}
+            label="Sales"
+            value={money(sales)}
+            sub={`${salesCount} bill${salesCount === 1 ? '' : 's'}`}
             icon={<ShoppingCart className="w-5 h-5" />}
             color="blue"
           />
           <StatCard
             label="Payments Collected"
-            value={money(todayPayments)}
+            value={money(payments)}
             sub="Cash + UPI received"
             icon={<Wallet className="w-5 h-5" />}
             color="green"
@@ -190,25 +381,29 @@ export default function Home() {
           {isOwner ? (
             <>
               <StatCard
-                label="Today's Purchases"
-                value={money(todayPurchases)}
-                sub="Stock bought today"
+                label="Purchases"
+                value={money(purchases)}
+                sub="Stock bought"
                 icon={<Package className="w-5 h-5" />}
                 color="purple"
               />
               <StatCard
-                label="Losses Today"
-                value={money(todayLosses)}
-                sub="Damaged / broken"
-                icon={<AlertTriangle className="w-5 h-5" />}
-                color="red"
+                label="Gross Profit"
+                value={money(grossProfit)}
+                sub={
+                  sales > 0
+                    ? `${profitMargin.toFixed(1)}% margin`
+                    : 'No sales in range'
+                }
+                icon={<TrendingUp className="w-5 h-5" />}
+                color={grossProfit >= 0 ? 'green' : 'red'}
               />
             </>
           ) : (
             <>
               <StatCard
-                label="Today's Returns"
-                value={money(todayReturns)}
+                label="Returns"
+                value={money(returns)}
                 sub="Items returned"
                 icon={<RotateCcw className="w-5 h-5" />}
                 color="amber"
@@ -224,18 +419,24 @@ export default function Home() {
           )}
         </div>
 
-        {/* MINI STATS (Owner only) — 1 col phone, 3 col tablet+ */}
+        {/* MINI STATS (Owner only) */}
         {isOwner && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <MiniStat
-              label="Today's Returns"
-              value={money(todayReturns)}
+              label="Returns"
+              value={money(returns)}
               icon={<RotateCcw className="w-4 h-4" />}
             />
             <MiniStat
               label="Pending Khata"
               value={money(pendingKhata)}
               icon={<Users className="w-4 h-4" />}
+            />
+            <MiniStat
+              label="Losses"
+              value={money(losses)}
+              icon={<AlertTriangle className="w-4 h-4" />}
+              highlight={losses > 0}
             />
             <MiniStat
               label="Low Stock Items"
@@ -246,7 +447,7 @@ export default function Home() {
           </div>
         )}
 
-        {/* TWO COLUMNS — stacks on phone, 2 cols on desktop */}
+        {/* LISTS */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6">
           <SectionCard
             title="Top Shops by Balance"
@@ -284,19 +485,19 @@ export default function Home() {
           </SectionCard>
 
           <SectionCard
-            title="Today's Bills"
+            title="Recent Sales"
             icon={<Receipt className="w-4 h-4" />}
             action={{ label: 'Go to Sales', href: '/sales' }}
           >
-            {todayBills.length === 0 ? (
-              <EmptyState text="No bills today yet." />
+            {recentSales.length === 0 ? (
+              <EmptyState text="No sales in this range." />
             ) : (
               <div>
-                {todayBills.map((b, i) => (
+                {recentSales.map((b, i) => (
                   <div
                     key={b.sale_id}
                     className={`flex items-center justify-between py-3 gap-2 ${
-                      i !== todayBills.length - 1
+                      i !== recentSales.length - 1
                         ? 'border-b border-slate-100'
                         : ''
                     }`}
@@ -322,7 +523,50 @@ export default function Home() {
           </SectionCard>
         </div>
 
-        {/* QUICK ACTIONS — 2 col phone, 3 tablet, 6 desktop */}
+        {/* RECENT PURCHASES — Owner only */}
+        {isOwner && (
+          <div className="mb-6">
+            <SectionCard
+              title="Recent Purchases"
+              icon={<Package className="w-4 h-4" />}
+              action={{ label: 'Go to Purchases', href: '/purchases' }}
+            >
+              {recentPurchases.length === 0 ? (
+                <EmptyState text="No purchases in this range." />
+              ) : (
+                <div>
+                  {recentPurchases.map((p, i) => (
+                    <div
+                      key={p.purchase_id}
+                      className={`flex items-center justify-between py-3 gap-2 ${
+                        i !== recentPurchases.length - 1
+                          ? 'border-b border-slate-100'
+                          : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                        <div className="text-xs text-slate-400 w-10 shrink-0">
+                          #{p.purchase_id}
+                        </div>
+                        <div className="text-sm font-medium text-slate-800 truncate">
+                          {p.party_name}
+                        </div>
+                        <div className="text-xs text-slate-400 hidden sm:block">
+                          {p.invoice_no}
+                        </div>
+                      </div>
+                      <div className="text-sm font-semibold text-slate-800 shrink-0">
+                        {money(p.total_amount)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+          </div>
+        )}
+
+        {/* QUICK ACTIONS */}
         <div>
           <h2 className="text-xs sm:text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
             Quick Actions

@@ -25,8 +25,8 @@ import './globals.css'
 const ownerNav = [
   { href: '/', label: 'Home', Icon: Home },
   { href: '/sales', label: 'Sales', Icon: ShoppingCart },
-  { href: '/returns', label: 'Sales Returns', Icon: RotateCcw },
-  { href: '/purchase-returns', label: 'Purchase Returns', Icon: RotateCw },
+  { href: '/returns', label: 'Returns', Icon: RotateCcw },
+  { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/payments', label: 'Payments', Icon: Wallet },
   { href: '/purchases', label: 'Purchases', Icon: ShoppingBag },
   { href: '/items', label: 'Items', Icon: Package },
@@ -39,8 +39,8 @@ const ownerNav = [
 const staffNav = [
   { href: '/', label: 'Home', Icon: Home },
   { href: '/sales', label: 'Sales', Icon: ShoppingCart },
-  { href: '/returns', label: 'Sales Returns', Icon: RotateCcw },
-  { href: '/purchase-returns', label: 'Purchase Returns', Icon: RotateCw },
+  { href: '/returns', label: 'Returns', Icon: RotateCcw },
+  { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/payments', label: 'Payments', Icon: Wallet },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
 ]
@@ -134,44 +134,44 @@ export default function RootLayout({
 
   return (
     <html lang="en">
-      <body className="bg-slate-50">
+      <body className="bg-slate-50 overflow-x-hidden">
         {showNav && (
           <nav className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800">
-            <div className="max-w-7xl mx-auto px-3 sm:px-4">
+            <div className="max-w-[1400px] mx-auto px-3 sm:px-4">
               <div className="flex items-center h-14 gap-3">
+
+                {/* Brand text only — no badge */}
                 <Link
                   href="/"
-                  className="flex items-center gap-2 shrink-0 group"
+                  className="shrink-0 font-semibold text-sm text-white hover:text-blue-300 transition-colors whitespace-nowrap"
                 >
-                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-blue-700 flex items-center justify-center shadow-sm">
-                    <span className="text-white font-bold text-xs">C</span>
-                  </div>
-                  <span className="hidden sm:block font-semibold text-sm text-white group-hover:text-blue-300 transition-colors">
-                    Cellcom Spare
-                  </span>
+                  Cellcom Spare
                 </Link>
 
-                <div className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 overflow-x-auto">
+                {/* Desktop nav — icon + short label, hides labels at tight widths */}
+                <div className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 justify-start">
                   {navItems.map((item) => {
                     const active = isActive(item.href)
                     return (
                       <Link
                         key={item.href}
                         href={item.href}
-                        className={`flex items-center gap-1.5 text-[13px] px-2.5 py-1.5 rounded-md whitespace-nowrap transition-colors ${
+                        title={item.label}
+                        className={`flex items-center gap-1.5 text-[13px] px-2 py-1.5 rounded-md whitespace-nowrap transition-colors ${
                           active
                             ? 'bg-blue-600 text-white shadow-sm'
                             : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                         }`}
                       >
-                        <item.Icon className="w-3.5 h-3.5" />
-                        {item.label}
+                        <item.Icon className="w-4 h-4 shrink-0" />
+                        <span className="hidden lg:inline">{item.label}</span>
                       </Link>
                     )
                   })}
                 </div>
 
-                <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
+                {/* Right cluster */}
+                <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
                   {role && (
                     <span className="hidden sm:inline-flex text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
                       {role === 'owner' ? 'Owner' : 'Staff'}
@@ -184,7 +184,7 @@ export default function RootLayout({
                     className="hidden sm:inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
                   >
                     <LogOut className="w-3.5 h-3.5" />
-                    <span className="hidden md:inline">Logout</span>
+                    <span className="hidden xl:inline">Logout</span>
                   </button>
 
                   <button
@@ -202,32 +202,35 @@ export default function RootLayout({
               </div>
             </div>
 
+            {/* Mobile dropdown — 2-column grid */}
             {menuOpen && (
               <div
                 ref={menuRef}
-                className="lg:hidden absolute right-3 top-[calc(100%+6px)] w-56 max-h-[70vh] overflow-y-auto bg-slate-900 border border-slate-700 rounded-xl shadow-2xl py-1.5"
+                className="lg:hidden absolute right-3 top-[calc(100%+6px)] w-[min(22rem,calc(100vw-1.5rem))] bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-2"
               >
-                {navItems.map((item) => {
-                  const active = isActive(item.href)
-                  return (
-                    <Link
-                      key={item.href}
-                      href={item.href}
-                      className={`flex items-center gap-3 px-3 py-2 text-sm transition-colors ${
-                        active
-                          ? 'bg-blue-600 text-white'
-                          : 'text-slate-300 hover:bg-slate-800 hover:text-white'
-                      }`}
-                    >
-                      <item.Icon className="w-4 h-4 shrink-0" />
-                      <span>{item.label}</span>
-                    </Link>
-                  )
-                })}
-                <div className="border-t border-slate-800 mt-1 pt-1">
+                <div className="grid grid-cols-2 gap-1">
+                  {navItems.map((item) => {
+                    const active = isActive(item.href)
+                    return (
+                      <Link
+                        key={item.href}
+                        href={item.href}
+                        className={`flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] transition-colors ${
+                          active
+                            ? 'bg-blue-600 text-white'
+                            : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <item.Icon className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{item.label}</span>
+                      </Link>
+                    )
+                  })}
+                </div>
+                <div className="border-t border-slate-800 mt-1.5 pt-1.5">
                   <button
                     onClick={logout}
-                    className="w-full flex items-center gap-3 px-3 py-2 text-sm text-red-400 hover:bg-slate-800 transition-colors"
+                    className="w-full flex items-center gap-2 px-2.5 py-2 text-[13px] text-red-400 hover:bg-slate-800 rounded-md transition-colors"
                   >
                     <LogOut className="w-4 h-4 shrink-0" />
                     Logout
