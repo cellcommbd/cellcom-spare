@@ -1,5 +1,11 @@
 // lib/csv-parser.ts
 // Parses CSV text from supplier quotations/invoices and generates SKUs.
+// v4 — supports:
+//   • Nur Bhai / Self Side:  Description with brand + model + part embedded
+//   • Real Gold:             Separate columns for Description, Type, Qty, Price
+//   • Braces {4G}/{5G} and brackets [4G]/[5G]
+//   • "RM 12", "OP A54", "1+NORD 2", "VV Y21 {2021}"
+//   • Typos: PANLE→PANEL, BORD→BOARD, SIM TRY→SIM TRAY
 
 export type Quality = 'Normal' | 'OG' | '100 OG' | 'ORG' | 'Care OG'
 
@@ -39,6 +45,7 @@ export type ItemLookup = {
 }
 
 // ---------- Part type phrases ----------
+// ORDER MATTERS: longest first
 const PART_TYPE_PHRASES = [
   'MIDDLE FRAME WITH FLEX',
   'ON OFF SENSOR CONN',
@@ -119,6 +126,13 @@ function findColumnIndex(headers: string[], candidates: string[]): number {
   for (let i = 0; i < headers.length; i++) {
     const h = headers[i].toLowerCase().replace(/[^a-z]/g, '')
     for (const c of candidates) {
+      if (h === c) return i
+    }
+  }
+  // Second pass: substring match
+  for (let i = 0; i < headers.length; i++) {
+    const h = headers[i].toLowerCase().replace(/[^a-z]/g, '')
+    for (const c of candidates) {
       if (h.includes(c)) return i
     }
   }
@@ -133,6 +147,8 @@ function normalizeTypos(desc: string): string {
     .replace(/\bPANNEL\b/gi, 'PANEL')
     .replace(/\bBORD\b/gi, 'BOARD')
     .replace(/\bSENSOR\s+CONN\.?\b/gi, 'ON OFF SENSOR CONN')
+    .replace(/\bOUT\s+SIM\s+TRY\b/gi, 'OUT SIM TRAY')
+    .replace(/\bSIM\s+TRY\b/gi, 'SIM TRAY')
 }
 
 // ---------- Extract part type ----------
@@ -187,41 +203,47 @@ function extractQuality(desc: string): {
   return { quality: 'Normal', cleanedDesc: cleaned }
 }
 
-// ---------- Extract variant ----------
+// ---------- Extract variant / year / network from brackets or braces ----------
 function extractVariant(desc: string): {
   variant: string | null
   yearForSku: string | null
+  networkFromBracket: string | null
   cleanedDesc: string
 } {
   const notes: string[] = []
-  const bracketRe = /\[([^\]]+)\]/g
+  const bracketRe = /[\[{]([^\]}]+)[\]}]/g
   let m: RegExpExecArray | null
   while ((m = bracketRe.exec(desc)) !== null) {
     notes.push(m[1].trim())
   }
 
-  let cleaned = desc.replace(/\[[^\]]*\]/g, ' ')
+  let cleaned = desc.replace(/[\[{][^\]}]*[\]}]/g, ' ')
 
   let variant: string | null = null
   let yearForSku: string | null = null
+  let networkFromBracket: string | null = null
 
   for (const note of notes) {
     const yearMatch = note.match(/\b(19|20)\d{2}\b/)
-    if (yearMatch) {
+    if (yearMatch && !yearForSku) {
       variant = note
       yearForSku = yearMatch[0]
-      break
+    }
+    const netMatch = note.match(/\b(4G|5G)\b/i)
+    if (netMatch && !networkFromBracket) {
+      networkFromBracket = netMatch[1].toUpperCase()
     }
   }
 
   cleaned = cleaned.replace(/\s+/g, ' ').trim()
-  return { variant, yearForSku, cleanedDesc: cleaned }
+  return { variant, yearForSku, networkFromBracket, cleanedDesc: cleaned }
 }
 
-// ---------- Clean leftover notes ----------
+// ---------- Clean leftover supplier notes ----------
 function cleanSupplierNotes(desc: string): string {
   let cleaned = desc
   cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
+  cleaned = cleaned.replace(/\{[^}]*\}/g, ' ')
   cleaned = cleaned.replace(/\([^)]*\)/g, ' ')
   cleaned = cleaned.replace(
     /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE|C\+)\b/gi,
@@ -352,20 +374,24 @@ export function parseCSV(
 
   if (headerRowIndex === -1) {
     throw new Error(
-      'Could not find a header row with Brand (or Description), Quantity, and Rate columns.'
+      'Could not find a header row with Brand (or Description), Quantity, and Rate/Price columns.'
     )
   }
 
   const colBrand = findColumnIndex(header, ['brand'])
   const colModel = findColumnIndex(header, ['model'])
-  const colPart = findColumnIndex(header, ['parttype'])
+  const colPart = findColumnIndex(header, [
+    'parttype',
+    'typeofgoods',
+    'type',
+    'part',
+  ])
   const colDesc = findColumnIndex(header, [
     'descriptionofgoods',
     'description',
     'item',
     'product',
   ])
-  const colType = findColumnIndex(header, ['typeofgoods'])
   const colQty = findColumnIndex(header, ['quantity', 'qty'])
   const colRate = findColumnIndex(header, ['rate', 'price'])
 
@@ -404,6 +430,7 @@ export function parseCSV(
     let yearForSku: string | null = null
 
     if (isNewFormat) {
+      // Fully separate columns: Brand, Model, Part Type
       const brandRaw = (row[colBrand] || '').toUpperCase().trim()
       const modelRaw = (row[colModel] || '').trim()
       const partRaw = (row[colPart] || '').toUpperCase().trim()
@@ -422,8 +449,9 @@ export function parseCSV(
         aliases.partAliases[partRaw.toUpperCase()] ||
         null
     } else {
+      // Description-based, but a separate Type column may carry the part
       rawDescription = colDesc >= 0 ? row[colDesc] || '' : ''
-      rawType = colType >= 0 ? row[colType] || '' : ''
+      rawType = colPart >= 0 ? (row[colPart] || '').toUpperCase().trim() : ''
 
       if (!rawDescription) continue
 
@@ -434,10 +462,14 @@ export function parseCSV(
       yearForSku = v.yearForSku
       let working = v.cleanedDesc
 
+      // If variant extraction produced a network, capture it now
+      if (v.networkFromBracket) network = v.networkFromBracket
+
       const q = extractQuality(working)
       quality = q.quality
       working = q.cleanedDesc
 
+      // Prefer the explicit Type column if present
       if (rawType) {
         const typeUpper = rawType.toUpperCase().trim()
         partCode =
@@ -445,6 +477,7 @@ export function parseCSV(
           aliases.partAliases[typeUpper.replace(/\./g, '')] ||
           null
       }
+      // Otherwise extract the part from the description
       if (!partCode) {
         const extracted = extractPartFromDescription(working)
         if (extracted.partText) {
@@ -460,10 +493,10 @@ export function parseCSV(
       const parsed = parseDescriptionParts(working, aliases)
       brandCode = parsed.brandCode
       modelName = parsed.modelName
-      network = parsed.network
+      if (parsed.network) network = parsed.network
     }
 
-    // Fallback: if brand + part exist but no model, use UNKNOWN
+    // Fallback: brand + part exist but no model → use UNKNOWN
     if (brandCode && !modelName && partCode) {
       modelName = 'UNKNOWN'
     }
@@ -535,10 +568,11 @@ export function parseCSV(
   const failed = result.filter((r) => r.status === 'error')
   if (failed.length > 0) {
     console.log(`\n===== PARSE FAILED ROWS (${failed.length}) =====`)
-    for (const f of failed) {
+    for (const f of failed.slice(0, 20)) {
       console.log(`Row ${f.rowNumber}: "${f.rawDescription}"`)
       console.log(`   → ${f.errorMessage}`)
     }
+    if (failed.length > 20) console.log(`   ... ${failed.length - 20} more`)
     console.log(`===== END =====\n`)
   }
 
