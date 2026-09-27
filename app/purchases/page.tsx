@@ -33,6 +33,18 @@ type PurchaseRow = {
   rowId: number
   item_id: number | null
   sku: string
+  brand_id: number | null
+  model_id: number | null
+  part_id: number | null
+  brand_code: string | null
+  model_name: string | null
+  part_code: string | null
+  quality: string
+  variant: string | null
+  color: string | null
+  network: string | null
+  year: string | null
+  flag: string | null
   quantity: number
   rate: number
   amount: number
@@ -54,6 +66,29 @@ type PickedSupplier = {
   isNew: boolean
 }
 
+function emptyRow(rowId: number): PurchaseRow {
+  return {
+    rowId,
+    item_id: null,
+    sku: '',
+    brand_id: null,
+    model_id: null,
+    part_id: null,
+    brand_code: null,
+    model_name: null,
+    part_code: null,
+    quality: 'Normal',
+    variant: null,
+    color: null,
+    network: null,
+    year: null,
+    flag: null,
+    quantity: 0,
+    rate: 0,
+    amount: 0,
+  }
+}
+
 export default function PurchaseEntryPage() {
   const [suppliers, setSuppliers] = useState<Party[]>([])
   const [items, setItems] = useState<Item[]>([])
@@ -70,9 +105,7 @@ export default function PurchaseEntryPage() {
     new Date().toISOString().slice(0, 10)
   )
 
-  const [rows, setRows] = useState<PurchaseRow[]>([
-    { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
-  ])
+  const [rows, setRows] = useState<PurchaseRow[]>([emptyRow(1)])
   const [nextRowId, setNextRowId] = useState(2)
 
   const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(null)
@@ -99,7 +132,6 @@ export default function PurchaseEntryPage() {
   const [showImport, setShowImport] = useState(false)
   const [importing, setImporting] = useState(false)
 
-  // Delete confirmation modal state
   const [confirmDelete, setConfirmDelete] = useState<PurchaseHeader | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -138,7 +170,6 @@ export default function PurchaseEntryPage() {
     setItems(i.data || [])
     setRecentPurchases(r.data || [])
 
-    // Fetch line counts for the recent purchases
     if (r.data && r.data.length > 0) {
       const ids = r.data.map((x: any) => x.purchase_id)
       const { data: lines } = await supabase
@@ -171,10 +202,7 @@ export default function PurchaseEntryPage() {
 
   function addRow(): number {
     const newId = nextRowId
-    setRows((prev) => [
-      ...prev,
-      { rowId: newId, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
-    ])
+    setRows((prev) => [...prev, emptyRow(newId)])
     setNextRowId((n) => n + 1)
     setPendingFocusRowId(newId)
     return newId
@@ -182,9 +210,7 @@ export default function PurchaseEntryPage() {
 
   function removeRow(rowId: number) {
     if (rows.length === 1) {
-      setRows([
-        { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
-      ])
+      setRows([emptyRow(1)])
       return
     }
     setRows(rows.filter((r) => r.rowId !== rowId))
@@ -212,6 +238,18 @@ export default function PurchaseEntryPage() {
           ...r,
           item_id: item.item_id,
           sku: item.sku,
+          brand_id: null,
+          model_id: null,
+          part_id: null,
+          brand_code: null,
+          model_name: null,
+          part_code: null,
+          quality: 'Normal',
+          variant: null,
+          color: null,
+          network: null,
+          year: null,
+          flag: null,
           rate: newRate,
           amount: Number(r.quantity) * Number(newRate),
         }
@@ -222,7 +260,7 @@ export default function PurchaseEntryPage() {
   function handleItemTab(row: PurchaseRow, idx: number) {
     const isLastRow = idx === rows.length - 1
     if (!isLastRow) return
-    if (row.item_id) {
+    if (row.item_id || row.sku) {
       addRow()
     } else {
       setTimeout(() => freightInputRef.current?.focus(), 0)
@@ -233,7 +271,7 @@ export default function PurchaseEntryPage() {
     const isLastRow = idx === rows.length - 1
     if (!isLastRow) return
     const row = rows[idx]
-    if (row.item_id) {
+    if (row.item_id || row.sku) {
       e.preventDefault()
       addRow()
     } else {
@@ -243,6 +281,9 @@ export default function PurchaseEntryPage() {
     }
   }
 
+  // ============================================================
+  // IMPORT — fill grid only, no DB writes
+  // ============================================================
   async function handleCSVImport(
     matched: ParsedRow[],
     newItems: ParsedRow[],
@@ -252,50 +293,19 @@ export default function PurchaseEntryPage() {
     setImporting(true)
 
     try {
-      const [brandsRes, modelsRes, partsRes, itemsRes] = await Promise.all([
-        supabase.from('brands').select('brand_id, brand_name, brand_code'),
-        supabase
-          .from('models')
-          .select('model_id, brand_id, model_name, network'),
-        supabase.from('part_types').select('part_id, part_name, part_code'),
-        supabase.from('items').select('item_id, sku'),
+      const [brandsRes, modelsRes, partsRes] = await Promise.all([
+        supabase.from('brands').select('brand_id, brand_code'),
+        supabase.from('models').select('model_id, brand_id, model_name, network'),
+        supabase.from('part_types').select('part_id, part_code'),
       ])
 
       const brands = (brandsRes.data as any[]) || []
       const models = (modelsRes.data as any[]) || []
       const parts = (partsRes.data as any[]) || []
-      const existingItems = (itemsRes.data as any[]) || []
-
-      const skuToItemId: Record<string, number> = {}
-      for (const it of existingItems) {
-        skuToItemId[it.sku.toUpperCase()] = it.item_id
-      }
 
       const brandByCode: Record<string, number> = {}
       for (const b of brands) {
         brandByCode[String(b.brand_code).toUpperCase()] = b.brand_id
-      }
-
-      const uniqueBrandCodes = new Set<string>()
-      for (const r of newItems) {
-        if (r.brandCode) uniqueBrandCodes.add(r.brandCode.toUpperCase())
-      }
-
-      let createdBrands = 0
-      for (const code of uniqueBrandCodes) {
-        if (!brandByCode[code]) {
-          const { data, error } = await supabase
-            .from('brands')
-            .insert({ brand_name: code, brand_code: code })
-            .select()
-            .single()
-          if (error) {
-            console.error('Brand create error:', error)
-          } else if (data) {
-            brandByCode[code] = data.brand_id
-            createdBrands++
-          }
-        }
       }
 
       const modelKey = (brandId: number, name: string, net: string | null) =>
@@ -306,33 +316,6 @@ export default function PurchaseEntryPage() {
         modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
       }
 
-      let createdModels = 0
-      for (const r of newItems) {
-        if (!r.brandCode || !r.modelName) continue
-        const brandCode = r.brandCode.toUpperCase()
-        const brandId = brandByCode[brandCode]
-        if (!brandId) continue
-
-        const key = modelKey(brandId, r.modelName, r.network)
-        if (!modelByKey[key]) {
-          const { data, error } = await supabase
-            .from('models')
-            .insert({
-              brand_id: brandId,
-              model_name: r.modelName,
-              network: r.network,
-            })
-            .select()
-            .single()
-          if (error) {
-            console.error('Model create error:', error)
-          } else if (data) {
-            modelByKey[key] = data.model_id
-            createdModels++
-          }
-        }
-      }
-
       const partByCode: Record<string, number> = {}
       for (const p of parts) {
         partByCode[String(p.part_code).toUpperCase()] = p.part_id
@@ -340,14 +323,19 @@ export default function PurchaseEntryPage() {
 
       const finalRows: PurchaseRow[] = []
       let nextId = nextRowId
-      let createdItems = 0
 
       for (const r of matched) {
         if (!r.matchedItemId || !r.matchedItemSku) continue
         finalRows.push({
-          rowId: nextId++,
+          ...emptyRow(nextId++),
           item_id: r.matchedItemId,
           sku: r.matchedItemSku,
+          quality: r.quality || 'Normal',
+          variant: r.variant || null,
+          color: r.color || null,
+          network: r.network || null,
+          year: r.year || null,
+          flag: r.flag || null,
           quantity: r.qty,
           rate: r.rate,
           amount: Number((r.qty * r.rate).toFixed(2)),
@@ -358,53 +346,29 @@ export default function PurchaseEntryPage() {
         if (!r.generatedSku || !r.brandCode || !r.modelName || !r.partCode)
           continue
 
-        if (skuToItemId[r.generatedSku.toUpperCase()]) {
-          finalRows.push({
-            rowId: nextId++,
-            item_id: skuToItemId[r.generatedSku.toUpperCase()],
-            sku: r.generatedSku,
-            quantity: r.qty,
-            rate: r.rate,
-            amount: Number((r.qty * r.rate).toFixed(2)),
-          })
-          continue
-        }
-
-        const brandId = brandByCode[r.brandCode.toUpperCase()]
-        const key = modelKey(brandId, r.modelName, r.network)
-        const modelId = modelByKey[key]
-        const partId = partByCode[r.partCode.toUpperCase()]
-
-        if (!brandId || !modelId || !partId) continue
-
-        const sellingPrice = Number((r.rate * margin).toFixed(2))
-
-        const { data: newItem, error: itemErr } = await supabase
-          .from('items')
-          .insert({
-            sku: r.generatedSku,
-            brand_id: brandId,
-            model_id: modelId,
-            part_id: partId,
-            quality: r.quality || 'Normal',
-            variant: r.variant || null,
-            color: null,
-            cost_price: r.rate,
-            selling_price: sellingPrice,
-            current_stock: 0,
-          })
-          .select()
-          .single()
-
-        if (itemErr || !newItem) continue
-
-        createdItems++
-        skuToItemId[r.generatedSku.toUpperCase()] = newItem.item_id
+        const brandCode = r.brandCode.toUpperCase()
+        const partCode = r.partCode.toUpperCase()
+        const brandId = brandByCode[brandCode] || null
+        const mKey = brandId ? modelKey(brandId, r.modelName, r.network) : ''
+        const modelId = mKey ? modelByKey[mKey] || null : null
+        const partId = partByCode[partCode] || null
 
         finalRows.push({
-          rowId: nextId++,
-          item_id: newItem.item_id,
+          ...emptyRow(nextId++),
+          item_id: r.matchedItemId || null,
           sku: r.generatedSku,
+          brand_id: brandId,
+          model_id: modelId,
+          part_id: partId,
+          brand_code: brandCode,
+          model_name: r.modelName,
+          part_code: partCode,
+          quality: r.quality || 'Normal',
+          variant: r.variant || null,
+          color: r.color || null,
+          network: r.network || null,
+          year: r.year || null,
+          flag: r.flag || null,
           quantity: r.qty,
           rate: r.rate,
           amount: Number((r.qty * r.rate).toFixed(2)),
@@ -420,10 +384,8 @@ export default function PurchaseEntryPage() {
       setNextRowId(nextId)
 
       setMessage(
-        `Imported ${finalRows.length} rows. Created ${createdBrands} brand(s), ${createdModels} model(s), ${createdItems} item(s).`
+        `Imported ${finalRows.length} rows. Nothing saved yet — review and click Save Purchase.`
       )
-
-      await loadData()
     } catch (e: any) {
       console.error('IMPORT CRASH:', e)
       setMessage('Import error: ' + (e.message || 'unknown'))
@@ -454,6 +416,7 @@ export default function PurchaseEntryPage() {
     >()
 
     for (const r of validRows) {
+      if (!r.item_id) continue
       const item = items.find((i) => i.item_id === r.item_id)
       if (!item) continue
 
@@ -504,6 +467,9 @@ export default function PurchaseEntryPage() {
     return pickedSupplier.id
   }
 
+  // ============================================================
+  // SAVE — batched, transactional-ish, SKU-deduped
+  // ============================================================
   async function savePurchase() {
     setMessage('')
 
@@ -513,7 +479,7 @@ export default function PurchaseEntryPage() {
     }
 
     const validRows = rows.filter(
-      (r) => r.item_id && r.quantity > 0 && r.rate > 0
+      (r) => (r.item_id || r.sku) && r.quantity > 0 && r.rate > 0
     )
     if (validRows.length === 0) {
       setMessage('Add at least one item with quantity and rate.')
@@ -528,16 +494,205 @@ export default function PurchaseEntryPage() {
       return
     }
 
-    const validSubtotal = validRows.reduce((s, r) => s + r.amount, 0)
-    const enrichedRows = validRows.map((r) => {
-      const share =
-        validSubtotal > 0 ? (r.amount / validSubtotal) * freightNum : 0
-      const effectiveRate = r.rate + share / r.quantity
-      return {
-        ...r,
-        effectiveRate: Number(effectiveRate.toFixed(4)),
+    const skuToCreatedId: Record<string, number> = {}
+
+    // 1. Load master data
+    const [brandsRes, modelsRes, partsRes] = await Promise.all([
+      supabase.from('brands').select('brand_id, brand_code'),
+      supabase.from('models').select('model_id, brand_id, model_name, network'),
+      supabase.from('part_types').select('part_id, part_code'),
+    ])
+
+    const brandByCode: Record<string, number> = {}
+    for (const b of brandsRes.data || []) {
+      brandByCode[String(b.brand_code).toUpperCase()] = b.brand_id
+    }
+    const partByCode: Record<string, number> = {}
+    for (const p of partsRes.data || []) {
+      partByCode[String(p.part_code).toUpperCase()] = p.part_id
+    }
+    const modelKey = (brandId: number, name: string, net: string | null) =>
+      `${brandId}::${name.toUpperCase()}::${(net || '').toUpperCase()}`
+    const modelByKey: Record<string, number> = {}
+    for (const m of modelsRes.data || []) {
+      modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
+    }
+
+    // 2. Identify missing brands/parts, gather pending rows
+    const missingBrandCodes = new Set<string>()
+    const missingPartCodes = new Set<string>()
+    const pending: PurchaseRow[] = []
+
+    for (const r of validRows) {
+      if (r.item_id) continue
+      if (!r.sku || !r.brand_code || !r.model_name || !r.part_code) {
+        setMessage(
+          `Row ${r.rowId}: missing SKU or brand/model/part info. Please pick an existing SKU.`
+        )
+        setSaving(false)
+        return
       }
+      const brandCode = r.brand_code.toUpperCase()
+      const partCode = r.part_code.toUpperCase()
+      const brandId = r.brand_id || brandByCode[brandCode]
+      if (!brandId) missingBrandCodes.add(brandCode)
+      const partId = r.part_id || partByCode[partCode]
+      if (!partId) missingPartCodes.add(partCode)
+      pending.push({ ...r, brand_code: brandCode, part_code: partCode })
+    }
+
+    // 3. Bulk-create missing brands
+    if (missingBrandCodes.size > 0) {
+      const inserts = Array.from(missingBrandCodes).map((code) => ({
+        brand_name: code,
+        brand_code: code,
+      }))
+      const { data, error } = await supabase
+        .from('brands')
+        .insert(inserts)
+        .select()
+      if (error || !data) {
+        setMessage('Failed to create brands: ' + (error?.message || 'unknown'))
+        setSaving(false)
+        return
+      }
+      for (const b of data) {
+        brandByCode[String(b.brand_code).toUpperCase()] = b.brand_id
+      }
+    }
+
+    // 4. Identify missing models
+    const missingModelKeys = new Map<
+      string,
+      { brandId: number; model_name: string; network: string | null }
+    >()
+    for (const r of pending) {
+      const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
+      if (!brandId) continue
+      const key = modelKey(brandId, r.model_name!, r.network)
+      if (!r.model_id && !modelByKey[key]) {
+        missingModelKeys.set(key, {
+          brandId,
+          model_name: r.model_name!,
+          network: r.network,
+        })
+      }
+    }
+
+    // 5. Bulk-create missing models
+    if (missingModelKeys.size > 0) {
+      const inserts = Array.from(missingModelKeys.values()).map((m) => ({
+        brand_id: m.brandId,
+        model_name: m.model_name,
+        network: m.network,
+      }))
+      const { data, error } = await supabase
+        .from('models')
+        .insert(inserts)
+        .select()
+      if (error || !data) {
+        setMessage('Failed to create models: ' + (error?.message || 'unknown'))
+        setSaving(false)
+        return
+      }
+      for (const m of data) {
+        modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
+      }
+    }
+
+    // 6. Bulk-create missing parts
+    if (missingPartCodes.size > 0) {
+      const inserts = Array.from(missingPartCodes).map((code) => ({
+        part_name: code,
+        part_code: code,
+      }))
+      const { data, error } = await supabase
+        .from('part_types')
+        .insert(inserts)
+        .select()
+      if (error || !data) {
+        setMessage('Failed to create parts: ' + (error?.message || 'unknown'))
+        setSaving(false)
+        return
+      }
+      for (const p of data) {
+        partByCode[String(p.part_code).toUpperCase()] = p.part_id
+      }
+    }
+
+    // 7. Build + dedupe + bulk-insert items
+    type ItemInsert = {
+      sku: string
+      brand_id: number
+      model_id: number
+      part_id: number
+      quality: string
+      variant: string | null
+      color: string | null
+      cost_price: number
+      selling_price: number
+      current_stock: number
+    }
+    const itemInserts: ItemInsert[] = []
+
+    for (const r of pending) {
+      const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
+      const partId = r.part_id || partByCode[r.part_code!.toUpperCase()]
+      const mKey = brandId ? modelKey(brandId, r.model_name!, r.network) : ''
+      const modelId = r.model_id || (mKey ? modelByKey[mKey] : undefined)
+
+      if (!brandId || !modelId || !partId) {
+        setMessage(
+          `Row ${r.rowId}: could not resolve brand/model/part for ${r.sku}.`
+        )
+        setSaving(false)
+        return
+      }
+
+      itemInserts.push({
+        sku: r.sku!,
+        brand_id: brandId,
+        model_id: modelId,
+        part_id: partId,
+        quality: r.quality || 'Normal',
+        variant: r.variant || null,
+        color: r.color || null,
+        cost_price: r.rate,
+        selling_price: Number((r.rate * 1.5).toFixed(2)),
+        current_stock: 0,
+      })
+    }
+
+    // Dedupe by SKU
+    const seenSkus = new Set<string>()
+    const uniqueItemInserts = itemInserts.filter((it) => {
+      if (seenSkus.has(it.sku)) return false
+      seenSkus.add(it.sku)
+      return true
     })
+
+    let createdItemIds: number[] = []
+
+    if (uniqueItemInserts.length > 0) {
+      const { data, error } = await supabase
+        .from('items')
+        .insert(uniqueItemInserts)
+        .select('item_id, sku')
+
+      if (error || !data) {
+        setMessage('Failed to create items: ' + (error?.message || 'unknown'))
+        setSaving(false)
+        return
+      }
+
+      createdItemIds = data.map((x) => x.item_id)
+      for (const row of data) {
+        skuToCreatedId[row.sku] = row.item_id
+      }
+    }
+
+    // 8. Insert purchase header
+    const validSubtotal = validRows.reduce((s, r) => s + r.amount, 0)
 
     const { data: purchaseData, error: purchaseError } = await supabase
       .from('purchases')
@@ -553,6 +708,9 @@ export default function PurchaseEntryPage() {
       .single()
 
     if (purchaseError || !purchaseData) {
+      if (createdItemIds.length > 0) {
+        await supabase.from('items').delete().in('item_id', createdItemIds)
+      }
       setMessage('Save error (header): ' + (purchaseError?.message || 'unknown'))
       setSaving(false)
       return
@@ -560,13 +718,48 @@ export default function PurchaseEntryPage() {
 
     const purchaseId = purchaseData.purchase_id
 
-    const lineInserts = enrichedRows.map((r) => ({
-      purchase_id: purchaseId,
-      item_id: r.item_id,
-      quantity: r.quantity,
-      rate: r.effectiveRate,
-      amount: Number((r.effectiveRate * r.quantity).toFixed(2)),
-    }))
+    // 9. Bulk-insert purchase lines
+    const lineInserts: {
+      purchase_id: number
+      item_id: number
+      quantity: number
+      rate: number
+      amount: number
+    }[] = []
+
+    for (const r of validRows) {
+      const resolvedId = r.item_id
+        ? r.item_id
+        : r.sku
+        ? skuToCreatedId[r.sku]
+        : null
+
+      if (!resolvedId) {
+        await supabase
+          .from('purchase_items')
+          .delete()
+          .eq('purchase_id', purchaseId)
+        await supabase.from('purchases').delete().eq('purchase_id', purchaseId)
+        if (createdItemIds.length > 0) {
+          await supabase.from('items').delete().in('item_id', createdItemIds)
+        }
+        setMessage(`Could not resolve item for row ${r.rowId}.`)
+        setSaving(false)
+        return
+      }
+
+      const share =
+        validSubtotal > 0 ? (r.amount / validSubtotal) * freightNum : 0
+      const effectiveRate = r.rate + share / r.quantity
+
+      lineInserts.push({
+        purchase_id: purchaseId,
+        item_id: resolvedId,
+        quantity: r.quantity,
+        rate: Number(effectiveRate.toFixed(4)),
+        amount: Number((effectiveRate * r.quantity).toFixed(2)),
+      })
+    }
 
     const { error: linesError } = await supabase
       .from('purchase_items')
@@ -574,6 +767,9 @@ export default function PurchaseEntryPage() {
 
     if (linesError) {
       await supabase.from('purchases').delete().eq('purchase_id', purchaseId)
+      if (createdItemIds.length > 0) {
+        await supabase.from('items').delete().in('item_id', createdItemIds)
+      }
       setMessage('Save error (lines): ' + linesError.message)
       setSaving(false)
       return
@@ -591,9 +787,7 @@ export default function PurchaseEntryPage() {
     setPickedSupplier({ id: null, label: '', isNew: false })
     setInvoiceNo('')
     setPurchaseDate(new Date().toISOString().slice(0, 10))
-    setRows([
-      { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
-    ])
+    setRows([emptyRow(1)])
     setNextRowId(2)
     setFreight('0')
     setCashPaid('0')
@@ -621,6 +815,7 @@ export default function PurchaseEntryPage() {
   const supplierName = (id: number) =>
     suppliers.find((s) => s.party_id === id)?.party_name || '—'
 
+  // ------ END OF PART 1 ------
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
@@ -660,11 +855,7 @@ export default function PurchaseEntryPage() {
                     ? `__new__${pickedSupplier.label}`
                     : null
                 }
-                onValueChange={(
-                  v: string,
-                  label: string,
-                  isNew: boolean
-                ) => {
+                onValueChange={(v: string, label: string, isNew: boolean) => {
                   setPickedSupplier({
                     id: isNew ? null : Number(v),
                     label,
@@ -705,14 +896,22 @@ export default function PurchaseEntryPage() {
           <div className="space-y-3">
             {rows.map((row, idx) => {
               const pred = costPredictions.get(row.rowId)
+              const isPending = !row.item_id && row.sku
               return (
                 <div
                   key={row.rowId}
-                  className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm"
+                  className={`bg-white border rounded-xl p-3 shadow-sm ${
+                    isPending ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200'
+                  }`}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-xs font-semibold text-slate-500">
                       Item #{idx + 1}
+                      {isPending && (
+                        <span className="ml-2 text-amber-700">
+                          (new — will be created on save)
+                        </span>
+                      )}
                     </div>
                     <button
                       onClick={() => removeRow(row.rowId)}
@@ -724,16 +923,12 @@ export default function PurchaseEntryPage() {
                   <SmartCombobox
                     options={itemOptions}
                     value={row.item_id ? String(row.item_id) : null}
-                    onValueChange={(
-                      v: string,
-                      label: string,
-                      isNew: boolean
-                    ) => {
+                    onValueChange={(v: string, label: string, isNew: boolean) => {
                       if (isNew) return
                       handleItemSelect(row.rowId, Number(v))
                     }}
                     onTabKey={() => handleItemTab(row, idx)}
-                    placeholder="Search SKU..."
+                    placeholder={isPending ? row.sku : 'Search SKU...'}
                     allowCreate={false}
                     inputDataAttr={`row-${row.rowId}`}
                     focusNextOnSelect={true}
@@ -897,11 +1092,7 @@ export default function PurchaseEntryPage() {
                       ? `__new__${pickedSupplier.label}`
                       : null
                   }
-                  onValueChange={(
-                    v: string,
-                    label: string,
-                    isNew: boolean
-                  ) => {
+                  onValueChange={(v: string, label: string, isNew: boolean) => {
                     setPickedSupplier({
                       id: isNew ? null : Number(v),
                       label,
@@ -954,105 +1145,113 @@ export default function PurchaseEntryPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row, idx) => (
-                    <tr key={row.rowId} className="border-b border-slate-100">
-                      <td className="px-2 py-1 text-center text-slate-500 text-xs">
-                        {idx + 1}
-                      </td>
-                      <td className="px-2 py-1">
-                        <SmartCombobox
-                          options={itemOptions}
-                          value={row.item_id ? String(row.item_id) : null}
-                          onValueChange={(
-                            v: string,
-                            label: string,
-                            isNew: boolean
-                          ) => {
-                            if (isNew) return
-                            handleItemSelect(row.rowId, Number(v))
-                          }}
-                          onTabKey={() => handleItemTab(row, idx)}
-                          placeholder="Search SKU..."
-                          allowCreate={false}
-                          inputDataAttr={`row-${row.rowId}`}
-                          focusNextOnSelect={true}
-                          nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
-                          inputRef={getItemRef(row.rowId)}
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          data-qty-row={`qty-${row.rowId}`}
-                          ref={(el) => {
-                            qtyRefs.current[row.rowId] = el
-                          }}
-                          type="number"
-                          value={row.quantity || ''}
-                          onChange={(e) =>
-                            updateRow(row.rowId, {
-                              quantity: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          type="number"
-                          value={row.rate || ''}
-                          onChange={(e) =>
-                            updateRow(row.rowId, {
-                              rate: parseFloat(e.target.value) || 0,
-                            })
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Tab')
-                              handleRateTab(row.rowId, idx, e)
-                          }}
-                          className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                        />
-                      </td>
-                      <td className="px-2 py-1 text-right font-medium text-slate-800">
-                        ₹ {row.amount.toFixed(2)}
-                      </td>
-                      <td className="px-2 py-1 text-right text-xs">
-                        {(() => {
-                          const pred = costPredictions.get(row.rowId)
-                          if (!pred)
-                            return <span className="text-slate-300">—</span>
-                          const up = pred.change > 0.01
-                          const down = pred.change < -0.01
-                          return (
-                            <div className="flex flex-col items-end leading-tight">
-                              <span className="font-medium text-slate-800">
-                                ₹ {pred.new_cost.toFixed(2)}
-                              </span>
-                              <span
-                                className={`text-[10px] ${
-                                  up
-                                    ? 'text-red-600'
-                                    : down
-                                    ? 'text-green-600'
-                                    : 'text-slate-400'
-                                }`}
-                              >
-                                {up ? '▲' : down ? '▼' : '—'}{' '}
-                                {Math.abs(pred.change).toFixed(2)}
-                              </span>
-                            </div>
-                          )
-                        })()}
-                      </td>
-                      <td className="px-2 py-1 text-center">
-                        <button
-                          onClick={() => removeRow(row.rowId)}
-                          className="text-red-500 hover:text-red-700"
-                        >
-                          <Trash2 className="size-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {rows.map((row, idx) => {
+                    const isPending = !row.item_id && row.sku
+                    return (
+                      <tr
+                        key={row.rowId}
+                        className={`border-b border-slate-100 ${
+                          isPending ? 'bg-amber-50/40' : ''
+                        }`}
+                      >
+                        <td className="px-2 py-1 text-center text-slate-500 text-xs">
+                          {idx + 1}
+                        </td>
+                        <td className="px-2 py-1">
+                          <SmartCombobox
+                            options={itemOptions}
+                            value={row.item_id ? String(row.item_id) : null}
+                            onValueChange={(
+                              v: string,
+                              label: string,
+                              isNew: boolean
+                            ) => {
+                              if (isNew) return
+                              handleItemSelect(row.rowId, Number(v))
+                            }}
+                            onTabKey={() => handleItemTab(row, idx)}
+                            placeholder={isPending ? `${row.sku} (new)` : 'Search SKU...'}
+                            allowCreate={false}
+                            inputDataAttr={`row-${row.rowId}`}
+                            focusNextOnSelect={true}
+                            nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
+                            inputRef={getItemRef(row.rowId)}
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input
+                            data-qty-row={`qty-${row.rowId}`}
+                            ref={(el) => {
+                              qtyRefs.current[row.rowId] = el
+                            }}
+                            type="number"
+                            value={row.quantity || ''}
+                            onChange={(e) =>
+                              updateRow(row.rowId, {
+                                quantity: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input
+                            type="number"
+                            value={row.rate || ''}
+                            onChange={(e) =>
+                              updateRow(row.rowId, {
+                                rate: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            onKeyDown={(e) => {
+                              if (e.key === 'Tab')
+                                handleRateTab(row.rowId, idx, e)
+                            }}
+                            className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </td>
+                        <td className="px-2 py-1 text-right font-medium text-slate-800">
+                          ₹ {row.amount.toFixed(2)}
+                        </td>
+                        <td className="px-2 py-1 text-right text-xs">
+                          {(() => {
+                            const pred = costPredictions.get(row.rowId)
+                            if (!pred)
+                              return <span className="text-slate-300">—</span>
+                            const up = pred.change > 0.01
+                            const down = pred.change < -0.01
+                            return (
+                              <div className="flex flex-col items-end leading-tight">
+                                <span className="font-medium text-slate-800">
+                                  ₹ {pred.new_cost.toFixed(2)}
+                                </span>
+                                <span
+                                  className={`text-[10px] ${
+                                    up
+                                      ? 'text-red-600'
+                                      : down
+                                      ? 'text-green-600'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  {up ? '▲' : down ? '▼' : '—'}{' '}
+                                  {Math.abs(pred.change).toFixed(2)}
+                                </span>
+                              </div>
+                            )
+                          })()}
+                        </td>
+                        <td className="px-2 py-1 text-center">
+                          <button
+                            onClick={() => removeRow(row.rowId)}
+                            className="text-red-500 hover:text-red-700"
+                          >
+                            <Trash2 className="size-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
 
@@ -1126,6 +1325,17 @@ export default function PurchaseEntryPage() {
                       {decreases} item{decreases > 1 ? 's' : ''} will decrease
                     </span>
                   )}
+                </div>
+              )
+            })()}
+
+            {(() => {
+              const pendingCount = rows.filter((r) => !r.item_id && r.sku).length
+              if (pendingCount === 0) return null
+              return (
+                <div className="mt-4 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+                  <strong>{pendingCount}</strong> new item{pendingCount === 1 ? '' : 's'} will
+                  be created when you click Save Purchase. Nothing is saved until then.
                 </div>
               )
             })()}

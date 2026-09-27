@@ -1,5 +1,6 @@
 // lib/csv-mapper.ts
 // Flexible CSV parser with user-defined column mapping.
+// v6 — uses the new object-signature generateSku from csv-parser.
 
 import {
   ParsedRow,
@@ -155,6 +156,110 @@ function extractNetwork(text: string): string | null {
   return m ? m[1].toUpperCase() : null
 }
 
+// ---------- Part code map (mirrors parser v6) ----------
+const PART_CODE_MAP: Record<string, string> = {
+  BP: 'BP',
+  'BACK PANEL': 'BP',
+  'BACK COVER': 'BP',
+  BK: 'BP',
+  'BACK PANEL WITH LENS': 'BP',
+
+  FH: 'FH',
+  'FULL HOUSING': 'FH',
+
+  MF: 'MF',
+  'MIDDLE FRAME': 'MF',
+  MD: 'MF',
+  MIDDLE: 'MF',
+
+  MFF: 'MFF',
+  'MIDDLE FRAME WITH FLEX': 'MFF',
+
+  LCD: 'LCD',
+  'LCD FLEX': 'LCD',
+
+  LCDCON: 'LCDCON',
+  'LCD CONNECTOR': 'LCDCON',
+  'LCD CONN': 'LCDCON',
+  'LCD CONN.': 'LCDCON',
+
+  BATCON: 'BATCON',
+  'BATTERY CONNECTOR': 'BATCON',
+  'BATTERY CONN': 'BATCON',
+  'BATTERY CONN.': 'BATCON',
+  'B/C': 'BATCON',
+
+  BOARDCONN: 'BOARDCONN',
+  'BOARD CONN': 'BOARDCONN',
+  'BOARD CONN.': 'BOARDCONN',
+
+  SENSORCONN: 'SENSORCONN',
+  'SENSOR CONN': 'SENSORCONN',
+  'ON OFF SENSOR CONN': 'SENSORCONN',
+
+  ONOFF: 'ONOFF',
+  'ON OFF FLEX': 'ONOFF',
+  'ON OFF SWITCH': 'ONOFF',
+
+  VOL: 'VOL',
+  'VOL FLEX': 'VOL',
+  'VOLUME FLEX': 'VOL',
+
+  CCFLEX: 'CCFLEX',
+  'CC FLEX': 'CCFLEX',
+  'CHARGING FLEX': 'CCFLEX',
+
+  RB: 'RB',
+  'RINGER BOX': 'RB',
+  RINGER: 'RB',
+
+  SPK: 'SPK',
+  SPEAKER: 'SPK',
+
+  SPKJ: 'SPKJ',
+  'SPEAKER JALI': 'SPKJ',
+  'SPEAKER FLEX': 'SPKJ',
+  'SPK FLEX': 'SPKJ',
+
+  CG: 'CG',
+  'CAMERA GLASS': 'CG',
+
+  CL: 'CL',
+  'CAMERA LENS': 'CL',
+
+  CAM: 'CAM',
+  CAMERA: 'CAM',
+
+  SIMTRAY: 'SIMTRAY',
+  'SIM TRAY': 'SIMTRAY',
+  'SIM TRY': 'SIMTRAY',
+  'OUT SIM TRY': 'SIMTRAY',
+  'OUT SIM TRAY': 'SIMTRAY',
+
+  GASKIT: 'GASKIT',
+  'GAS KIT': 'GASKIT',
+
+  OUTKEY: 'OUTKEY',
+  'OUT KEY': 'OUTKEY',
+
+  MIC: 'MIC',
+  'CHINA MIC': 'MIC',
+
+  VIB: 'VIB',
+  VIBRATOR: 'VIB',
+
+  ANT: 'ANT',
+  ANTENNA: 'ANT',
+
+  CHG: 'CHG',
+}
+
+function normalizePartCode(raw: string | null): string | null {
+  if (!raw) return null
+  const upper = raw.toUpperCase().trim().replace(/\.$/, '')
+  return PART_CODE_MAP[upper] || upper
+}
+
 // ---------- Parse description into brand + model ----------
 function parseDescription(
   description: string,
@@ -174,6 +279,7 @@ function parseDescription(
   noNet = noNet.replace(/\((\d{4})\)/g, ' $1 ')
   noNet = noNet.replace(/[()]/g, ' ')
   noNet = noNet.replace(/\+/g, ' PLUS ')
+  noNet = noNet.replace(/[-_/]/g, ' ')
 
   const words = noNet.split(/\s+/).filter(Boolean)
   if (words.length === 0) return { brandCode: null, modelName: null, network }
@@ -197,28 +303,60 @@ function parseDescription(
   return { brandCode, modelName: modelWords.join(' ') || null, network }
 }
 
-// ---------- Part type phrases ----------
+// ---------- Part type phrases (longest-first) ----------
 const PART_TYPE_PHRASES = [
   'MIDDLE FRAME WITH FLEX',
-  'MIDDLE FRAME',
-  'BACK PANEL',
-  'FULL HOUSING',
-  'LCD FLEX',
-  'ON OFF FLEX',
-  'VOL FLEX',
-  'RINGER BOX',
-  'CAMERA GLASS',
-  'CHARGING FLEX',
-  'SPEAKER JALI',
-  'SPEAKER',
-  'LCD CONNECTOR',
+  'ON OFF SENSOR CONN',
   'BATTERY CONNECTOR',
+  'BATTERY CONN.',
+  'BATTERY CONN',
+  'BOARD CONN.',
+  'BOARD CONN',
+  'LCD CONNECTOR',
+  'LCD CONN.',
+  'LCD CONN',
+  'ON OFF SWITCH',
+  'ON OFF FLEX',
+  'OUT SIM TRAY',
+  'OUT SIM TRY',
+  'SIM TRAY',
+  'SIM TRY',
+  'SPEAKER JALI',
+  'SPEAKER FLEX',
+  'SPK FLEX',
+  'SPEAKER',
+  'CAMERA GLASS',
   'CAMERA LENS',
   'CAMERA FLEX',
-  'SIM TRAY',
+  'CHARGING FLEX',
+  'CC FLEX',
+  'MIDDLE FRAME',
+  'BACK PANEL',
+  'BACK PANLE',
+  'BACK PANAL',
+  'BACK PANNEL',
+  'BACKPANEL',
+  'BACK COVER',
+  'FULL HOUSING',
+  'LCD FLEX',
+  'RINGER BOX',
+  'RINGER',
+  'VOLUME FLEX',
+  'VOL FLEX',
+  'GAS KIT',
+  'OUT KEY',
   'VIBRATOR',
   'ANTENNA',
+  'B/C',
   'MIC',
+  'BP',
+  'FH',
+  'MF',
+  'MD',
+  'BK',
+  'LCD',
+  'RB',
+  'SPK',
 ]
 
 function extractPartFromDescription(desc: string): {
@@ -227,9 +365,11 @@ function extractPartFromDescription(desc: string): {
 } {
   const upper = desc.toUpperCase()
   for (const phrase of PART_TYPE_PHRASES) {
-    if (upper.includes(phrase)) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i')
+    if (re.test(upper)) {
       const cleaned = desc
-        .replace(new RegExp(phrase, 'gi'), '')
+        .replace(new RegExp(escaped, 'gi'), ' ')
         .replace(/\s+/g, ' ')
         .trim()
       return { partText: phrase, cleanedDesc: cleaned }
@@ -251,9 +391,8 @@ function extractQuality(desc: string): {
     return { quality: '100 OG', cleanedDesc: cleaned }
   }
 
-  if (/\bCARE\s*OG\b/i.test(upper) || /\bCARE\b/i.test(upper)) {
+  if (/\bCARE\s*OG\b/i.test(upper)) {
     cleaned = cleaned.replace(/\bCARE\s*OG\b/gi, ' ')
-    cleaned = cleaned.replace(/\bCARE\b/gi, ' ')
     return { quality: 'Care OG', cleanedDesc: cleaned }
   }
 
@@ -271,48 +410,122 @@ function extractQuality(desc: string): {
   return { quality: 'Normal', cleanedDesc: cleaned }
 }
 
-// ---------- Extract variant (year-based) ----------
-function extractVariant(desc: string): {
+// ---------- Extract variant, year, flag, network from brackets/braces ----------
+const FLAG_MAP: Record<string, string> = {
+  WL: 'WL',
+  'W/L': 'WL',
+  'WITH LENS': 'WL',
+  'WITH LOGO': 'WL',
+  FLEX: 'FLEX',
+  'ON OFF': 'ONOFF',
+  ONOFF: 'ONOFF',
+  SET: 'SET',
+  FRONT: 'FRONT',
+  BACK: 'BACK',
+  ONLY: 'ONLY',
+  'W/C': 'WC',
+  WC: 'WC',
+  'W/CL': 'WCL',
+  WCL: 'WCL',
+}
+
+function extractMarkers(desc: string): {
   variant: string | null
-  yearForSku: string | null
+  year: string | null
+  flag: string | null
+  networkFromMarker: string | null
   cleanedDesc: string
 } {
   const notes: string[] = []
-  const bracketRe = /\[([^\]]+)\]/g
+  const re = /[\[{]([^\]}]+)[\]}]/g
   let m: RegExpExecArray | null
-  while ((m = bracketRe.exec(desc)) !== null) {
+  while ((m = re.exec(desc)) !== null) {
     notes.push(m[1].trim())
   }
 
-  let cleaned = desc.replace(/\[[^\]]*\]/g, ' ')
+  let cleaned = desc.replace(/[\[{][^\]}]*[\]}]/g, ' ')
 
   let variant: string | null = null
-  let yearForSku: string | null = null
+  let year: string | null = null
+  let flag: string | null = null
+  let networkFromMarker: string | null = null
 
   for (const note of notes) {
-    const yearMatch = note.match(/\b(19|20)\d{2}\b/)
-    if (yearMatch) {
-      variant = note
-      yearForSku = yearMatch[0]
-      break
+    const upper = note.toUpperCase().trim()
+
+    // Network only
+    if (/^(4G|5G)$/.test(upper)) {
+      if (!networkFromMarker) networkFromMarker = upper
+      continue
     }
+
+    // Year
+    if (/^(19|20)\d{2}$/.test(upper)) {
+      if (!year) year = upper
+      continue
+    }
+
+    // Flag
+    if (FLAG_MAP[upper]) {
+      if (!flag) flag = FLAG_MAP[upper]
+      continue
+    }
+
+    // Variant
+    if (!variant) variant = upper.replace(/\.$/, '')
   }
 
   cleaned = cleaned.replace(/\s+/g, ' ').trim()
-  return { variant, yearForSku, cleanedDesc: cleaned }
+  return { variant, year, flag, networkFromMarker, cleanedDesc: cleaned }
 }
 
 // ---------- Clean leftover supplier notes ----------
 function cleanSupplierNotes(desc: string): string {
   let cleaned = desc
   cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
+  cleaned = cleaned.replace(/\{[^}]*\}/g, ' ')
   cleaned = cleaned.replace(/\([^)]*\)/g, ' ')
   cleaned = cleaned.replace(
-    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC)\b/gi,
+    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE|C\+)\b/gi,
     ' '
   )
   cleaned = cleaned.replace(/\s+/g, ' ').trim()
   return cleaned
+}
+
+// ---------- Extract color from (COLOR) ----------
+function extractColor(desc: string): {
+  color: string | null
+  cleanedDesc: string
+} {
+  const found: string[] = []
+  const re = /\(([^)]+)\)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(desc)) !== null) {
+    const content = m[1].trim()
+    if (
+      content.length > 2 &&
+      /[A-Z]/i.test(content) &&
+      !/^[0-9]/.test(content) &&
+      !/(^|\s)(OG|CARE|100%|MAIN|OCTA|FLEX|SET|ON OFF)(\s|$)/i.test(content)
+    ) {
+      found.push(content)
+    }
+  }
+
+  const cleaned = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
+  return { color: found[0] || null, cleanedDesc: cleaned }
+}
+
+// ---------- Normalize model name ----------
+function normalizeModelName(model: string | null): string | null {
+  if (!model) return null
+  const cleaned = model
+    .toUpperCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^A-Z0-9\s]/g, '')
+    .trim()
+  return cleaned || null
 }
 
 // ---------- Main apply mapping ----------
@@ -358,10 +571,12 @@ export function applyMapping(
     let brandCode: string | null = null
     let modelName: string | null = null
     let network: string | null = null
+    let year: string | null = null
+    let variant: string | null = null
     let partCode: string | null = null
     let quality: Quality = 'Normal'
-    let variant: string | null = null
-    let yearForSku: string | null = null
+    let flag: string | null = null
+    let color: string | null = null
     let rawDescription = ''
     let rawType = ''
 
@@ -370,11 +585,18 @@ export function applyMapping(
       const desc = row[roleToCol.description] || ''
       rawDescription = desc
 
-      // Extract variant FIRST (before other removals)
-      const v = extractVariant(desc)
-      variant = v.variant
-      yearForSku = v.yearForSku
-      let working = v.cleanedDesc
+      // Extract color first (from parentheses)
+      const c = extractColor(desc)
+      color = c.color
+      let working = c.cleanedDesc
+
+      // Extract markers ([...] and {...})
+      const mk = extractMarkers(working)
+      variant = mk.variant
+      year = mk.year
+      flag = mk.flag
+      if (mk.networkFromMarker) network = mk.networkFromMarker
+      working = mk.cleanedDesc
 
       // Extract quality
       const q = extractQuality(working)
@@ -382,12 +604,24 @@ export function applyMapping(
       working = q.cleanedDesc
 
       // Extract part type
-      const extracted = extractPartFromDescription(working)
-      if (extracted.partText) {
-        rawType = extracted.partText
-        partCode =
-          aliases.partAliases[extracted.partText.toUpperCase()] || null
-        working = extracted.cleanedDesc
+      if (roleToCol.part_type !== undefined) {
+        // explicit part column
+        const rawPart = (row[roleToCol.part_type] || '').toUpperCase().trim()
+        if (rawPart) {
+          rawType = rawPart
+          partCode =
+            aliases.partAliases[rawPart] || normalizePartCode(rawPart)
+        }
+      }
+      if (!partCode) {
+        const extracted = extractPartFromDescription(working)
+        if (extracted.partText) {
+          rawType = extracted.partText
+          partCode =
+            aliases.partAliases[extracted.partText.toUpperCase()] ||
+            normalizePartCode(extracted.partText)
+          working = extracted.cleanedDesc
+        }
       }
 
       // Clean remaining notes
@@ -395,8 +629,8 @@ export function applyMapping(
 
       const parsed = parseDescription(working, aliases)
       brandCode = parsed.brandCode
-      modelName = parsed.modelName
-      network = parsed.network
+      modelName = normalizeModelName(parsed.modelName)
+      if (parsed.network && !network) network = parsed.network
     } else {
       // Separate columns: Brand, Model, Part Type
       const brandRaw =
@@ -415,30 +649,47 @@ export function applyMapping(
 
       network = extractNetwork(modelRaw)
       brandCode = aliases.brandAliases[brandRaw] || brandRaw || null
-      modelName = modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim() || null
-      partCode = aliases.partAliases[partRaw] || null
+      modelName = normalizeModelName(
+        modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim()
+      )
+      partCode = aliases.partAliases[partRaw] || normalizePartCode(partRaw)
     }
 
-    if (!brandCode || !modelName) continue
+    // Fallback: no model but brand+part exist → UNKNOWN
+    if (brandCode && !modelName && partCode) {
+      modelName = 'UNKNOWN'
+    }
 
-    const sku = generateSku(
+    const sku = generateSku({
       brandCode,
       modelName,
+      variant,
+      year,
       partCode,
       network,
       quality,
-      yearForSku
-    )
+      flag,
+      color,
+    })
 
     let matchedItemId: number | null = null
     let matchedItemSku: string | null = null
     let status: 'matched' | 'new' | 'error' = 'new'
     let errorMessage: string | undefined
 
-    if (!partCode) {
+    if (!brandCode) {
       status = 'error'
-      errorMessage = `Unknown part type: "${rawType}"`
-    } else if (sku && itemBySku[sku.toUpperCase()]) {
+      errorMessage = `Unknown brand in: "${rawDescription}"`
+    } else if (!modelName) {
+      status = 'error'
+      errorMessage = `No model. brand=${brandCode} raw="${rawDescription}"`
+    } else if (!partCode) {
+      status = 'error'
+      errorMessage = `Unknown part. rawType="${rawType}" raw="${rawDescription}"`
+    } else if (!sku) {
+      status = 'error'
+      errorMessage = `Could not build SKU for "${rawDescription}"`
+    } else if (itemBySku[sku.toUpperCase()]) {
       const found = itemBySku[sku.toUpperCase()]
       matchedItemId = found.item_id
       matchedItemSku = found.sku
@@ -454,10 +705,12 @@ export function applyMapping(
       brandCode,
       modelName,
       network,
+      year,
+      variant,
       partCode,
       quality,
-      variant,
-      yearForSku,
+      flag,
+      color,
       generatedSku: sku,
       matchedItemId,
       matchedItemSku,
