@@ -20,7 +20,7 @@ type SmartComboboxProps = {
   inputDataAttr?: string
   focusNextOnSelect?: boolean
   nextFieldSelector?: string
-  inputRef?: React.RefObject<HTMLInputElement | null>   // ✅ NEW
+  inputRef?: React.RefObject<HTMLInputElement | null>
 }
 
 function splitLabel(label: string): {
@@ -72,14 +72,14 @@ export function SmartCombobox({
   inputDataAttr,
   focusNextOnSelect = false,
   nextFieldSelector,
-  inputRef: externalInputRef,        // ✅ NEW
+  inputRef: externalInputRef,
 }: SmartComboboxProps) {
   const [open, setOpen] = React.useState(false)
   const [inputText, setInputText] = React.useState('')
   const [hovered, setHovered] = React.useState(false)
   const wrapperRef = React.useRef<HTMLDivElement>(null)
-  const internalRef = React.useRef<HTMLInputElement>(null)  // ✅ renamed
-  const inputRef = externalInputRef ?? internalRef          // ✅ pick one
+  const internalRef = React.useRef<HTMLInputElement>(null)
+  const inputRef = externalInputRef ?? internalRef
 
   const stringOptions: ComboOption[] = React.useMemo(
     () => options.map((o) => ({ ...o, value: String(o.value) })),
@@ -110,10 +110,23 @@ export function SmartCombobox({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
+  // ✅ Prefix-first search: matches at the start of the SKU rank above
+  // substring matches. So "SAM" shows SAM-... items first, INF-SAMRT last.
   const trimmed = inputText.trim().toLowerCase()
   const filteredOptions = React.useMemo(() => {
     if (!trimmed) return stringOptions
-    return stringOptions.filter((o) => o.label.toLowerCase().includes(trimmed))
+
+    const prefix: ComboOption[] = []
+    const substring: ComboOption[] = []
+    for (const o of stringOptions) {
+      const lower = o.label.toLowerCase()
+      if (lower.startsWith(trimmed)) {
+        prefix.push(o)
+      } else if (lower.includes(trimmed)) {
+        substring.push(o)
+      }
+    }
+    return [...prefix, ...substring]
   }, [stringOptions, trimmed])
 
   const exactMatch = stringOptions.some(

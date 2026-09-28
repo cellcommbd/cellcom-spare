@@ -206,6 +206,7 @@ const PART_TYPE_PHRASES: string[] = [
   'CHARGING FLEX',
   'CC FLEX',
   'MIDDLE FRAME',
+  'BACK GLASS',
   'BACK PANEL',
   'BACK PANLE',
   'BACK PANAL',
@@ -294,6 +295,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bBORD\b/gi, 'BOARD')
     .replace(/\bOUT\s+SIM\s+TRY\b/gi, 'OUT SIM TRAY')
     .replace(/\bSIM\s+TRY\b/gi, 'SIM TRAY')
+    .replace(/\bHOUSIG\b/gi, 'HOUSING')
 }
 
 // ============================================================
@@ -518,14 +520,28 @@ function extractBrandAndModel(
     return { brandCode: null, modelName: null, network }
   }
 
-  const modelWords = words.slice(matchedWords)
+  let modelWords = words.slice(matchedWords)
+
+  // If the model starts with ANOTHER brand name, that brand wins.
+  // Example: "OPPO REALME 9i" → brand = RM, model = "9i"
+  // Example: "OPPO A54" → brand = OP, model = "A54" (A54 not a brand)
+  while (modelWords.length > 0) {
+    const nextWord = modelWords[0].toUpperCase()
+    const nextBrand = aliases.brandAliases[nextWord]
+    if (nextBrand && nextBrand !== brandCode) {
+      brandCode = nextBrand
+      modelWords = modelWords.slice(1)
+    } else {
+      break
+    }
+  }
+
   return {
     brandCode,
     modelName: modelWords.join(' ') || null,
     network,
   }
 }
-
 // ============================================================
 // Model normalizer — clean whitespace, uppercase, remove null tokens
 // ============================================================

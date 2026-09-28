@@ -109,7 +109,7 @@ export default function SalesEntryPage() {
         .select('*')
         .eq('party_type', 'Customer')
         .order('party_name'),
-      supabase.from('items').select('*').order('sku'),
+      supabase.from('items').select('*').order('sku').range(0,9999),
       supabase
         .from('sales')
         .select('*')
