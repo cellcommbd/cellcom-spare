@@ -663,17 +663,38 @@ export default function PurchaseEntryPage() {
       })
     }
 
-    // Dedupe by SKU
-    const seenSkus = new Set<string>()
-    const uniqueItemInserts = itemInserts.filter((it) => {
-      if (seenSkus.has(it.sku)) return false
-      seenSkus.add(it.sku)
-      return true
-    })
+  // Dedupe within batch
+const seenSkus = new Set<string>()
+const batchUnique = itemInserts.filter((it) => {
+  if (seenSkus.has(it.sku)) return false
+  seenSkus.add(it.sku)
+  return true
+})
 
-    let createdItemIds: number[] = []
+// Check which SKUs already exist in DB and reuse their IDs
+const uniqueItemInserts: typeof itemInserts = []
+if (batchUnique.length > 0) {
+  const skusToCheck = batchUnique.map((it) => it.sku)
+  const { data: existingRows } = await supabase
+    .from('items')
+    .select('item_id, sku')
+    .in('sku', skusToCheck)
 
-    if (uniqueItemInserts.length > 0) {
+  const existingBySku = new Map<string, number>()
+  for (const row of existingRows || []) {
+    existingBySku.set(row.sku, row.item_id)
+    skuToCreatedId[row.sku] = row.item_id
+  }
+
+  for (const it of batchUnique) {
+    if (existingBySku.has(it.sku)) continue // reuse, don't insert
+    uniqueItemInserts.push(it)
+  }
+}
+
+let createdItemIds: number[] = []
+
+if (uniqueItemInserts.length > 0) {
       const { data, error } = await supabase
         .from('items')
         .insert(uniqueItemInserts)
