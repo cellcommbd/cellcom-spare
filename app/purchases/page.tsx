@@ -27,6 +27,9 @@ type Item = {
   sku: string
   current_stock: number
   cost_price: number
+  selling_price: number
+  quality?: string | null
+  variant?: string | null
 }
 
 type PurchaseRow = {
@@ -91,9 +94,13 @@ function emptyRow(rowId: number): PurchaseRow {
 
 export default function PurchaseEntryPage() {
   const [suppliers, setSuppliers] = useState<Party[]>([])
-  const [items, setItems] = useState<Item[]>([])
   const [recentPurchases, setRecentPurchases] = useState<PurchaseHeader[]>([])
   const [recentLineCounts, setRecentLineCounts] = useState<Record<number, number>>({})
+
+  // Per-row search results cache (rowId -> items)
+  const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>(
+    {}
+  )
 
   const [pickedSupplier, setPickedSupplier] = useState<PickedSupplier>({
     id: null,
@@ -153,13 +160,13 @@ export default function PurchaseEntryPage() {
   }, [pendingFocusRowId, rows])
 
   async function loadData() {
-    const [p, i, r] = await Promise.all([
+    // No longer fetching all items — search happens on demand per row.
+    const [p, r] = await Promise.all([
       supabase
         .from('parties')
         .select('*')
         .eq('party_type', 'Supplier')
         .order('party_name'),
-      supabase.from('items').select('*').order('sku'),
       supabase
         .from('purchases')
         .select('*')
@@ -167,7 +174,6 @@ export default function PurchaseEntryPage() {
         .limit(10),
     ])
     setSuppliers(p.data || [])
-    setItems(i.data || [])
     setRecentPurchases(r.data || [])
 
     if (r.data && r.data.length > 0) {
@@ -191,14 +197,40 @@ export default function PurchaseEntryPage() {
     label: s.party_name,
   }))
 
-  const itemOptions = useMemo(
-    () =>
-      items.map((it) => ({
-        value: it.item_id,
-        label: `${it.sku}  ·  stock: ${it.current_stock}  ·  cp: ₹${Number(it.cost_price).toFixed(2)}`,
-      })),
-    [items]
-  )
+  // Server-side item search per row — prefix matches first
+  async function searchItems(rowId: number, query: string) {
+    if (!query || query.trim().length < 2) {
+      setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
+      return
+    }
+    const q = query.trim().toLowerCase()
+
+    const { data, error } = await supabase
+      .from('items')
+      .select(
+        'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
+      )
+      .ilike('sku', `%${q}%`)
+      .order('sku')
+      .limit(100)
+
+    if (error) {
+      console.error('searchItems error:', error)
+      setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
+      return
+    }
+
+    const items = (data as Item[]) || []
+    const prefixMatches: Item[] = []
+    const otherMatches: Item[] = []
+    for (const it of items) {
+      if (it.sku.toLowerCase().startsWith(q)) prefixMatches.push(it)
+      else otherMatches.push(it)
+    }
+    const sorted = [...prefixMatches, ...otherMatches].slice(0, 50)
+
+    setRowItemOptions((prev) => ({ ...prev, [rowId]: sorted }))
+  }
 
   function addRow(): number {
     const newId = nextRowId
@@ -214,6 +246,11 @@ export default function PurchaseEntryPage() {
       return
     }
     setRows(rows.filter((r) => r.rowId !== rowId))
+    setRowItemOptions((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
   }
 
   function updateRow(rowId: number, patch: Partial<PurchaseRow>) {
@@ -228,7 +265,8 @@ export default function PurchaseEntryPage() {
   }
 
   function handleItemSelect(rowId: number, itemId: number) {
-    const item = items.find((i) => i.item_id === itemId)
+    const rowOptions = rowItemOptions[rowId] || []
+    const item = rowOptions.find((i) => i.item_id === itemId)
     if (!item) return
     setRows((prev) =>
       prev.map((r) => {
@@ -282,7 +320,7 @@ export default function PurchaseEntryPage() {
   }
 
   // ============================================================
-  // IMPORT — fill grid only, no DB writes
+  // IMPORT — fill grid only. Does NOT touch the DB.
   // ============================================================
   async function handleCSVImport(
     matched: ParsedRow[],
@@ -417,7 +455,10 @@ export default function PurchaseEntryPage() {
 
     for (const r of validRows) {
       if (!r.item_id) continue
-      const item = items.find((i) => i.item_id === r.item_id)
+      // We don't have the item loaded, so skip prediction when not searched
+      // (server-side search means we don't have cost_price for every row)
+      const rowOptions = rowItemOptions[r.rowId] || []
+      const item = rowOptions.find((i) => i.item_id === r.item_id)
       if (!item) continue
 
       const share =
@@ -445,7 +486,7 @@ export default function PurchaseEntryPage() {
     }
 
     return map
-  }, [rows, items, freightNum])
+  }, [rows, rowItemOptions, freightNum])
 
   async function ensureSupplier(): Promise<number | null> {
     if (pickedSupplier.isNew && pickedSupplier.label) {
@@ -663,38 +704,38 @@ export default function PurchaseEntryPage() {
       })
     }
 
-  // Dedupe within batch
-const seenSkus = new Set<string>()
-const batchUnique = itemInserts.filter((it) => {
-  if (seenSkus.has(it.sku)) return false
-  seenSkus.add(it.sku)
-  return true
-})
+    // Dedupe within batch
+    const seenSkus = new Set<string>()
+    const batchUnique = itemInserts.filter((it) => {
+      if (seenSkus.has(it.sku)) return false
+      seenSkus.add(it.sku)
+      return true
+    })
 
-// Check which SKUs already exist in DB and reuse their IDs
-const uniqueItemInserts: typeof itemInserts = []
-if (batchUnique.length > 0) {
-  const skusToCheck = batchUnique.map((it) => it.sku)
-  const { data: existingRows } = await supabase
-    .from('items')
-    .select('item_id, sku')
-    .in('sku', skusToCheck)
+    // Check which SKUs already exist in DB and reuse their IDs
+    const uniqueItemInserts: typeof itemInserts = []
+    if (batchUnique.length > 0) {
+      const skusToCheck = batchUnique.map((it) => it.sku)
+      const { data: existingRows } = await supabase
+        .from('items')
+        .select('item_id, sku')
+        .in('sku', skusToCheck)
 
-  const existingBySku = new Map<string, number>()
-  for (const row of existingRows || []) {
-    existingBySku.set(row.sku, row.item_id)
-    skuToCreatedId[row.sku] = row.item_id
-  }
+      const existingBySku = new Map<string, number>()
+      for (const row of existingRows || []) {
+        existingBySku.set(row.sku, row.item_id)
+        skuToCreatedId[row.sku] = row.item_id
+      }
 
-  for (const it of batchUnique) {
-    if (existingBySku.has(it.sku)) continue // reuse, don't insert
-    uniqueItemInserts.push(it)
-  }
-}
+      for (const it of batchUnique) {
+        if (existingBySku.has(it.sku)) continue
+        uniqueItemInserts.push(it)
+      }
+    }
 
-let createdItemIds: number[] = []
+    let createdItemIds: number[] = []
 
-if (uniqueItemInserts.length > 0) {
+    if (uniqueItemInserts.length > 0) {
       const { data, error } = await supabase
         .from('items')
         .insert(uniqueItemInserts)
@@ -813,6 +854,7 @@ if (uniqueItemInserts.length > 0) {
     setFreight('0')
     setCashPaid('0')
     setCashPaidTouched(false)
+    setRowItemOptions({})
   }
 
   async function confirmDeletePurchase() {
@@ -836,266 +878,285 @@ if (uniqueItemInserts.length > 0) {
   const supplierName = (id: number) =>
     suppliers.find((s) => s.party_id === id)?.party_name || '—'
 
-  // ------ END OF PART 1 ------
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-6xl mx-auto">
+  function itemLabel(it: Item): string {
+  const parts = [
+    it.sku,
+    `stock ${it.current_stock}`,
+    `cp ₹${Number(it.cost_price).toFixed(0)}`,
+    it.quality && it.quality !== 'Normal' ? it.quality : null,
+    it.variant || null,
+  ].filter(Boolean)
+  return parts.join(' · ')
+}
 
-        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+function itemOptionsFor(rowId: number) {
+  return (rowItemOptions[rowId] || []).map((it) => ({
+    value: it.item_id,
+    label: itemLabel(it),
+  }))
+}
+
+return (
+  <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
+    <div className="max-w-6xl mx-auto">
+
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
+            Purchase Entry
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 mt-1">
+            Enter supplier invoices. Freight auto-distributed. Stock & cost update automatically.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowImport(true)}
+          disabled={importing}
+          className="h-11 sm:h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
+        >
+          <Upload className="size-4" />
+          {importing ? 'Importing...' : 'Import CSV'}
+        </button>
+      </div>
+
+      {/* MOBILE VIEW */}
+      <div className="md:hidden space-y-4 mb-6">
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-4">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
-              Purchase Entry
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Enter supplier invoices. Freight auto-distributed. Stock & cost update automatically.
-            </p>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Supplier
+            </label>
+            <SmartCombobox
+              options={supplierOptions}
+              value={
+                pickedSupplier.id
+                  ? String(pickedSupplier.id)
+                  : pickedSupplier.isNew
+                  ? `__new__${pickedSupplier.label}`
+                  : null
+              }
+              onValueChange={(v: string, label: string, isNew: boolean) => {
+                setPickedSupplier({
+                  id: isNew ? null : Number(v),
+                  label,
+                  isNew,
+                })
+              }}
+              placeholder="Select or type supplier..."
+              focusNextOnSelect={true}
+            />
           </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Invoice No
+            </label>
+            <input
+              type="text"
+              value={invoiceNo}
+              onChange={(e) => setInvoiceNo(e.target.value)}
+              placeholder="e.g. 12345"
+              className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Purchase Date
+            </label>
+            <input
+              type="date"
+              value={purchaseDate}
+              onChange={(e) => setPurchaseDate(e.target.value)}
+              className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          {rows.map((row, idx) => {
+            const pred = costPredictions.get(row.rowId)
+            const isPending = !row.item_id && row.sku
+            return (
+              <div
+                key={row.rowId}
+                className={`bg-white border rounded-xl p-3 shadow-sm ${
+                  isPending ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200'
+                }`}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-semibold text-slate-500">
+                    Item #{idx + 1}
+                    {isPending && (
+                      <span className="ml-2 text-amber-700">
+                        (new — will be created on save)
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => removeRow(row.rowId)}
+                    className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+                <SmartCombobox
+                  options={itemOptionsFor(row.rowId)}
+                  value={row.item_id ? String(row.item_id) : null}
+                  onValueChange={(v: string, label: string, isNew: boolean) => {
+                    if (isNew) return
+                    handleItemSelect(row.rowId, Number(v))
+                  }}
+                  onTabKey={() => handleItemTab(row, idx)}
+                  onSearch={(q) => searchItems(row.rowId, q)}
+                  placeholder={
+                    isPending ? row.sku : 'Type 2+ letters to search SKU…'
+                  }
+                  allowCreate={false}
+                  inputDataAttr={`row-${row.rowId}`}
+                  focusNextOnSelect={true}
+                  nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
+                />
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Qty
+                    </label>
+                    <input
+                      data-qty-row={`qty-${row.rowId}`}
+                      ref={(el) => {
+                        qtyRefs.current[row.rowId] = el
+                      }}
+                      type="number"
+                      value={row.quantity || ''}
+                      onChange={(e) =>
+                        updateRow(row.rowId, {
+                          quantity: parseFloat(e.target.value) || 0,
+                        })
+                      }
+                      className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-slate-600 mb-1">
+                      Rate
+                    </label>
+                    <input
+                      type="number"
+                      value={row.rate || ''}
+                      onChange={(e) =>
+                        updateRow(row.rowId, {
+                          rate: parseFloat(e.target.value) || 0,
+                        })
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Tab') handleRateTab(row.rowId, idx, e)
+                      }}
+                      className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                  <div className="text-xs text-slate-500">
+                    {pred ? (
+                      <span
+                        className={
+                          pred.change > 0.01
+                            ? 'text-red-600'
+                            : pred.change < -0.01
+                            ? 'text-green-600'
+                            : 'text-slate-500'
+                        }
+                      >
+                        New cost: ₹{pred.new_cost.toFixed(2)}
+                      </span>
+                    ) : (
+                      'Amount'
+                    )}
+                  </div>
+                  <span className="text-base font-bold text-slate-800">
+                    ₹ {row.amount.toFixed(2)}
+                  </span>
+                </div>
+              </div>
+            )
+          })}
+
           <button
-            onClick={() => setShowImport(true)}
-            disabled={importing}
-            className="h-11 sm:h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
+            onClick={addRow}
+            className="w-full h-12 text-sm font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 flex items-center justify-center gap-1"
           >
-            <Upload className="size-4" />
-            {importing ? 'Importing...' : 'Import CSV'}
+            <Plus className="size-4" />
+            Add Item
           </button>
         </div>
 
-        {/* MOBILE VIEW */}
-        <div className="md:hidden space-y-4 mb-6">
-          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Supplier
-              </label>
-              <SmartCombobox
-                options={supplierOptions}
-                value={
-                  pickedSupplier.id
-                    ? String(pickedSupplier.id)
-                    : pickedSupplier.isNew
-                    ? `__new__${pickedSupplier.label}`
-                    : null
-                }
-                onValueChange={(v: string, label: string, isNew: boolean) => {
-                  setPickedSupplier({
-                    id: isNew ? null : Number(v),
-                    label,
-                    isNew,
-                  })
-                }}
-                placeholder="Select or type supplier..."
-                focusNextOnSelect={true}
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Invoice No
-              </label>
-              <input
-                type="text"
-                value={invoiceNo}
-                onChange={(e) => setInvoiceNo(e.target.value)}
-                placeholder="e.g. 12345"
-                className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Purchase Date
-              </label>
-              <input
-                type="date"
-                value={purchaseDate}
-                onChange={(e) => setPurchaseDate(e.target.value)}
-                className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
+          <div className="flex justify-between text-sm">
+            <span className="text-slate-600">Subtotal</span>
+            <span className="font-medium text-slate-800">
+              ₹ {subtotal.toFixed(2)}
+            </span>
           </div>
-
-          <div className="space-y-3">
-            {rows.map((row, idx) => {
-              const pred = costPredictions.get(row.rowId)
-              const isPending = !row.item_id && row.sku
-              return (
-                <div
-                  key={row.rowId}
-                  className={`bg-white border rounded-xl p-3 shadow-sm ${
-                    isPending ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-xs font-semibold text-slate-500">
-                      Item #{idx + 1}
-                      {isPending && (
-                        <span className="ml-2 text-amber-700">
-                          (new — will be created on save)
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => removeRow(row.rowId)}
-                      className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
-                    >
-                      <Trash2 className="size-4" />
-                    </button>
-                  </div>
-                  <SmartCombobox
-                    options={itemOptions}
-                    value={row.item_id ? String(row.item_id) : null}
-                    onValueChange={(v: string, label: string, isNew: boolean) => {
-                      if (isNew) return
-                      handleItemSelect(row.rowId, Number(v))
-                    }}
-                    onTabKey={() => handleItemTab(row, idx)}
-                    placeholder={isPending ? row.sku : 'Search SKU...'}
-                    allowCreate={false}
-                    inputDataAttr={`row-${row.rowId}`}
-                    focusNextOnSelect={true}
-                    nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
-                  />
-                  <div className="grid grid-cols-2 gap-3 mt-3">
-                    <div>
-                      <label className="block text-xs text-slate-600 mb-1">
-                        Qty
-                      </label>
-                      <input
-                        data-qty-row={`qty-${row.rowId}`}
-                        ref={(el) => {
-                          qtyRefs.current[row.rowId] = el
-                        }}
-                        type="number"
-                        value={row.quantity || ''}
-                        onChange={(e) =>
-                          updateRow(row.rowId, {
-                            quantity: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs text-slate-600 mb-1">
-                        Rate
-                      </label>
-                      <input
-                        type="number"
-                        value={row.rate || ''}
-                        onChange={(e) =>
-                          updateRow(row.rowId, {
-                            rate: parseFloat(e.target.value) || 0,
-                          })
-                        }
-                        onKeyDown={(e) => {
-                          if (e.key === 'Tab') handleRateTab(row.rowId, idx, e)
-                        }}
-                        className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                      />
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
-                    <div className="text-xs text-slate-500">
-                      {pred ? (
-                        <span
-                          className={
-                            pred.change > 0.01
-                              ? 'text-red-600'
-                              : pred.change < -0.01
-                              ? 'text-green-600'
-                              : 'text-slate-500'
-                          }
-                        >
-                          New cost: ₹{pred.new_cost.toFixed(2)}
-                        </span>
-                      ) : (
-                        'Amount'
-                      )}
-                    </div>
-                    <span className="text-base font-bold text-slate-800">
-                      ₹ {row.amount.toFixed(2)}
-                    </span>
-                  </div>
-                </div>
-              )
-            })}
-
-            <button
-              onClick={addRow}
-              className="w-full h-12 text-sm font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 flex items-center justify-center gap-1"
-            >
-              <Plus className="size-4" />
-              Add Item
-            </button>
+          <div>
+            <label className="block text-xs text-slate-600 mb-1">
+              Freight Charges
+            </label>
+            <input
+              ref={freightInputRef}
+              type="number"
+              value={freight}
+              onChange={(e) => setFreight(e.target.value)}
+              className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
-
-          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
-            <div className="flex justify-between text-sm">
-              <span className="text-slate-600">Subtotal</span>
-              <span className="font-medium text-slate-800">
-                ₹ {subtotal.toFixed(2)}
-              </span>
-            </div>
-            <div>
-              <label className="block text-xs text-slate-600 mb-1">
-                Freight Charges
-              </label>
-              <input
-                ref={freightInputRef}
-                type="number"
-                value={freight}
-                onChange={(e) => setFreight(e.target.value)}
-                className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="flex justify-between text-base border-t border-slate-200 pt-2">
-              <span className="font-semibold text-slate-800">Total</span>
-              <span className="font-bold text-slate-900">
-                ₹ {total.toFixed(2)}
-              </span>
-            </div>
-            <div>
-              <label className="block text-xs text-slate-600 mb-1">
-                Cash Paid Today
-              </label>
-              <input
-                type="number"
-                value={cashPaid}
-                onChange={(e) => {
-                  setCashPaid(e.target.value)
-                  setCashPaidTouched(true)
-                }}
-                className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
+          <div className="flex justify-between text-base border-t border-slate-200 pt-2">
+            <span className="font-semibold text-slate-800">Total</span>
+            <span className="font-bold text-slate-900">
+              ₹ {total.toFixed(2)}
+            </span>
           </div>
-
-          <div className="flex gap-3">
-            <button
-              id="save-purchase-btn"
-              onClick={savePurchase}
-              disabled={saving}
-              className="flex-1 h-12 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
-            >
-              <Save className="size-4" />
-              {saving ? 'Saving...' : 'Save Purchase'}
-            </button>
-            <button
-              onClick={resetForm}
-              className="h-12 px-4 text-sm text-slate-700 border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center"
-            >
-              <X className="size-4" />
-            </button>
+          <div>
+            <label className="block text-xs text-slate-600 mb-1">
+              Cash Paid Today
+            </label>
+            <input
+              type="number"
+              value={cashPaid}
+              onChange={(e) => {
+                setCashPaid(e.target.value)
+                setCashPaidTouched(true)
+              }}
+              className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
-
-          {message && (
-            <div className="text-sm text-slate-700 bg-white border border-slate-200 rounded-lg p-3">
-              {message}
-            </div>
-          )}
         </div>
 
-        {/* DESKTOP VIEW */}
+        <div className="flex gap-3">
+          <button
+            id="save-purchase-btn"
+            onClick={savePurchase}
+            disabled={saving}
+            className="flex-1 h-12 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
+          >
+            <Save className="size-4" />
+            {saving ? 'Saving...' : 'Save Purchase'}
+          </button>
+          <button
+            onClick={resetForm}
+            className="h-12 px-4 text-sm text-slate-700 border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {message && (
+          <div className="text-sm text-slate-700 bg-white border border-slate-200 rounded-lg p-3">
+            {message}
+          </div>
+        )}
+      </div>
+      {/* DESKTOP VIEW */}
         <div className="hidden md:block">
           <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6 shadow-sm">
 
@@ -1180,7 +1241,7 @@ if (uniqueItemInserts.length > 0) {
                         </td>
                         <td className="px-2 py-1">
                           <SmartCombobox
-                            options={itemOptions}
+                            options={itemOptionsFor(row.rowId)}
                             value={row.item_id ? String(row.item_id) : null}
                             onValueChange={(
                               v: string,
@@ -1191,7 +1252,12 @@ if (uniqueItemInserts.length > 0) {
                               handleItemSelect(row.rowId, Number(v))
                             }}
                             onTabKey={() => handleItemTab(row, idx)}
-                            placeholder={isPending ? `${row.sku} (new)` : 'Search SKU...'}
+                            onSearch={(q) => searchItems(row.rowId, q)}
+                            placeholder={
+                              isPending
+                                ? `${row.sku} (new)`
+                                : 'Type 2+ letters to search SKU…'
+                            }
                             allowCreate={false}
                             inputDataAttr={`row-${row.rowId}`}
                             focusNextOnSelect={true}
