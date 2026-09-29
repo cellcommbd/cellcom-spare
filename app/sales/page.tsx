@@ -19,6 +19,9 @@ type Item = {
   current_stock: number
   cost_price: number
   selling_price: number
+  quality?: string | null
+  variant?: string | null
+  network?: string | null
 }
 
 type SaleRow = {
@@ -28,6 +31,7 @@ type SaleRow = {
   quantity: number
   rate: number
   amount: number
+  cost_price?: number
 }
 
 type SaleHeader = {
@@ -47,9 +51,13 @@ type PickedShop = {
 
 export default function SalesEntryPage() {
   const [shops, setShops] = useState<Party[]>([])
-  const [items, setItems] = useState<Item[]>([])
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
   const [isOwner, setIsOwner] = useState(false)
+
+  // Per-row search results cache (rowId -> items)
+  const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>(
+    {}
+  )
 
   const [pickedShop, setPickedShop] = useState<PickedShop>({
     id: null,
@@ -65,7 +73,6 @@ export default function SalesEntryPage() {
   ])
   const [nextRowId, setNextRowId] = useState(2)
 
-  // Focus the newly-added row after render
   const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(
     null
   )
@@ -103,13 +110,13 @@ export default function SalesEntryPage() {
 
   async function loadData() {
     const today = new Date().toISOString().slice(0, 10)
-    const [s, i, t] = await Promise.all([
+    // No longer fetching all items — search happens on demand per row.
+    const [s, t] = await Promise.all([
       supabase
         .from('parties')
         .select('*')
         .eq('party_type', 'Customer')
         .order('party_name'),
-      supabase.from('items').select('*').order('sku').range(0,9999),
       supabase
         .from('sales')
         .select('*')
@@ -117,7 +124,6 @@ export default function SalesEntryPage() {
         .order('sale_id', { ascending: false }),
     ])
     setShops(s.data || [])
-    setItems(i.data || [])
     setTodaySales(t.data || [])
   }
 
@@ -126,13 +132,48 @@ export default function SalesEntryPage() {
     label: s.party_name,
   }))
 
-  const itemOptions = items.map((it) => ({
-    value: it.item_id,
-    label: `${it.sku}  ·  stock: ${it.current_stock}  ·  sp: ₹${Number(it.selling_price).toFixed(2)}`,
-  }))
-
   const prevBalance =
     shops.find((s) => s.party_id === pickedShop.id)?.current_balance || 0
+
+  // Server-side item search per row
+ async function searchItems(rowId: number, query: string) {
+  if (!query || query.trim().length < 2) {
+    setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
+    return
+  }
+  const q = query.trim().toLowerCase()
+
+  // Fetch a wider set (100) so we can sort prefix-first in JS
+  const { data, error } = await supabase
+    .from('items')
+    .select(
+      'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
+    )
+    .ilike('sku', `%${q}%`)
+    .order('sku')
+    .limit(100)
+
+  if (error) {
+    console.error('searchItems error:', error)
+    setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
+    return
+  }
+
+  // Sort: prefix matches first, then substring matches. Keep alphabetical within each group.
+  const items = (data as Item[]) || []
+  const prefixMatches: Item[] = []
+  const otherMatches: Item[] = []
+  for (const it of items) {
+    if (it.sku.toLowerCase().startsWith(q)) prefixMatches.push(it)
+    else otherMatches.push(it)
+  }
+  const sorted = [...prefixMatches, ...otherMatches].slice(0, 50)
+
+  setRowItemOptions((prev) => ({
+    ...prev,
+    [rowId]: sorted,
+  }))
+}
 
   function addRow(): number {
     const newId = nextRowId
@@ -153,6 +194,11 @@ export default function SalesEntryPage() {
       return
     }
     setRows(rows.filter((r) => r.rowId !== rowId))
+    setRowItemOptions((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
   }
 
   function updateRow(rowId: number, patch: Partial<SaleRow>) {
@@ -167,7 +213,8 @@ export default function SalesEntryPage() {
   }
 
   function handleItemSelect(rowId: number, itemId: number) {
-    const item = items.find((i) => i.item_id === itemId)
+    const rowOptions = rowItemOptions[rowId] || []
+    const item = rowOptions.find((i) => i.item_id === itemId)
     if (!item) return
 
     setRows((prev) =>
@@ -179,6 +226,7 @@ export default function SalesEntryPage() {
           sku: item.sku,
           rate: item.selling_price,
           amount: Number(r.quantity) * Number(item.selling_price),
+          cost_price: item.cost_price,
         }
       })
     )
@@ -279,17 +327,14 @@ export default function SalesEntryPage() {
 
     const saleId = saleData.sale_id
 
-    const lineInserts = validRows.map((r) => {
-      const item = items.find((i) => i.item_id === r.item_id)
-      return {
-        sale_id: saleId,
-        item_id: r.item_id,
-        quantity: r.quantity,
-        rate: r.rate,
-        amount: Number((r.rate * r.quantity).toFixed(2)),
-        cost_at_sale: item ? item.cost_price : 0,
-      }
-    })
+    const lineInserts = validRows.map((r) => ({
+      sale_id: saleId,
+      item_id: r.item_id,
+      quantity: r.quantity,
+      rate: r.rate,
+      amount: Number((r.rate * r.quantity).toFixed(2)),
+      cost_at_sale: r.cost_price || 0,
+    }))
 
     const { error: linesError } = await supabase
       .from('sale_items')
@@ -314,6 +359,7 @@ export default function SalesEntryPage() {
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
     setNextRowId(2)
+    setRowItemOptions({})
     await loadData()
 
     setTimeout(() => {
@@ -332,6 +378,7 @@ export default function SalesEntryPage() {
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
     setNextRowId(2)
+    setRowItemOptions({})
     setMessage('')
   }
 
@@ -361,6 +408,25 @@ export default function SalesEntryPage() {
 
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'
+
+  function itemLabel(it: Item): string {
+    const parts = [
+      it.sku,
+      `stock ${it.current_stock}`,
+      `sp ₹${Number(it.selling_price).toFixed(0)}`,
+      `cp ₹${Number(it.cost_price).toFixed(0)}`,
+      it.quality && it.quality !== 'Normal' ? it.quality : null,
+      it.variant || null,
+    ].filter(Boolean)
+    return parts.join(' · ')
+  }
+
+  function itemOptionsFor(rowId: number) {
+    return (rowItemOptions[rowId] || []).map((it) => ({
+      value: it.item_id,
+      label: itemLabel(it),
+    }))
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
@@ -454,7 +520,7 @@ export default function SalesEntryPage() {
                   </button>
                 </div>
                 <SmartCombobox
-                  options={itemOptions}
+                  options={itemOptionsFor(row.rowId)}
                   value={row.item_id ? String(row.item_id) : null}
                   onValueChange={(
                     v: string,
@@ -465,7 +531,8 @@ export default function SalesEntryPage() {
                     handleItemSelect(row.rowId, Number(v))
                   }}
                   onTabKey={() => handleItemTab(row, idx)}
-                  placeholder="Search SKU..."
+                  onSearch={(q) => searchItems(row.rowId, q)}
+                  placeholder="Type 2+ letters to search SKU…"
                   allowCreate={false}
                   inputDataAttr={`row-${row.rowId}`}
                   focusNextOnSelect={true}
@@ -661,7 +728,7 @@ export default function SalesEntryPage() {
                       </td>
                       <td className="px-2 py-1">
                         <SmartCombobox
-                          options={itemOptions}
+                          options={itemOptionsFor(row.rowId)}
                           value={row.item_id ? String(row.item_id) : null}
                           onValueChange={(
                             v: string,
@@ -672,7 +739,8 @@ export default function SalesEntryPage() {
                             handleItemSelect(row.rowId, Number(v))
                           }}
                           onTabKey={() => handleItemTab(row, idx)}
-                          placeholder="Search SKU..."
+                          onSearch={(q) => searchItems(row.rowId, q)}
+                          placeholder="Type 2+ letters to search SKU…"
                           allowCreate={false}
                           inputDataAttr={`row-${row.rowId}`}
                           focusNextOnSelect={true}

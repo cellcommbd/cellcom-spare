@@ -21,6 +21,8 @@ type SmartComboboxProps = {
   focusNextOnSelect?: boolean
   nextFieldSelector?: string
   inputRef?: React.RefObject<HTMLInputElement | null>
+  onSearch?: (query: string) => void
+  searchDebounceMs?: number
 }
 
 function splitLabel(label: string): {
@@ -73,6 +75,8 @@ export function SmartCombobox({
   focusNextOnSelect = false,
   nextFieldSelector,
   inputRef: externalInputRef,
+  onSearch,
+  searchDebounceMs = 300,
 }: SmartComboboxProps) {
   const [open, setOpen] = React.useState(false)
   const [inputText, setInputText] = React.useState('')
@@ -80,6 +84,13 @@ export function SmartCombobox({
   const wrapperRef = React.useRef<HTMLDivElement>(null)
   const internalRef = React.useRef<HTMLInputElement>(null)
   const inputRef = externalInputRef ?? internalRef
+
+  // ✅ Store onSearch in a ref so the debounce effect doesn't depend on it.
+  // This prevents the "infinite loop" — the effect only fires when inputText changes.
+  const onSearchRef = React.useRef(onSearch)
+  React.useEffect(() => {
+    onSearchRef.current = onSearch
+  }, [onSearch])
 
   const stringOptions: ComboOption[] = React.useMemo(
     () => options.map((o) => ({ ...o, value: String(o.value) })),
@@ -110,24 +121,33 @@ export function SmartCombobox({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // ✅ Prefix-first search: matches at the start of the SKU rank above
-  // substring matches. So "SAM" shows SAM-... items first, INF-SAMRT last.
-  const trimmed = inputText.trim().toLowerCase()
-  const filteredOptions = React.useMemo(() => {
-    if (!trimmed) return stringOptions
+  // ✅ Debounced search — only depends on inputText (not onSearch).
+  const debounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
+  React.useEffect(() => {
+    if (!onSearchRef.current) return
+    if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    debounceTimer.current = setTimeout(() => {
+      onSearchRef.current?.(inputText.trim())
+    }, searchDebounceMs)
+    return () => {
+      if (debounceTimer.current) clearTimeout(debounceTimer.current)
+    }
+  }, [inputText, searchDebounceMs])
 
+  const trimmed = inputText.trim().toLowerCase()
+
+  const filteredOptions = React.useMemo(() => {
+    if (onSearch) return stringOptions
+    if (!trimmed) return stringOptions
     const prefix: ComboOption[] = []
     const substring: ComboOption[] = []
     for (const o of stringOptions) {
       const lower = o.label.toLowerCase()
-      if (lower.startsWith(trimmed)) {
-        prefix.push(o)
-      } else if (lower.includes(trimmed)) {
-        substring.push(o)
-      }
+      if (lower.startsWith(trimmed)) prefix.push(o)
+      else if (lower.includes(trimmed)) substring.push(o)
     }
     return [...prefix, ...substring]
-  }, [stringOptions, trimmed])
+  }, [stringOptions, trimmed, onSearch])
 
   const exactMatch = stringOptions.some(
     (o) => o.label.toLowerCase() === trimmed
@@ -221,10 +241,12 @@ export function SmartCombobox({
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full max-h-80 md:max-h-64 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-lg">
+        <div className="absolute z-50 mt-1 w-full max-h-[60vh] md:max-h-64 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-lg">
           {filteredOptions.length === 0 && !showCreateOption && (
             <div className="px-3 py-3 text-sm text-slate-400">
-              No matches.
+              {onSearch && inputText.trim().length < 2
+                ? 'Type at least 2 letters to search…'
+                : 'No matches.'}
             </div>
           )}
 
