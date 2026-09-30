@@ -16,6 +16,8 @@ import {
   Receipt,
   TrendingUp,
   Calendar,
+  Search,
+  Banknote,
 } from 'lucide-react'
 
 type Range = { from: string; to: string }
@@ -43,6 +45,13 @@ function startOfWeek() {
   return start.toISOString().slice(0, 10)
 }
 
+function greeting() {
+  const h = new Date().getHours()
+  if (h < 12) return 'Good morning'
+  if (h < 17) return 'Good afternoon'
+  return 'Good evening'
+}
+
 export default function Home() {
   const [role, setRole] = useState<Role>(null)
   const [loading, setLoading] = useState(true)
@@ -60,7 +69,13 @@ export default function Home() {
   const [purchases, setPurchases] = useState(0)
   const [losses, setLosses] = useState(0)
   const [pendingKhata, setPendingKhata] = useState(0)
+  const [payablesTotal, setPayablesTotal] = useState(0)
   const [lowStockCount, setLowStockCount] = useState(0)
+
+  // Today's snapshot
+  const [todaySales, setTodaySales] = useState(0)
+  const [todayPayments, setTodayPayments] = useState(0)
+  const [todayPurchases, setTodayPurchases] = useState(0)
 
   const [topShops, setTopShops] = useState<any[]>([])
   const [recentSales, setRecentSales] = useState<any[]>([])
@@ -76,7 +91,7 @@ export default function Home() {
 
   async function loadAll() {
     setLoading(true)
-    await Promise.all([loadStats(), loadLists()])
+    await Promise.all([loadStats(), loadToday(), loadLists()])
     setLoading(false)
   }
 
@@ -91,6 +106,7 @@ export default function Home() {
       purchasesRes,
       lossesRes,
       partiesRes,
+      suppliersRes,
       itemsRes,
     ] = await Promise.all([
       supabase
@@ -129,6 +145,10 @@ export default function Home() {
         .select('current_balance')
         .eq('party_type', 'Customer'),
       supabase
+        .from('parties')
+        .select('current_balance')
+        .eq('party_type', 'Supplier'),
+      supabase
         .from('items')
         .select('current_stock, reorder_point')
         .gt('reorder_point', 0),
@@ -141,7 +161,6 @@ export default function Home() {
     setSales(s)
     setSalesCount((salesRes.data || []).length)
 
-    // COGS = sum(quantity * cost_at_sale) across sale_items in range
     const c = (saleItemsRes.data || []).reduce(
       (a: number, r: any) =>
         a + Number(r.quantity) * Number(r.cost_at_sale || 0),
@@ -167,10 +186,43 @@ export default function Home() {
         0
       )
     )
+    setPayablesTotal(
+      (suppliersRes.data || []).reduce(
+        (a, r) => a + Number(r.current_balance),
+        0
+      )
+    )
     setLowStockCount(
       (itemsRes.data || []).filter(
         (it) => it.current_stock <= it.reorder_point
       ).length
+    )
+  }
+
+  async function loadToday() {
+    const t = todayStr()
+    const [s, p, pu] = await Promise.all([
+      supabase
+        .from('sales')
+        .select('total_amount')
+        .eq('bill_date', t),
+      supabase
+        .from('payments')
+        .select('amount')
+        .eq('payment_date', t),
+      supabase
+        .from('purchases')
+        .select('total_amount')
+        .eq('purchase_date', t),
+    ])
+    setTodaySales(
+      (s.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
+    )
+    setTodayPayments(
+      (p.data || []).reduce((a, r) => a + Number(r.amount), 0)
+    )
+    setTodayPurchases(
+      (pu.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
   }
 
@@ -202,7 +254,6 @@ export default function Home() {
 
     setTopShops(shopsRes.data || [])
 
-    // Resolve party names for both lists
     const salesRows = salesRes.data || []
     const purchaseRows = purchasesRes.data || []
     const partyIds = Array.from(
@@ -254,7 +305,6 @@ export default function Home() {
 
   const isOwner = role === 'owner'
 
-  // Label for the range shown in cards
   const rangeLabel = useMemo(() => {
     if (range.from === range.to) {
       return new Date(range.from).toLocaleDateString('en-IN', {
@@ -289,7 +339,7 @@ export default function Home() {
         <div className="mb-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <div>
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
-              Welcome back
+              {greeting()}
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
               {new Date().toLocaleDateString('en-IN', {
@@ -308,6 +358,42 @@ export default function Home() {
           </div>
         </div>
 
+        {/* TODAY AT A GLANCE — Owner only */}
+        {isOwner && (
+          <div className="mb-6 bg-gradient-to-r from-indigo-600 to-indigo-500 rounded-xl p-4 sm:p-5 shadow-sm">
+            <div className="flex items-center gap-2 text-white/80 text-xs font-medium uppercase tracking-wide mb-3">
+              <Banknote className="w-4 h-4" />
+              Today at a glance
+            </div>
+            <div className="grid grid-cols-3 gap-3 sm:gap-6">
+              <div>
+                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                  Sales
+                </div>
+                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
+                  {money(todaySales)}
+                </div>
+              </div>
+              <div className="border-l border-white/20 pl-3 sm:pl-6">
+                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                  Cash In
+                </div>
+                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
+                  {money(todayPayments)}
+                </div>
+              </div>
+              <div className="border-l border-white/20 pl-3 sm:pl-6">
+                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                  Purchases
+                </div>
+                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
+                  {money(todayPurchases)}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* DATE RANGE BAR */}
         <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3">
@@ -323,7 +409,7 @@ export default function Home() {
                 onChange={(e) =>
                   setRange((r) => ({ ...r, from: e.target.value }))
                 }
-                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <span className="text-slate-400 text-sm">to</span>
               <input
@@ -332,7 +418,7 @@ export default function Home() {
                 onChange={(e) =>
                   setRange((r) => ({ ...r, to: e.target.value }))
                 }
-                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
             </div>
 
@@ -369,14 +455,14 @@ export default function Home() {
             value={money(sales)}
             sub={`${salesCount} bill${salesCount === 1 ? '' : 's'}`}
             icon={<ShoppingCart className="w-5 h-5" />}
-            color="blue"
+            color="indigo"
           />
           <StatCard
             label="Payments Collected"
             value={money(payments)}
             sub="Cash + UPI received"
             icon={<Wallet className="w-5 h-5" />}
-            color="green"
+            color="emerald"
           />
           {isOwner ? (
             <>
@@ -385,7 +471,7 @@ export default function Home() {
                 value={money(purchases)}
                 sub="Stock bought"
                 icon={<Package className="w-5 h-5" />}
-                color="purple"
+                color="rose"
               />
               <StatCard
                 label="Gross Profit"
@@ -396,7 +482,7 @@ export default function Home() {
                     : 'No sales in range'
                 }
                 icon={<TrendingUp className="w-5 h-5" />}
-                color={grossProfit >= 0 ? 'green' : 'red'}
+                color={grossProfit >= 0 ? 'emerald' : 'rose'}
               />
             </>
           ) : (
@@ -413,7 +499,7 @@ export default function Home() {
                 value={money(pendingKhata)}
                 sub="Total outstanding"
                 icon={<Users className="w-5 h-5" />}
-                color="red"
+                color="rose"
               />
             </>
           )}
@@ -423,26 +509,28 @@ export default function Home() {
         {isOwner && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
             <MiniStat
-              label="Returns"
-              value={money(returns)}
-              icon={<RotateCcw className="w-4 h-4" />}
-            />
-            <MiniStat
-              label="Pending Khata"
+              label="Customer Khata"
               value={money(pendingKhata)}
               icon={<Users className="w-4 h-4" />}
+              tone="rose"
+            />
+            <MiniStat
+              label="Supplier Payable"
+              value={money(payablesTotal)}
+              icon={<Banknote className="w-4 h-4" />}
+              tone="rose"
             />
             <MiniStat
               label="Losses"
               value={money(losses)}
               icon={<AlertTriangle className="w-4 h-4" />}
-              highlight={losses > 0}
+              tone={losses > 0 ? 'amber' : 'slate'}
             />
             <MiniStat
               label="Low Stock Items"
               value={lowStockCount.toString()}
               icon={<AlertTriangle className="w-4 h-4" />}
-              highlight={lowStockCount > 0}
+              tone={lowStockCount > 0 ? 'amber' : 'slate'}
             />
           </div>
         )}
@@ -452,7 +540,7 @@ export default function Home() {
           <SectionCard
             title="Top Shops by Balance"
             icon={<Users className="w-4 h-4" />}
-            action={{ label: 'View all', href: '/reports' }}
+            action={{ label: 'View all', href: '/parties' }}
           >
             {topShops.length === 0 ? (
               <EmptyState text="No shops yet." />
@@ -475,7 +563,7 @@ export default function Home() {
                         {s.party_name}
                       </div>
                     </div>
-                    <div className="text-sm font-semibold text-red-600 shrink-0">
+                    <div className="text-sm font-semibold text-rose-600 shrink-0">
                       {money(s.current_balance)}
                     </div>
                   </div>
@@ -576,19 +664,25 @@ export default function Home() {
               href="/sales"
               label="Sales"
               icon={<ShoppingCart />}
-              color="blue"
+              color="indigo"
+            />
+            <ActionTile
+              href="/find-stock"
+              label="Find Stock"
+              icon={<Search />}
+              color="indigo"
             />
             <ActionTile
               href="/purchases"
               label="Purchases"
               icon={<Package />}
-              color="purple"
+              color="indigo"
             />
             <ActionTile
               href="/payments"
               label="Payments"
               icon={<Wallet />}
-              color="green"
+              color="emerald"
             />
             <ActionTile
               href="/returns"
@@ -597,16 +691,10 @@ export default function Home() {
               color="amber"
             />
             <ActionTile
-              href="/items"
-              label="Items"
-              icon={<Package />}
-              color="slate"
-            />
-            <ActionTile
               href="/reports"
               label="Reports"
               icon={<BarChart3 />}
-              color="indigo"
+              color="slate"
             />
           </div>
         </div>
@@ -620,6 +708,14 @@ export default function Home() {
 // SUB-COMPONENTS
 // ============================================================
 
+type Tone =
+  | 'indigo'
+  | 'emerald'
+  | 'rose'
+  | 'amber'
+  | 'purple'
+  | 'slate'
+
 function StatCard({
   label,
   value,
@@ -631,23 +727,23 @@ function StatCard({
   value: string
   sub?: string
   icon: React.ReactNode
-  color: 'blue' | 'green' | 'red' | 'amber' | 'purple' | 'slate' | 'indigo'
+  color: Tone
 }) {
-  const themes: Record<string, { bg: string; text: string; iconBg: string }> = {
-    blue: {
-      bg: 'from-blue-50 to-white border-blue-100',
-      text: 'text-blue-700',
-      iconBg: 'bg-blue-100 text-blue-600',
+  const themes: Record<Tone, { bg: string; text: string; iconBg: string }> = {
+    indigo: {
+      bg: 'from-indigo-50 to-white border-indigo-100',
+      text: 'text-indigo-700',
+      iconBg: 'bg-indigo-100 text-indigo-600',
     },
-    green: {
-      bg: 'from-green-50 to-white border-green-100',
-      text: 'text-green-700',
-      iconBg: 'bg-green-100 text-green-600',
+    emerald: {
+      bg: 'from-emerald-50 to-white border-emerald-100',
+      text: 'text-emerald-700',
+      iconBg: 'bg-emerald-100 text-emerald-600',
     },
-    red: {
-      bg: 'from-red-50 to-white border-red-100',
-      text: 'text-red-700',
-      iconBg: 'bg-red-100 text-red-600',
+    rose: {
+      bg: 'from-rose-50 to-white border-rose-100',
+      text: 'text-rose-700',
+      iconBg: 'bg-rose-100 text-rose-600',
     },
     amber: {
       bg: 'from-amber-50 to-white border-amber-100',
@@ -658,11 +754,6 @@ function StatCard({
       bg: 'from-purple-50 to-white border-purple-100',
       text: 'text-purple-700',
       iconBg: 'bg-purple-100 text-purple-600',
-    },
-    indigo: {
-      bg: 'from-indigo-50 to-white border-indigo-100',
-      text: 'text-indigo-700',
-      iconBg: 'bg-indigo-100 text-indigo-600',
     },
     slate: {
       bg: 'from-slate-50 to-white border-slate-200',
@@ -693,24 +784,25 @@ function MiniStat({
   label,
   value,
   icon,
-  highlight,
+  tone,
 }: {
   label: string
   value: string
   icon: React.ReactNode
-  highlight?: boolean
+  tone: Tone
 }) {
+  const tones: Record<Tone, { bg: string; text: string }> = {
+    indigo: { bg: 'bg-indigo-100', text: 'text-indigo-600' },
+    emerald: { bg: 'bg-emerald-100', text: 'text-emerald-600' },
+    rose: { bg: 'bg-rose-100', text: 'text-rose-600' },
+    amber: { bg: 'bg-amber-100', text: 'text-amber-600' },
+    purple: { bg: 'bg-purple-100', text: 'text-purple-600' },
+    slate: { bg: 'bg-slate-100', text: 'text-slate-600' },
+  }
+  const t = tones[tone]
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-      <div
-        className={`p-2 rounded-lg ${
-          highlight
-            ? 'bg-amber-100 text-amber-600'
-            : 'bg-slate-100 text-slate-600'
-        }`}
-      >
-        {icon}
-      </div>
+      <div className={`p-2 rounded-lg ${t.bg} ${t.text}`}>{icon}</div>
       <div className="flex-1 min-w-0">
         <div className="text-xs text-slate-500">{label}</div>
         <div className="text-base sm:text-lg font-bold text-slate-800">
@@ -744,7 +836,7 @@ function SectionCard({
         {action && (
           <Link
             href={action.href}
-            className="text-xs font-medium text-blue-600 hover:text-blue-800 flex items-center gap-1 shrink-0"
+            className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 shrink-0"
           >
             <span className="hidden sm:inline">{action.label}</span>
             <ArrowRight className="w-3 h-3" />
@@ -759,10 +851,10 @@ function SectionCard({
 function StatusPill({ status }: { status: string }) {
   const styles =
     status === 'Paid'
-      ? 'bg-green-100 text-green-700'
+      ? 'bg-emerald-100 text-emerald-700'
       : status === 'Partially Paid'
-      ? 'bg-yellow-100 text-yellow-700'
-      : 'bg-red-100 text-red-700'
+      ? 'bg-amber-100 text-amber-700'
+      : 'bg-rose-100 text-rose-700'
   return (
     <span
       className={`text-[10px] font-semibold px-1.5 sm:px-2 py-0.5 rounded-full uppercase tracking-wide whitespace-nowrap ${styles}`}
@@ -789,27 +881,14 @@ function ActionTile({
   href: string
   label: string
   icon: React.ReactNode
-  color: 'blue' | 'green' | 'red' | 'amber' | 'purple' | 'slate' | 'indigo'
+  color: Tone
 }) {
-  const themes: Record<string, { bg: string; text: string }> = {
-    blue: { bg: 'bg-blue-50 group-hover:bg-blue-100', text: 'text-blue-600' },
-    green: {
-      bg: 'bg-green-50 group-hover:bg-green-100',
-      text: 'text-green-600',
-    },
-    red: { bg: 'bg-red-50 group-hover:bg-red-100', text: 'text-red-600' },
-    amber: {
-      bg: 'bg-amber-50 group-hover:bg-amber-100',
-      text: 'text-amber-600',
-    },
-    purple: {
-      bg: 'bg-purple-50 group-hover:bg-purple-100',
-      text: 'text-purple-600',
-    },
-    indigo: {
-      bg: 'bg-indigo-50 group-hover:bg-indigo-100',
-      text: 'text-indigo-600',
-    },
+  const themes: Record<Tone, { bg: string; text: string }> = {
+    indigo: { bg: 'bg-indigo-50 group-hover:bg-indigo-100', text: 'text-indigo-600' },
+    emerald: { bg: 'bg-emerald-50 group-hover:bg-emerald-100', text: 'text-emerald-600' },
+    rose: { bg: 'bg-rose-50 group-hover:bg-rose-100', text: 'text-rose-600' },
+    amber: { bg: 'bg-amber-50 group-hover:bg-amber-100', text: 'text-amber-600' },
+    purple: { bg: 'bg-purple-50 group-hover:bg-purple-100', text: 'text-purple-600' },
     slate: { bg: 'bg-slate-100 group-hover:bg-slate-200', text: 'text-slate-600' },
   }
   const t = themes[color]

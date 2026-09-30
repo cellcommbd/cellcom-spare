@@ -7,6 +7,7 @@ import { getRole, clearRole, validateSession, Role } from '../lib/auth'
 import {
   Home,
   ShoppingCart,
+  Search,
   RotateCcw,
   RotateCw,
   Wallet,
@@ -25,6 +26,7 @@ import './globals.css'
 const ownerNav = [
   { href: '/', label: 'Home', Icon: Home },
   { href: '/sales', label: 'Sales', Icon: ShoppingCart },
+  { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/returns', label: 'Returns', Icon: RotateCcw },
   { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/payments', label: 'Payments', Icon: Wallet },
@@ -39,6 +41,7 @@ const ownerNav = [
 const staffNav = [
   { href: '/', label: 'Home', Icon: Home },
   { href: '/sales', label: 'Sales', Icon: ShoppingCart },
+  { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/returns', label: 'Returns', Icon: RotateCcw },
   { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/payments', label: 'Payments', Icon: Wallet },
@@ -140,15 +143,13 @@ export default function RootLayout({
             <div className="max-w-[1400px] mx-auto px-3 sm:px-4">
               <div className="flex items-center h-14 gap-3">
 
-                {/* Brand text only — no badge */}
                 <Link
                   href="/"
-                  className="shrink-0 font-semibold text-sm text-white hover:text-blue-300 transition-colors whitespace-nowrap"
+                  className="shrink-0 font-semibold text-sm text-white hover:text-indigo-300 transition-colors whitespace-nowrap"
                 >
                   Cellcom Spare
                 </Link>
 
-                {/* Desktop nav — icon + short label, hides labels at tight widths */}
                 <div className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 justify-start">
                   {navItems.map((item) => {
                     const active = isActive(item.href)
@@ -159,7 +160,7 @@ export default function RootLayout({
                         title={item.label}
                         className={`flex items-center gap-1.5 text-[13px] px-2 py-1.5 rounded-md whitespace-nowrap transition-colors ${
                           active
-                            ? 'bg-blue-600 text-white shadow-sm'
+                            ? 'bg-indigo-600 text-white shadow-sm'
                             : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                         }`}
                       >
@@ -170,7 +171,6 @@ export default function RootLayout({
                   })}
                 </div>
 
-                {/* Right cluster */}
                 <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
                   {role && (
                     <span className="hidden sm:inline-flex text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
@@ -202,7 +202,6 @@ export default function RootLayout({
               </div>
             </div>
 
-            {/* Mobile dropdown — 2-column grid */}
             {menuOpen && (
               <div
                 ref={menuRef}
@@ -217,7 +216,7 @@ export default function RootLayout({
                         href={item.href}
                         className={`flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] transition-colors ${
                           active
-                            ? 'bg-blue-600 text-white'
+                            ? 'bg-indigo-600 text-white'
                             : 'text-slate-300 hover:bg-slate-800 hover:text-white'
                         }`}
                       >
