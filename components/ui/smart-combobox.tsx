@@ -81,12 +81,13 @@ export function SmartCombobox({
   const [open, setOpen] = React.useState(false)
   const [inputText, setInputText] = React.useState('')
   const [hovered, setHovered] = React.useState(false)
+  // Tracks whether the user is actively typing (vs. just displaying a selected label)
+  const [typing, setTyping] = React.useState(false)
   const wrapperRef = React.useRef<HTMLDivElement>(null)
   const internalRef = React.useRef<HTMLInputElement>(null)
   const inputRef = externalInputRef ?? internalRef
 
-  // ✅ Store onSearch in a ref so the debounce effect doesn't depend on it.
-  // This prevents the "infinite loop" — the effect only fires when inputText changes.
+  // Store onSearch in a ref so debounce effect doesn't depend on it
   const onSearchRef = React.useRef(onSearch)
   React.useEffect(() => {
     onSearchRef.current = onSearch
@@ -99,14 +100,17 @@ export function SmartCombobox({
 
   const selectedOption = stringOptions.find((o) => o.value === value)
 
+  // Sync input text when the external value changes and the user isn't typing
   React.useEffect(() => {
-    if (value === null || value === '') {
-      setInputText('')
-    } else if (selectedOption) {
-      const { primary } = splitLabel(selectedOption.label)
-      setInputText(primary)
+    if (!typing) {
+      if (value === null || value === '') {
+        setInputText('')
+      } else if (selectedOption) {
+        const { primary } = splitLabel(selectedOption.label)
+        setInputText(primary)
+      }
     }
-  }, [value, selectedOption])
+  }, [value, selectedOption, typing])
 
   React.useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -115,16 +119,25 @@ export function SmartCombobox({
         !wrapperRef.current.contains(e.target as Node)
       ) {
         setOpen(false)
+        // If the user typed but didn't select, revert to the selected label
+        setTyping(false)
+        if (selectedOption) {
+          const { primary } = splitLabel(selectedOption.label)
+          setInputText(primary)
+        } else {
+          setInputText('')
+        }
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [])
+  }, [selectedOption])
 
-  // ✅ Debounced search — only depends on inputText (not onSearch).
+  // Debounced server-side search
   const debounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   React.useEffect(() => {
     if (!onSearchRef.current) return
+    if (!typing) return // don't search when we're just displaying a label
     if (debounceTimer.current) clearTimeout(debounceTimer.current)
     debounceTimer.current = setTimeout(() => {
       onSearchRef.current?.(inputText.trim())
@@ -132,13 +145,13 @@ export function SmartCombobox({
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current)
     }
-  }, [inputText, searchDebounceMs])
+  }, [inputText, searchDebounceMs, typing])
 
   const trimmed = inputText.trim().toLowerCase()
 
   const filteredOptions = React.useMemo(() => {
     if (onSearch) return stringOptions
-    if (!trimmed) return stringOptions
+    if (!typing || !trimmed) return stringOptions
     const prefix: ComboOption[] = []
     const substring: ComboOption[] = []
     for (const o of stringOptions) {
@@ -147,15 +160,17 @@ export function SmartCombobox({
       else if (lower.includes(trimmed)) substring.push(o)
     }
     return [...prefix, ...substring]
-  }, [stringOptions, trimmed, onSearch])
+  }, [stringOptions, trimmed, onSearch, typing])
 
   const exactMatch = stringOptions.some(
     (o) => o.label.toLowerCase() === trimmed
   )
   const showCreateOption =
-    allowCreate && inputText.trim().length > 0 && !exactMatch
+    allowCreate && typing && inputText.trim().length > 0 && !exactMatch
 
-  const showClear = (hovered || open) && inputText.length > 0
+  // Show clear button when there's a value OR the user has typed something
+  const hasContent = !!value || inputText.length > 0
+  const showClear = (hovered || open) && hasContent
 
   function moveFocusAfterSelect() {
     if (!focusNextOnSelect) return
@@ -184,7 +199,18 @@ export function SmartCombobox({
     const { primary } = splitLabel(newLabel)
     setInputText(primary)
     setOpen(false)
+    setTyping(false)
     moveFocusAfterSelect()
+  }
+
+  function clearValue() {
+    setInputText('')
+    setTyping(false)
+    onValueChange('', '', false)
+    setOpen(true)
+    requestAnimationFrame(() => {
+      inputRef.current?.focus()
+    })
   }
 
   return (
@@ -201,16 +227,50 @@ export function SmartCombobox({
           value={inputText}
           onChange={(e) => {
             setInputText(e.target.value)
+            setTyping(true)
             setOpen(true)
             if (!e.target.value) onValueChange('', '', false)
           }}
-          onFocus={() => setOpen(true)}
+          onFocus={(e) => {
+            setOpen(true)
+            // If a value is already selected and user hasn't started typing,
+            // select all text so typing replaces it
+            if (value && !typing) {
+              try {
+                e.target.select()
+              } catch {
+                // ignore
+              }
+            }
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Tab') {
               setOpen(false)
+              // Commit display back to selected label
+              setTyping(false)
+              if (selectedOption) {
+                const { primary } = splitLabel(selectedOption.label)
+                setInputText(primary)
+              } else {
+                setInputText('')
+              }
               if (onTabKey) onTabKey()
             }
-            if (e.key === 'Escape') setOpen(false)
+            if (e.key === 'Escape') {
+              if (typing && (inputText.length > 0 || value)) {
+                // First Escape: revert to selected label (or clear)
+                setTyping(false)
+                if (selectedOption) {
+                  const { primary } = splitLabel(selectedOption.label)
+                  setInputText(primary)
+                } else {
+                  setInputText('')
+                }
+              } else {
+                // Second Escape (or nothing to revert): close dropdown
+                setOpen(false)
+              }
+            }
           }}
           placeholder={placeholder}
           disabled={disabled}
@@ -222,15 +282,14 @@ export function SmartCombobox({
           onMouseDown={(e) => {
             e.preventDefault()
             if (showClear) {
-              setInputText('')
-              onValueChange('', '', false)
-              setOpen(false)
+              clearValue()
             } else {
               setOpen(!open)
             }
           }}
           className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
           tabIndex={-1}
+          aria-label={showClear ? 'Clear' : 'Open'}
         >
           {showClear ? (
             <X className="w-5 h-5 md:w-4 md:h-4" />

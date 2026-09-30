@@ -1,11 +1,13 @@
 'use client'
 
-import { useEffect, useRef, useState, createRef } from 'react'
+import { useEffect, useRef, useState, createRef, Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { Plus, Trash2, Save, X } from 'lucide-react'
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
+
 type Party = {
   party_id: number
   party_name: string
@@ -49,12 +51,28 @@ type PickedShop = {
   isNew: boolean
 }
 
-export default function SalesEntryPage() {
+export default function SalesEntryPageWrapper() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-slate-500">
+          Loading…
+        </div>
+      }
+    >
+      <SalesEntryPage />
+    </Suspense>
+  )
+}
+
+function SalesEntryPage() {
+  const searchParams = useSearchParams()
+  const prefillItemId = searchParams.get('prefill_item_id')
+
   const [shops, setShops] = useState<Party[]>([])
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
   const [isOwner, setIsOwner] = useState(false)
 
-  // Per-row search results cache (rowId -> items)
   const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>(
     {}
   )
@@ -76,6 +94,10 @@ export default function SalesEntryPage() {
   const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(
     null
   )
+  const [pendingFocusQtyRowId, setPendingFocusQtyRowId] = useState<
+    number | null
+  >(null)
+
   const itemRefs = useRef<
     Record<number, React.RefObject<HTMLInputElement | null>>
   >({})
@@ -108,9 +130,72 @@ export default function SalesEntryPage() {
     }
   }, [pendingFocusRowId, rows])
 
+  // Focus the qty input after prefill (visible one only)
+  useEffect(() => {
+    if (pendingFocusQtyRowId == null) return
+    const candidates = Array.from(
+      document.querySelectorAll<HTMLInputElement>(
+        `input[data-qty-row="qty-${pendingFocusQtyRowId}"]`
+      )
+    )
+    const el = candidates.find((c) => c.offsetParent !== null)
+    if (el) {
+      el.focus()
+      try {
+        el.select()
+      } catch {
+        // ignore
+      }
+      setPendingFocusQtyRowId(null)
+    }
+  }, [pendingFocusQtyRowId, rows])
+
+  // Prefill from URL — /sales?prefill_item_id=123
+  useEffect(() => {
+    if (!prefillItemId) return
+    const itemId = Number(prefillItemId)
+    if (!itemId || isNaN(itemId)) return
+
+    async function loadAndPrefill() {
+      const { data, error } = await supabase
+        .from('items')
+        .select(
+          'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
+        )
+        .eq('item_id', itemId)
+        .single()
+
+      if (error || !data) return
+
+      const item = data as Item
+
+      setRowItemOptions((prev) => ({
+        ...prev,
+        1: [item],
+      }))
+
+      setRows([
+        {
+          rowId: 1,
+          item_id: item.item_id,
+          sku: item.sku,
+          quantity: 1,
+          rate: item.selling_price,
+          amount: Number(item.selling_price),
+          cost_price: item.cost_price,
+        },
+      ])
+      setNextRowId(2)
+    }
+
+    loadAndPrefill().then(() => {
+      setPendingFocusQtyRowId(1)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillItemId])
+
   async function loadData() {
     const today = new Date().toISOString().slice(0, 10)
-    // No longer fetching all items — search happens on demand per row.
     const [s, t] = await Promise.all([
       supabase
         .from('parties')
@@ -135,7 +220,6 @@ export default function SalesEntryPage() {
   const prevBalance =
     shops.find((s) => s.party_id === pickedShop.id)?.current_balance || 0
 
-  // Server-side item search per row
   // Server-side multi-word item search — delegates to search_items RPC
   async function searchItems(rowId: number, query: string) {
     if (!query || query.trim().length < 2) {
@@ -147,6 +231,7 @@ export default function SalesEntryPage() {
     const items = results as Item[]
     setRowItemOptions((prev) => ({ ...prev, [rowId]: items }))
   }
+
   function addRow(): number {
     const newId = nextRowId
     setRows((prev) => [
@@ -399,8 +484,7 @@ export default function SalesEntryPage() {
       label: itemLabel(it),
     }))
   }
-
-  return (
+    return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
@@ -527,6 +611,22 @@ export default function SalesEntryPage() {
                           quantity: parseFloat(e.target.value) || 0,
                         })
                       }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          const next = e.currentTarget
+                            .closest('.grid')
+                            ?.querySelector<HTMLInputElement>(
+                              'input[type="number"]:not([data-qty-row])'
+                            )
+                          next?.focus()
+                          try {
+                            next?.select()
+                          } catch {
+                            // ignore
+                          }
+                        }
+                      }}
                       className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -542,6 +642,11 @@ export default function SalesEntryPage() {
                           rate: parseFloat(e.target.value) || 0,
                         })
                       }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === 'Tab') {
+                          handleRateTab(row.rowId, idx, e)
+                        }
+                      }}
                       className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -733,6 +838,22 @@ export default function SalesEntryPage() {
                               quantity: parseFloat(e.target.value) || 0,
                             })
                           }
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              const next = e.currentTarget
+                                .closest('tr')
+                                ?.querySelector<HTMLInputElement>(
+                                  'input[type="number"]:not([data-qty-row])'
+                                )
+                              next?.focus()
+                              try {
+                                next?.select()
+                              } catch {
+                                // ignore
+                              }
+                            }
+                          }}
                           className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </td>
@@ -746,8 +867,9 @@ export default function SalesEntryPage() {
                             })
                           }
                           onKeyDown={(e) => {
-                            if (e.key === 'Tab')
+                            if (e.key === 'Tab' || e.key === 'Enter') {
                               handleRateTab(row.rowId, idx, e)
+                            }
                           }}
                           className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
