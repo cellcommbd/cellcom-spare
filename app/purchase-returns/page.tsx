@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { supabase } from '../../lib/supabase'
-import { SmartCombobox } from '../../components/ui/smart-combobox'
-import { Save, X } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
+import { SmartCombobox } from '@/components/ui/smart-combobox'
+import { ImportCSVDialog } from '@/components/ui/ImportCSVDialog'
+import { ParsedRow } from '@/lib/csv-parser'
+import { Save, X, Upload } from 'lucide-react'
 
 // ---------- Types ----------
 type Party = {
@@ -47,6 +49,7 @@ type ReturnRow = {
   rate: number
   return_qty: number
   reason: string
+  source: 'manual' | 'csv'
 }
 
 type PickedSupplier = {
@@ -88,6 +91,7 @@ export default function PurchaseReturnPage() {
 
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
+  const [showImport, setShowImport] = useState(false)
 
   // ---------- Initial load ----------
   useEffect(() => {
@@ -156,27 +160,39 @@ export default function PurchaseReturnPage() {
       .select('*')
       .eq('purchase_id', purchaseId)
 
-    const enriched: PurchaseItem[] = []
-    for (const pi of piData || []) {
-      const { data: priorReturns } = await supabase
-        .from('returns')
-        .select('quantity')
-        .eq('item_id', pi.item_id)
-        .eq('return_type', 'Supplier')
-        .eq('party_id', pickedSupplier.id)
-
-      const totalReturned = (priorReturns || []).reduce(
-        (s, r) => s + Number(r.quantity),
-        0
-      )
-      enriched.push({ ...pi, returned_qty: totalReturned })
+    const lines = piData || []
+    if (lines.length === 0) {
+      setSelectedPurchaseItems([])
+      setCheckedItemIds([])
+      setRows([])
+      return
     }
+
+    const itemIds = lines.map((pi) => pi.item_id)
+    const { data: priorReturns } = await supabase
+      .from('returns')
+      .select('item_id, quantity')
+      .in('item_id', itemIds)
+      .eq('return_type', 'Supplier')
+      .eq('party_id', pickedSupplier.id)
+
+    const returnedByItem: Record<number, number> = {}
+    for (const r of priorReturns || []) {
+      returnedByItem[r.item_id] =
+        (returnedByItem[r.item_id] || 0) + Number(r.quantity)
+    }
+
+    const enriched: PurchaseItem[] = lines.map((pi) => ({
+      ...pi,
+      returned_qty: returnedByItem[pi.item_id] || 0,
+    }))
+
     setSelectedPurchaseItems(enriched)
     setCheckedItemIds([])
     setRows([])
   }
 
-  // ---------- Checkbox toggle ----------
+  // ---------- Checkbox toggle (manual flow) ----------
   function toggleChecked(pi: PurchaseItem) {
     const alreadyReturned = pi.returned_qty || 0
     const remaining = pi.quantity - alreadyReturned
@@ -187,7 +203,9 @@ export default function PurchaseReturnPage() {
 
     if (isChecked) {
       setCheckedItemIds((prev) => prev.filter((id) => id !== pi.item_id))
-      setRows((prev) => prev.filter((r) => r.item_id !== pi.item_id))
+      setRows((prev) =>
+        prev.filter((r) => !(r.item_id === pi.item_id && r.source === 'manual'))
+      )
     } else {
       setCheckedItemIds((prev) => [...prev, pi.item_id])
       setRows((prev) => [
@@ -202,9 +220,69 @@ export default function PurchaseReturnPage() {
           rate: Number(pi.rate),
           return_qty: 1,
           reason: DEFAULT_REASON,
+          source: 'manual',
         },
       ])
       setNextRowId((n) => n + 1)
+    }
+  }
+
+  // ---------- CSV import (CN) ----------
+  function handleCNImport(
+    matched: ParsedRow[],
+    newItems: ParsedRow[],
+    _margin: number
+  ) {
+    setMessage('')
+
+    // Returns can only use existing items — skip "new" rows.
+    const usableMatched = matched.filter(
+      (r) => r.matchedItemId && r.matchedItemSku
+    )
+
+    if (usableMatched.length === 0) {
+      setMessage(
+        'No matched items in CSV. Returns can only use items that already exist.'
+      )
+      return
+    }
+
+    let nextId = nextRowId
+    const newRows: ReturnRow[] = []
+    const newChecked: number[] = []
+
+    for (const r of usableMatched) {
+      const item_id = r.matchedItemId!
+      const sku = r.matchedItemSku!
+      // Check local items table for the sku (fallback to parsed)
+      const localItem = items.find((i) => i.item_id === item_id)
+
+      newRows.push({
+        rowId: nextId++,
+        detail_id: 0, // no invoice link from CSV
+        item_id,
+        sku: localItem?.sku || sku,
+        original_qty: 0, // unknown for CSV-imported rows
+        already_returned: 0,
+        rate: r.rate,
+        return_qty: r.qty,
+        reason: DEFAULT_REASON,
+        source: 'csv',
+      })
+      if (!newChecked.includes(item_id)) newChecked.push(item_id)
+    }
+
+    setRows((prev) => [...prev, ...newRows])
+    setNextRowId(nextId)
+    setCheckedItemIds((prev) => [...prev, ...newChecked.filter((id) => !prev.includes(id))])
+
+    const skipped = newItems.length
+    if (skipped > 0) {
+      setMessage(
+        `Imported ${newRows.length} rows. ${skipped} row(s) skipped (items not in DB — returns can only use existing items).`
+      )
+    } else {
+      setMessage(`Imported ${newRows.length} rows from CN. Review and click Save Return.`)
     }
   }
 
@@ -212,6 +290,14 @@ export default function PurchaseReturnPage() {
     setRows((prev) =>
       prev.map((r) => (r.rowId === rowId ? { ...r, ...patch } : r))
     )
+  }
+
+  function removeRow(rowId: number) {
+    const row = rows.find((r) => r.rowId === rowId)
+    setRows((prev) => prev.filter((r) => r.rowId !== rowId))
+    if (row) {
+      setCheckedItemIds((prev) => prev.filter((id) => id !== row.item_id))
+    }
   }
 
   const totalReturnValue = rows.reduce((s, r) => s + r.return_qty * r.rate, 0)
@@ -248,7 +334,6 @@ export default function PurchaseReturnPage() {
       return
     }
 
-    // Reduce supplier khata balance
     const supplier = suppliers.find((s) => s.party_id === pickedSupplier.id)
     if (supplier) {
       const newBalance = Number(supplier.current_balance) - totalReturnValue
@@ -285,30 +370,41 @@ export default function PurchaseReturnPage() {
 
   // ============ RENDER ============
   return (
-    <div className="min-h-screen bg-gray-100 p-8">
+    <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
 
-        <div className="mb-6 flex items-end justify-between">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">Purchase Return</h1>
             <p className="text-sm text-gray-500">
               Send items back to supplier. Stock decreases and supplier balance reduces.
             </p>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Return Date</label>
-            <input
-              type="date"
-              value={returnDate}
-              onChange={(e) => setReturnDate(e.target.value)}
-              className="h-9 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          <div className="flex items-end gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Return Date</label>
+              <input
+                type="date"
+                value={returnDate}
+                onChange={(e) => setReturnDate(e.target.value)}
+                className="h-10 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <button
+              onClick={() => setShowImport(true)}
+              disabled={!pickedSupplier.id}
+              title={!pickedSupplier.id ? 'Select a supplier first' : 'Import CN CSV'}
+              className="h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            >
+              <Upload className="size-4" />
+              Import CN
+            </button>
           </div>
         </div>
 
-        <div className="bg-white border border-gray-300 rounded p-6 mb-6 shadow-sm">
+        <div className="bg-white border border-gray-300 rounded p-4 sm:p-6 mb-6 shadow-sm">
 
-          <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Supplier</label>
               <SmartCombobox
@@ -330,7 +426,7 @@ export default function PurchaseReturnPage() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Original Invoice (defaults to latest)
+                Original Invoice (for manual entry — optional)
               </label>
               <select
                 value={pickedPurchaseId || ''}
@@ -338,7 +434,7 @@ export default function PurchaseReturnPage() {
                   setPickedPurchaseId(e.target.value ? Number(e.target.value) : null)
                 }
                 disabled={!pickedSupplier.id || supplierPurchases.length === 0}
-                className="w-full h-9 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                className="w-full h-10 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
               >
                 <option value="">
                   {!pickedSupplier.id
@@ -367,7 +463,7 @@ export default function PurchaseReturnPage() {
                   <div className="text-xs font-medium text-gray-600 mb-2">
                     Items in this invoice — check the ones you want to return:
                   </div>
-                  <div className="border border-gray-300 rounded divide-y divide-gray-200">
+                  <div className="border border-gray-300 rounded divide-y divide-gray-200 max-h-72 overflow-y-auto">
                     {selectedPurchaseItems.map((pi) => {
                       const item = items.find((i) => i.item_id === pi.item_id)
                       const returned = pi.returned_qty || 0
@@ -425,8 +521,8 @@ export default function PurchaseReturnPage() {
               <div className="text-xs font-medium text-gray-600 mb-2">
                 Items to return ({rows.length}):
               </div>
-              <div className="border border-gray-300 rounded overflow-visible">
-                <table className="w-full border-collapse text-sm">
+              <div className="border border-gray-300 rounded overflow-x-auto">
+                <table className="w-full border-collapse text-sm min-w-[720px]">
                   <thead>
                     <tr className="bg-gray-100">
                       <th className="w-10 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">#</th>
@@ -435,21 +531,26 @@ export default function PurchaseReturnPage() {
                       <th className="w-20 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Already Ret.</th>
                       <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Rate</th>
                       <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Return Qty</th>
-                      <th className="w-48 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
-                      <th className="w-28 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                      <th className="w-44 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
+                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                      <th className="w-10 border-b border-gray-300 px-2 py-2"></th>
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((row, idx) => {
                       const amount = row.return_qty * row.rate
+                      const isCsv = row.source === 'csv'
                       const maxQty = row.original_qty - row.already_returned
+                      const hasMax = maxQty > 0
                       return (
-                        <tr key={row.rowId} className="border-b border-gray-200">
+                        <tr key={row.rowId} className={`border-b border-gray-200 ${isCsv ? 'bg-emerald-50/40' : ''}`}>
                           <td className="px-2 py-1 text-center text-gray-500 text-xs">{idx + 1}</td>
                           <td className="px-2 py-1 text-gray-800 font-mono text-xs">{row.sku}</td>
-                          <td className="px-2 py-1 text-right text-gray-600">{row.original_qty}</td>
+                          <td className="px-2 py-1 text-right text-gray-600">
+                            {isCsv ? '—' : row.original_qty}
+                          </td>
                           <td className="px-2 py-1 text-right text-orange-700">
-                            {row.already_returned > 0 ? row.already_returned : '—'}
+                            {isCsv ? '—' : row.already_returned > 0 ? row.already_returned : '—'}
                           </td>
                           <td className="px-2 py-1 text-right text-gray-800">₹ {row.rate.toFixed(2)}</td>
                           <td className="px-2 py-1">
@@ -458,13 +559,12 @@ export default function PurchaseReturnPage() {
                               value={row.return_qty || ''}
                               onChange={(e) =>
                                 updateRow(row.rowId, {
-                                  return_qty: Math.min(
-                                    parseFloat(e.target.value) || 0,
-                                    maxQty
-                                  ),
+                                  return_qty: hasMax
+                                    ? Math.min(parseFloat(e.target.value) || 0, maxQty)
+                                    : parseFloat(e.target.value) || 0,
                                 })
                               }
-                              max={maxQty}
+                              max={hasMax ? maxQty : undefined}
                               min={1}
                               className="w-full h-8 px-2 text-sm text-right border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
@@ -485,6 +585,15 @@ export default function PurchaseReturnPage() {
                           <td className="px-2 py-1 text-right font-medium text-gray-800">
                             ₹ {amount.toFixed(2)}
                           </td>
+                          <td className="px-2 py-1 text-center">
+                            <button
+                              onClick={() => removeRow(row.rowId)}
+                              className="text-red-500 hover:text-red-700"
+                              title="Remove row"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </td>
                         </tr>
                       )
                     })}
@@ -503,7 +612,7 @@ export default function PurchaseReturnPage() {
             </div>
           )}
 
-          <div className="flex items-center gap-3 pt-4 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 pt-4 border-t border-gray-200">
             <button
               onClick={saveReturn}
               disabled={saving || rows.length === 0 || totalReturnValue === 0}
@@ -523,13 +632,13 @@ export default function PurchaseReturnPage() {
           </div>
         </div>
 
-        <div className="bg-white border border-gray-300 rounded shadow-sm">
+        <div className="bg-white border border-gray-300 rounded shadow-sm overflow-x-auto">
           <div className="px-4 py-2 bg-gray-50 border-b border-gray-300">
             <span className="text-sm font-semibold text-gray-700">
               Today's Supplier Returns ({todayReturns.length})
             </span>
           </div>
-          <table className="w-full border-collapse text-sm">
+          <table className="w-full border-collapse text-sm min-w-[600px]">
             <thead>
               <tr className="bg-gray-100">
                 <th className="w-16 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">ID</th>
@@ -562,6 +671,13 @@ export default function PurchaseReturnPage() {
         </div>
 
       </div>
+
+      <ImportCSVDialog
+        open={showImport}
+        onClose={() => setShowImport(false)}
+        onImport={handleCNImport}
+        actionLabel="Fill Return"
+      />
     </div>
   )
 }

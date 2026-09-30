@@ -1,12 +1,7 @@
 // lib/csv-parser.ts
-// v11 — Canonical identity parser with color capture
-//       + parenthetical color detection (no whitelist — anything not
-//         classified as network/quality/flag/size/variant/noise becomes color)
-//       + bracket processing (quality → flag → size → model-hint → color → variant)
-//       + Box Pecking / Box Packing stripped
-//       + MAIN / OCTA as variant (main board flex / octa flex)
+// v12 — Canonical identity parser with new SKU template
 //
-// SKU = BRAND-MODEL-[VARIANT]-[YEAR]-PART-[NETWORK]-[QUALITY]-[FLAG]-[COLOR]
+// SKU = BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]
 //
 // ─────────────────────────────────────────────────────────────
 // HISTORY
@@ -16,11 +11,10 @@
 //                 IN RUBBER → INRUBBER (41 items)
 // 2026-09-29  Aliases: SPK family split; EXX-BEE → ESPK; ORI/ORIG → OG;
 //                      CARE → Care OG; CHINA OG / C+ → China OG
-// 2026-09-29  v9:  1+ OnePlus protected; SAM glued-prefix split; VIVOB/C
-// 2026-09-29  v10: scan-anywhere brand; bracket-model promotion;
-//                  size markers; UNIVERSAL → GEN; LCDRING added
-// 2026-09-30  v11: parenthetical color capture; Box Pecking stripped;
-//                  MAIN/OCTA variant markers; color at end of SKU
+// 2026-09-30  v12: SKU template reordered to
+//                  BRAND-MODEL-PART-YEAR-VARIANT-NETWORK-FLAG-COLOR-QUALITY
+//                  Box Pecking → BOX-PACKING (variant, not stripped)
+//                  Colors captured from (...) and [...] markers
 // ─────────────────────────────────────────────────────────────
 
 export type Quality =
@@ -122,14 +116,12 @@ const SIZE_MARKERS: Record<string, string> = {
 const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|SPARK|DISPLAY|FOR|MAINBOARD|MAIN BOARD)$/i
 
 // ============================================================
-// Packaging noise — silently dropped
+// Packaging noise — normalized to BOX-PACKING (kept as variant)
 // ============================================================
-const PACKAGING_NOISE = /^(BOX\s*PECK?ING|BOX\s*PACKING)$/i
+const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
 
 // ============================================================
 // Common color words — used for bracket color detection
-// (Parenthetical color detection does NOT use this list — it
-//  assumes "not classified otherwise → color")
 // ============================================================
 const COLOR_WORDS = [
   'BLACK', 'WHITE', 'BLUE', 'RED', 'GOLD', 'GREEN', 'PURPLE', 'SILVER',
@@ -138,7 +130,7 @@ const COLOR_WORDS = [
   'TEAL', 'NAVY', 'PEACH', 'LATTE', 'SAPPHIRE', 'EMERALD', 'CRYSTAL',
   'ONYX', 'COPPER', 'CHAMPAGNE', 'IVORY', 'CREAM', 'SAND', 'GOLDEN',
   'ROSE', 'VIOLET', 'MAGENTA', 'TURQUOISE', 'INDIGO', 'MAROON',
-  'BURGUNDY', 'BLUSH', 'NEON', 'CHROME', 'GRAPHITE', 'SILKY', 'MATTE',
+  'BURGUNDY', 'BLUSH', 'NEON', 'CHROME', 'GRAPHITE', 'MATTE',
 ]
 
 function containsColorWord(text: string): boolean {
@@ -433,10 +425,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bB\s*\/\s*C\b/gi, 'B/C')
     .replace(/\bB\s*\/\s*C\s+CONN\.?/gi, 'B/C CONN')
     .replace(/([A-Z])B\/C\b/gi, '$1 B/C')
-    .replace(/\[\s*BOX\s*PECK?ING\s*\]/gi, ' ')
-    .replace(/\[\s*BOX\s*PACKING\s*\]/gi, ' ')
-    .replace(/\bBOX\s*PECK?ING\b/gi, ' ')
-    .replace(/\bBOX\s*PACKING\b/gi, ' ')
+    .replace(/BOX\s*PECKING/gi, 'BOX PACKING')
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -458,14 +447,6 @@ function extractMarkers(desc: string): { markers: string[]; cleanedDesc: string 
 
 // ============================================================
 // Parenthetical extraction
-//   Rule: content inside (...) is classified in order:
-//     1. network (4G, 5G)
-//     2. quality (OG, CARE, etc.)
-//     3. flag (W/C, W/CL, etc.)
-//     4. size (BIG, SMALL, 20 MM)
-//     5. variant keyword (OCTA, MAIN, etc.)
-//     6. packaging noise → ignore
-//     7. otherwise → COLOR
 // ============================================================
 type ParentheticalResult = {
   colors: string[]
@@ -497,18 +478,18 @@ function extractParentheticals(desc: string): ParentheticalResult {
     const hundredMatch = upper.match(
       /\b100\s*%?\s*(?:OG|ORIG|ORIGINAL)\b(?:\s+(\S+))?/
     )
-    if (hundredMatch) {
-      quality = '100 OG'
-      continue
-    }
+    if (hundredMatch) { quality = '100 OG'; continue }
+
     if (/\bCHINA\s*(OG|ORIG|ORIGINAL)\b/.test(upper) || upper === 'C+') {
       quality = 'China OG'
       continue
     }
+
     if (/\bCARE\s*(OG|ORIG|ORIGINAL)?\b/.test(upper)) {
       quality = 'Care OG'
       continue
     }
+
     if (/^(OG|ORI|ORIG|ORIGINAL|ORG)$/.test(upper)) {
       if (!quality) quality = 'OG'
       continue
@@ -520,9 +501,11 @@ function extractParentheticals(desc: string): ParentheticalResult {
       if (!variant) variant = upper.replace(/\.$/, '')
       continue
     }
-    if (PACKAGING_NOISE.test(upper)) continue
+    if (PACKAGING_VARIANT.test(upper)) {
+      if (!variant) variant = 'BOX-PACKING'
+      continue
+    }
 
-    // Not classified → COLOR
     colors.push(upper)
   }
 
@@ -532,7 +515,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
 }
 
 // ============================================================
-// Quality extraction from markers (bracket contents)
+// Quality extraction from markers
 // ============================================================
 function extractQualityFromMarkers(markers: string[]): {
   quality: Quality
@@ -575,7 +558,7 @@ function extractQualityFromMarkers(markers: string[]): {
 }
 
 // ============================================================
-// Marker classification (brackets)
+// Marker classification
 // ============================================================
 function classifyMarkers(markers: string[]): {
   variant: string | null
@@ -598,17 +581,18 @@ function classifyMarkers(markers: string[]): {
     if (/^(19|20)\d{2}$/.test(upper)) { year = upper; continue }
     if (SIZE_MARKERS[upper]) { size = SIZE_MARKERS[upper]; continue }
     if (FLAG_MAP[upper]) { flag = FLAG_MAP[upper]; continue }
-    if (PACKAGING_NOISE.test(upper)) continue
+    if (PACKAGING_VARIANT.test(upper)) {
+      if (!variant) variant = 'BOX-PACKING'
+      continue
+    }
     if (VARIANT_KEYWORDS.test(upper)) {
       if (!variant) variant = upper.replace(/\.$/, '')
       continue
     }
-    // Bracket color detection — only if it matches a known color word
     if (containsColorWord(upper)) {
       if (!color) color = upper
       continue
     }
-    // Fallback → variant (also acts as bracket-model hint downstream)
     if (!variant) variant = upper
   }
 
@@ -660,6 +644,9 @@ function findBrandAnywhere(
   matchLength: number
   matchedKey: string
 } {
+  if (typeof text !== 'string') {
+    return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
+  }
   const upper = text.toUpperCase()
   const keys = Object.keys(aliases.brandAliases).sort(
     (a, b) => b.length - a.length
@@ -697,7 +684,6 @@ function extractBrandAndModel(
   if (typeof desc !== 'string') desc = ''
   let cleaned = desc.toUpperCase().trim()
 
-  // Normalize 1+ brand prefix
   cleaned = cleaned.replace(/\b1\s*\+\s*/g, '1+ ')
 
   const network = (() => {
@@ -711,7 +697,6 @@ function extractBrandAndModel(
   noNet = noNet.replace(/\b(4G|5G)\b/gi, ' ')
   noNet = noNet.replace(/[-_/]/g, ' ')
 
-  // Protect 1+ from PLUS replacement
   noNet = noNet.replace(/\b1\+\s+/g, '\u0001PLUS1\u0001 ')
   noNet = noNet.replace(/(\d)\+/g, '$1 PLUS ')
   noNet = noNet.replace(/\u0001PLUS1\u0001/g, '1+')
@@ -722,7 +707,6 @@ function extractBrandAndModel(
     return { brandCode: null, modelName: null, network }
   }
 
-  // Glued-prefix split
   const firstWord = words[0] || ''
   const brandKeys = Object.keys(aliases.brandAliases).sort(
     (a, b) => b.length - a.length
@@ -775,7 +759,6 @@ function extractBrandAndModel(
     }
   }
 
-  // Fallback: scan anywhere
   if (!brandCode && words.length > 0) {
     const scan = findBrandAnywhere(noNet, aliases)
     if (scan.brandCode) {
@@ -787,7 +770,6 @@ function extractBrandAndModel(
     }
   }
 
-  // Bracket-model promotion
   if (bracketModelHint) {
     const bracketUpper = bracketModelHint.toUpperCase().trim()
     const bscan = findBrandAnywhere(bracketUpper, aliases)
@@ -813,7 +795,6 @@ function extractBrandAndModel(
 
   let modelWords = words.slice(matchedWords)
 
-  // Multi-brand rewrite
   while (modelWords.length > 0) {
     const nextWord = modelWords[0].toUpperCase()
     const nextBrand = aliases.brandAliases[nextWord]
@@ -843,6 +824,8 @@ function normalizeModelName(model: string | null): string | null {
 }
 // ============================================================
 // SKU generation
+//   Template: BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK]
+//             - [FLAG] - [COLOR] - [QUALITY]
 // ============================================================
 export function generateSku(fields: {
   brandCode: string | null
@@ -875,17 +858,17 @@ export function generateSku(fields: {
   const seg: string[] = []
   seg.push(brandCode)
   seg.push(dash(modelName))
-  if (variant) seg.push(dash(variant))
-  if (year) seg.push(year)
   seg.push(partCode)
+  if (year) seg.push(year)
+  if (variant) seg.push(dash(variant))
   if (network) seg.push(network)
+  if (flag) seg.push(dash(flag))
+  if (color) seg.push(dash(color))
   if (quality === 'OG') seg.push('OG')
   else if (quality === '100 OG') seg.push('100OG')
   else if (quality === 'ORG') seg.push('ORG')
   else if (quality === 'Care OG') seg.push('CARE')
   else if (quality === 'China OG') seg.push('CHINAOG')
-  if (flag) seg.push(dash(flag))
-  if (color) seg.push(dash(color))
 
   return seg.filter(Boolean).join('-')
 }
@@ -1005,11 +988,11 @@ export function parseCSV(
 
       const normalized = normalizeTypos(rawDescription)
 
-      // 1. Extract parentheses (colors / quality / network / flag / size / variant)
+      // 1. Extract parentheticals (color / quality / network / flag / size / variant)
       const par = extractParentheticals(normalized)
       let working = par.cleanedDesc
 
-      // 2. Extract brackets / braces (markers)
+      // 2. Extract bracket markers
       const markerRes = extractMarkers(working)
       working = markerRes.cleanedDesc
 
@@ -1023,18 +1006,14 @@ export function parseCSV(
       if (cRes.network && !network) network = cRes.network
       if (par.network && !network) network = par.network
       flag = par.flag || cRes.flag
-      if (!color && par.colors.length > 0) {
-        color = par.colors[0]
-      }
+      if (!color && par.colors.length > 0) color = par.colors[0]
       if (!color && cRes.color) color = cRes.color
 
-      // 5. Variant (bracket / paren)
+      // 5. Variant
       variant = par.variant || cRes.variant
-
-      // 5b. Size overrides variant when present
       if (par.size) variant = par.size
 
-      // 5c. Bracket-model hint
+      // 5b. Bracket-model hint
       let bracketModelHint: string | null = null
       if (cRes.variant) {
         const vUpper = cRes.variant.toUpperCase()

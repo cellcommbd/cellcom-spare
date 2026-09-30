@@ -5,7 +5,7 @@ import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { Plus, Trash2, Save, X } from 'lucide-react'
 import { getRole } from '../../lib/auth'
-
+import { searchItems as searchItemsShared } from '../../lib/item-search'
 type Party = {
   party_id: number
   party_name: string
@@ -136,45 +136,17 @@ export default function SalesEntryPage() {
     shops.find((s) => s.party_id === pickedShop.id)?.current_balance || 0
 
   // Server-side item search per row
- async function searchItems(rowId: number, query: string) {
-  if (!query || query.trim().length < 2) {
-    setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
-    return
+  // Server-side multi-word item search — delegates to search_items RPC
+  async function searchItems(rowId: number, query: string) {
+    if (!query || query.trim().length < 2) {
+      setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
+      return
+    }
+
+    const results = await searchItemsShared(query)
+    const items = results as Item[]
+    setRowItemOptions((prev) => ({ ...prev, [rowId]: items }))
   }
-  const q = query.trim().toLowerCase()
-
-  // Fetch a wider set (100) so we can sort prefix-first in JS
-  const { data, error } = await supabase
-    .from('items')
-    .select(
-      'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
-    )
-    .ilike('sku', `%${q}%`)
-    .order('sku')
-    .limit(100)
-
-  if (error) {
-    console.error('searchItems error:', error)
-    setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
-    return
-  }
-
-  // Sort: prefix matches first, then substring matches. Keep alphabetical within each group.
-  const items = (data as Item[]) || []
-  const prefixMatches: Item[] = []
-  const otherMatches: Item[] = []
-  for (const it of items) {
-    if (it.sku.toLowerCase().startsWith(q)) prefixMatches.push(it)
-    else otherMatches.push(it)
-  }
-  const sorted = [...prefixMatches, ...otherMatches].slice(0, 50)
-
-  setRowItemOptions((prev) => ({
-    ...prev,
-    [rowId]: sorted,
-  }))
-}
-
   function addRow(): number {
     const newId = nextRowId
     setRows((prev) => [

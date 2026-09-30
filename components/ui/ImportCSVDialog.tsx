@@ -1,4 +1,3 @@
-
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -35,6 +34,7 @@ type Props = {
   open: boolean
   onClose: () => void
   onImport: (matched: ParsedRow[], newItems: ParsedRow[], margin: number) => void
+  actionLabel?: string
 }
 
 const ROLE_OPTIONS: { value: ColumnRole; label: string }[] = [
@@ -47,7 +47,12 @@ const ROLE_OPTIONS: { value: ColumnRole; label: string }[] = [
   { value: 'description', label: 'Description (Brand + Model)' },
 ]
 
-export function ImportCSVDialog({ open, onClose, onImport }: Props) {
+export function ImportCSVDialog({
+  open,
+  onClose,
+  onImport,
+  actionLabel,
+}: Props) {
   const [csvText, setCsvText] = useState('')
   const [mode, setMode] = useState<'auto' | 'manual'>('auto')
   const [detected, setDetected] = useState<DetectedColumn[]>([])
@@ -66,13 +71,24 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
 
   async function loadAliases() {
     setLoading(true)
-    const [brandRes, partRes, itemRes] = await Promise.all([
+
+    const [brandRes, partRes] = await Promise.all([
       supabase.from('brand_aliases').select('csv_code, brand_code'),
       supabase.from('part_type_aliases').select('csv_text, part_code'),
-      supabase
-        .from('items')
-        .select('item_id, sku, brand_id, model_id, part_id, quality'),
     ])
+
+    const allItems: any[] = []
+    const PAGE = 1000
+    for (let from = 0; from < 20000; from += PAGE) {
+      const { data, error } = await supabase
+        .from('items')
+        .select('item_id, sku, brand_id, model_id, part_id, quality')
+        .order('sku')
+        .range(from, from + PAGE - 1)
+      if (error || !data || data.length === 0) break
+      allItems.push(...data)
+      if (data.length < PAGE) break
+    }
 
     const brandAliases: Record<string, string> = {}
     for (const r of (brandRes.data as any[]) || []) {
@@ -85,7 +101,7 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
     }
 
     setAliases({ brandAliases, partAliases })
-    setItems((itemRes.data as ItemLookup[]) || [])
+    setItems(allItems as ItemLookup[])
     setLoading(false)
   }
 
@@ -98,7 +114,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
       setCsvText(text)
       setParsedRows([])
       setDetected([])
-      setEditingRow(null)
     }
     reader.readAsText(file)
   }
@@ -171,7 +186,10 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
           patch.partCode !== undefined ||
           patch.quality !== undefined ||
           patch.network !== undefined ||
-          patch.yearForSku !== undefined
+          patch.year !== undefined ||
+          patch.variant !== undefined ||
+          patch.flag !== undefined ||
+          patch.color !== undefined
         ) {
           const sku = buildSkuFromParts(merged)
           merged.generatedSku = sku
@@ -242,7 +260,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col">
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div className="flex items-center gap-2">
             <FileText className="w-5 h-5 text-blue-600" />
@@ -258,7 +275,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
           </button>
         </div>
 
-        {/* Mode toggle */}
         <div className="flex items-center gap-2 px-6 pt-4">
           <button
             onClick={() => setMode('auto')}
@@ -284,15 +300,15 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
           </button>
         </div>
 
-        {/* Body */}
         <div className="flex-1 overflow-y-auto p-6">
           {loading && (
-            <div className="text-center py-8 text-slate-500">Loading...</div>
+            <div className="text-center py-8 text-slate-500">
+              Loading items master...
+            </div>
           )}
 
           {!loading && (
             <>
-              {/* Step 1: Upload / Paste */}
               <div className="mb-6">
                 <div className="flex items-center gap-3 mb-3">
                   <label className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 cursor-pointer">
@@ -332,7 +348,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
                 )}
               </div>
 
-              {/* Auto mode */}
               {mode === 'auto' && (
                 <div>
                   <button
@@ -345,7 +360,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
                 </div>
               )}
 
-              {/* Manual mode */}
               {mode === 'manual' && (
                 <div>
                   <button
@@ -447,7 +461,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
                 </div>
               )}
 
-              {/* Preview */}
               {parsedRows.length > 0 && (
                 <>
                   <div className="flex items-center gap-4 mt-6 mb-3 text-sm">
@@ -484,96 +497,72 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
                           <th className="px-3 py-2 text-center w-10"></th>
                         </tr>
                       </thead>
- <tbody>
-  {parsedRows.map((r, i) => {
-    // Show parsed values if the row has been resolved (matched or new),
-    // otherwise fall back to the raw input.
-    const showParsed =
-      (r.status === 'matched' || r.status === 'new') &&
-      r.brandCode &&
-      r.modelName &&
-      r.partCode
-
-    const displayDesc = showParsed
-      ? `${r.brandCode} ${r.modelName}${r.quality !== 'Normal' ? ` · ${r.quality}` : ''}`
-      : r.rawDescription
-
-    const displayType = showParsed ? (r.partCode as string) : r.rawType
-
-    const wasEdited =
-      r.status !== 'error' &&
-      (r.rawDescription !== displayDesc || r.rawType !== displayType)
-
-    return (
-      <tr
-        key={i}
-        className={
-          r.status === 'matched'
-            ? 'bg-green-50/50'
-            : r.status === 'new'
-            ? 'bg-amber-50/50'
-            : 'bg-red-50/50'
-        }
-      >
-        <td className="px-3 py-1.5 text-slate-500">{i + 1}</td>
-
-        <td className="px-3 py-1.5 text-slate-700">
-          {displayDesc}
-          {wasEdited && (
-            <span className="ml-2 text-[10px] text-blue-600 font-semibold">
-              (edited)
-            </span>
-          )}
-        </td>
-
-        <td className="px-3 py-1.5 text-slate-600">{displayType || '—'}</td>
-
-        <td className="px-3 py-1.5 font-mono text-slate-800">
-          {r.generatedSku || '—'}
-        </td>
-
-        <td className="px-3 py-1.5 text-right">{r.qty}</td>
-
-        <td className="px-3 py-1.5 text-right">
-          ₹ {r.rate.toFixed(2)}
-        </td>
-
-        <td className="px-3 py-1.5 text-center">
-          {r.status === 'matched' && (
-            <span className="text-green-700 text-[10px] font-semibold">
-              MATCHED
-            </span>
-          )}
-          {r.status === 'new' && (
-            <span className="text-amber-700 text-[10px] font-semibold">
-              NEW
-            </span>
-          )}
-          {r.status === 'error' && (
-            <span
-              className="text-red-700 text-[10px] font-semibold"
-              title={r.errorMessage}
-            >
-              ERROR
-            </span>
-          )}
-        </td>
-
-        <td className="px-3 py-1.5 text-center">
-          <button
-            onClick={() => setEditingRow(editingRow === i ? null : i)}
-            className={`p-1 rounded hover:bg-slate-200 ${
-              r.status === 'error' ? 'text-red-600' : 'text-slate-400'
-            }`}
-            title="Edit row"
-          >
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
-        </td>
-      </tr>
-    )
-  })}
-</tbody>
+                      <tbody>
+                        {parsedRows.map((r, i) => (
+                          <tr
+                            key={i}
+                            className={
+                              r.status === 'matched'
+                                ? 'bg-green-50/50'
+                                : r.status === 'new'
+                                ? 'bg-amber-50/50'
+                                : 'bg-red-50/50'
+                            }
+                          >
+                            <td className="px-3 py-1.5 text-slate-500">
+                              {i + 1}
+                            </td>
+                            <td className="px-3 py-1.5 text-slate-700">
+                              {r.rawDescription}
+                            </td>
+                            <td className="px-3 py-1.5 text-slate-600">
+                              {r.rawType}
+                            </td>
+                            <td className="px-3 py-1.5 font-mono text-slate-800">
+                              {r.generatedSku || '—'}
+                            </td>
+                            <td className="px-3 py-1.5 text-right">{r.qty}</td>
+                            <td className="px-3 py-1.5 text-right">
+                              ₹ {r.rate.toFixed(2)}
+                            </td>
+                            <td className="px-3 py-1.5 text-center">
+                              {r.status === 'matched' && (
+                                <span className="text-green-700 text-[10px] font-semibold">
+                                  MATCHED
+                                </span>
+                              )}
+                              {r.status === 'new' && (
+                                <span className="text-amber-700 text-[10px] font-semibold">
+                                  NEW
+                                </span>
+                              )}
+                              {r.status === 'error' && (
+                                <span
+                                  className="text-red-700 text-[10px] font-semibold"
+                                  title={r.errorMessage}
+                                >
+                                  ERROR
+                                </span>
+                              )}
+                            </td>
+                            <td className="px-3 py-1.5 text-center">
+                              <button
+                                onClick={() =>
+                                  setEditingRow(editingRow === i ? null : i)
+                                }
+                                className={`p-1 rounded hover:bg-slate-200 ${
+                                  r.status === 'error'
+                                    ? 'text-red-600'
+                                    : 'text-slate-400'
+                                }`}
+                                title="Edit row"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
                     </table>
                   </div>
 
@@ -591,7 +580,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
           )}
         </div>
 
-        {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
           <div className="flex items-center gap-4">
             <div className="text-xs text-slate-500">
@@ -625,7 +613,7 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
                 className="h-9 px-5 text-sm font-semibold text-white bg-amber-600 rounded-lg hover:bg-amber-700 flex items-center gap-2"
               >
                 <Sparkles className="w-4 h-4" />
-                Create All & Fill ({totalUsable})
+                {actionLabel || 'Create All & Fill'} ({totalUsable})
               </button>
             )}
           </div>
@@ -634,7 +622,6 @@ export function ImportCSVDialog({ open, onClose, onImport }: Props) {
     </div>
   )
 }
-
 /* ============================================================
    Edit row panel — inline editor for a single preview row
    ============================================================ */
@@ -653,6 +640,10 @@ function EditRowPanel({
   const [model, setModel] = useState(row.modelName || '')
   const [part, setPart] = useState(row.partCode || '')
   const [network, setNetwork] = useState(row.network || '')
+  const [year, setYear] = useState(row.year || '')
+  const [variant, setVariant] = useState(row.variant || '')
+  const [flag, setFlag] = useState(row.flag || '')
+  const [color, setColor] = useState(row.color || '')
   const [quality, setQuality] = useState<Quality>(row.quality || 'Normal')
   const [qty, setQty] = useState(String(row.qty))
   const [rate, setRate] = useState(String(row.rate))
@@ -662,6 +653,10 @@ function EditRowPanel({
     setModel(row.modelName || '')
     setPart(row.partCode || '')
     setNetwork(row.network || '')
+    setYear(row.year || '')
+    setVariant(row.variant || '')
+    setFlag(row.flag || '')
+    setColor(row.color || '')
     setQuality(row.quality || 'Normal')
     setQty(String(row.qty))
     setRate(String(row.rate))
@@ -673,6 +668,10 @@ function EditRowPanel({
       modelName: model.trim() || null,
       partCode: part.trim() || null,
       network: network.trim() || null,
+      year: year.trim() || null,
+      variant: variant.trim() || null,
+      flag: flag.trim() || null,
+      color: color.trim() || null,
       quality: quality,
       qty: parseFloat(qty) || 0,
       rate: parseFloat(rate) || 0,
@@ -734,12 +733,56 @@ function EditRowPanel({
         </div>
         <div>
           <label className="block text-[11px] font-medium text-slate-700 mb-1">
+            Year
+          </label>
+          <input
+            value={year}
+            onChange={(e) => setYear(e.target.value.toUpperCase())}
+            placeholder="2021"
+            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-medium text-slate-700 mb-1">
+            Variant
+          </label>
+          <input
+            value={variant}
+            onChange={(e) => setVariant(e.target.value.toUpperCase())}
+            placeholder="MAIN / BOX-PACKING"
+            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-medium text-slate-700 mb-1">
             Network
           </label>
           <input
             value={network}
             onChange={(e) => setNetwork(e.target.value.toUpperCase())}
             placeholder="4G / 5G"
+            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-medium text-slate-700 mb-1">
+            Flag
+          </label>
+          <input
+            value={flag}
+            onChange={(e) => setFlag(e.target.value.toUpperCase())}
+            placeholder="WC / ONLY"
+            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-medium text-slate-700 mb-1">
+            Color
+          </label>
+          <input
+            value={color}
+            onChange={(e) => setColor(e.target.value.toUpperCase())}
+            placeholder="BLACK"
             className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -757,6 +800,7 @@ function EditRowPanel({
             <option value="100 OG">100 OG</option>
             <option value="ORG">ORG</option>
             <option value="Care OG">Care OG</option>
+            <option value="China OG">China OG</option>
           </select>
         </div>
         <div>
@@ -782,10 +826,10 @@ function EditRowPanel({
             className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        <div className="flex items-end">
+        <div className="flex items-end col-span-2 md:col-span-4">
           <button
             onClick={handleApply}
-            className="w-full h-8 text-sm font-semibold text-white bg-blue-600 rounded hover:bg-blue-700"
+            className="w-full md:w-32 h-8 text-sm font-semibold text-white bg-blue-600 rounded hover:bg-blue-700"
           >
             Apply
           </button>
@@ -799,9 +843,12 @@ function EditRowPanel({
             brandCode: brand.trim() || null,
             modelName: model.trim() || null,
             partCode: part.trim() || null,
+            year: year.trim() || null,
+            variant: variant.trim() || null,
             network: network.trim() || null,
+            flag: flag.trim() || null,
+            color: color.trim() || null,
             quality: quality,
-            yearForSku: row.yearForSku,
           }) || '—'}
         </span>
       </div>
@@ -809,30 +856,45 @@ function EditRowPanel({
   )
 }
 
+/* ============================================================
+   Local SKU builder — mirrors lib/csv-parser v12 generateSku
+   Template: BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK]
+             - [FLAG] - [COLOR] - [QUALITY]
+   ============================================================ */
 function buildSkuFromParts(row: {
   brandCode: string | null
   modelName: string | null
   partCode: string | null
+  year: string | null
+  variant: string | null
   network: string | null
+  flag: string | null
+  color: string | null
   quality: string
-  yearForSku: string | null
 }): string | null {
   if (!row.brandCode || !row.modelName || !row.partCode) return null
 
-  const modelPart = row.modelName
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '-')
-    .replace(/-+/g, '-')
-    .replace(/^-|-$/g, '')
+  const dash = (s: string) =>
+    s
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
 
-  const seg: string[] = [row.brandCode, modelPart]
-  if (row.yearForSku) seg.push(row.yearForSku)
+  const seg: string[] = []
+  seg.push(row.brandCode)
+  seg.push(dash(row.modelName))
   seg.push(row.partCode)
+  if (row.year) seg.push(row.year)
+  if (row.variant) seg.push(dash(row.variant))
   if (row.network) seg.push(row.network)
+  if (row.flag) seg.push(dash(row.flag))
+  if (row.color) seg.push(dash(row.color))
   if (row.quality === 'OG') seg.push('OG')
-  if (row.quality === '100 OG') seg.push('100OG')
-  if (row.quality === 'ORG') seg.push('ORG')
-  if (row.quality === 'Care OG') seg.push('CARE')
+  else if (row.quality === '100 OG') seg.push('100OG')
+  else if (row.quality === 'ORG') seg.push('ORG')
+  else if (row.quality === 'Care OG') seg.push('CARE')
+  else if (row.quality === 'China OG') seg.push('CHINAOG')
 
-  return seg.join('-')
+  return seg.filter(Boolean).join('-')
 }
