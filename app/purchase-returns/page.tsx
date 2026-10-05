@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import { SmartCombobox } from '@/components/ui/smart-combobox'
 import { ImportCSVDialog } from '@/components/ui/ImportCSVDialog'
 import { ParsedRow } from '@/lib/csv-parser'
-import { Save, X, Upload } from 'lucide-react'
+import { searchItems as searchItemsShared } from '@/lib/item-search'
+import { Save, X, Upload, Trash2 } from 'lucide-react'
 
 // ---------- Types ----------
 type Party = {
@@ -15,37 +16,10 @@ type Party = {
   current_balance: number
 }
 
-type PurchaseHeader = {
-  purchase_id: number
-  party_id: number
-  invoice_no: string
-  purchase_date: string
-  total_amount: number
-}
-
-type PurchaseItem = {
-  detail_id: number
-  purchase_id: number
-  item_id: number
-  quantity: number
-  rate: number
-  amount: number
-  returned_qty?: number
-}
-
-type Item = {
-  item_id: number
-  sku: string
-  current_stock: number
-}
-
 type ReturnRow = {
   rowId: number
-  detail_id: number
   item_id: number
   sku: string
-  original_qty: number
-  already_returned: number
   rate: number
   return_qty: number
   reason: string
@@ -56,6 +30,29 @@ type PickedSupplier = {
   id: number | null
   label: string
   isNew: boolean
+}
+
+type SearchItem = {
+  item_id: number
+  sku: string
+  current_stock: number
+  cost_price: number
+  quality?: string | null
+  variant?: string | null
+}
+
+type SupplierPurchase = {
+  purchase_id: number
+  invoice_no: string | null
+  purchase_date: string
+  total_amount: number
+}
+
+type InvoiceItem = {
+  item_id: number
+  sku: string
+  quantity: number
+  rate: number
 }
 
 const REASONS = [
@@ -70,9 +67,6 @@ const DEFAULT_REASON = 'Wrong Item Received'
 // ---------- Component ----------
 export default function PurchaseReturnPage() {
   const [suppliers, setSuppliers] = useState<Party[]>([])
-  const [items, setItems] = useState<Item[]>([])
-  const [supplierPurchases, setSupplierPurchases] = useState<PurchaseHeader[]>([])
-  const [selectedPurchaseItems, setSelectedPurchaseItems] = useState<PurchaseItem[]>([])
   const [todayReturns, setTodayReturns] = useState<any[]>([])
 
   const [pickedSupplier, setPickedSupplier] = useState<PickedSupplier>({
@@ -80,18 +74,28 @@ export default function PurchaseReturnPage() {
     label: '',
     isNew: false,
   })
-  const [pickedPurchaseId, setPickedPurchaseId] = useState<number | null>(null)
   const [returnDate, setReturnDate] = useState(
     new Date().toISOString().slice(0, 10)
   )
 
-  const [checkedItemIds, setCheckedItemIds] = useState<number[]>([])
+  // Purchases of the selected supplier
+  const [supplierPurchases, setSupplierPurchases] = useState<SupplierPurchase[]>([])
+  const [pickedPurchaseId, setPickedPurchaseId] = useState<number | null>(null)
+  const [invoiceItems, setInvoiceItems] = useState<InvoiceItem[]>([])
+
   const [rows, setRows] = useState<ReturnRow[]>([])
   const [nextRowId, setNextRowId] = useState(1)
+
+  // Manual item search (used when no invoice is selected)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchOptions, setSearchOptions] = useState<SearchItem[]>([])
+  const [searching, setSearching] = useState(false)
 
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState('')
   const [showImport, setShowImport] = useState(false)
+
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // ---------- Initial load ----------
   useEffect(() => {
@@ -100,13 +104,12 @@ export default function PurchaseReturnPage() {
 
   async function loadBase() {
     const today = new Date().toISOString().slice(0, 10)
-    const [s, i, r] = await Promise.all([
+    const [s, r] = await Promise.all([
       supabase
         .from('parties')
         .select('*')
         .eq('party_type', 'Supplier')
         .order('party_name'),
-      supabase.from('items').select('item_id, sku, current_stock'),
       supabase
         .from('returns')
         .select('*')
@@ -115,116 +118,118 @@ export default function PurchaseReturnPage() {
         .order('return_id', { ascending: false }),
     ])
     setSuppliers(s.data || [])
-    setItems(i.data || [])
     setTodayReturns(r.data || [])
   }
 
-  // ---------- Load supplier purchases ----------
+  // ---------- Load supplier purchases when supplier changes ----------
   useEffect(() => {
-    if (pickedSupplier.id) loadSupplierPurchases(pickedSupplier.id)
-    else {
+    if (!pickedSupplier.id) {
       setSupplierPurchases([])
       setPickedPurchaseId(null)
-      setSelectedPurchaseItems([])
-      setCheckedItemIds([])
-      setRows([])
+      setInvoiceItems([])
+      return
     }
+    loadSupplierPurchases(pickedSupplier.id)
+    setPickedPurchaseId(null)
+    setInvoiceItems([])
   }, [pickedSupplier.id])
 
   async function loadSupplierPurchases(supplierId: number) {
     const { data } = await supabase
       .from('purchases')
-      .select('*')
+      .select('purchase_id, invoice_no, purchase_date, total_amount')
       .eq('party_id', supplierId)
       .order('purchase_date', { ascending: false })
       .order('purchase_id', { ascending: false })
-      .limit(30)
+      .limit(50)
     setSupplierPurchases(data || [])
-    if (data && data.length > 0) setPickedPurchaseId(data[0].purchase_id)
-    else setPickedPurchaseId(null)
   }
 
-  // ---------- Load purchase items ----------
+  // ---------- Load invoice items when a purchase is picked ----------
   useEffect(() => {
-    if (pickedPurchaseId) loadPurchaseItems(pickedPurchaseId)
-    else {
-      setSelectedPurchaseItems([])
-      setCheckedItemIds([])
-      setRows([])
+    if (!pickedPurchaseId) {
+      setInvoiceItems([])
+      return
     }
+    loadInvoiceItems(pickedPurchaseId)
   }, [pickedPurchaseId])
 
-  async function loadPurchaseItems(purchaseId: number) {
-    const { data: piData } = await supabase
+  async function loadInvoiceItems(purchaseId: number) {
+    const { data } = await supabase
       .from('purchase_items')
-      .select('*')
+      .select('item_id, quantity, rate, items(item_id, sku)')
       .eq('purchase_id', purchaseId)
 
-    const lines = piData || []
-    if (lines.length === 0) {
-      setSelectedPurchaseItems([])
-      setCheckedItemIds([])
-      setRows([])
+    const rows = (data || []).map((r: any) => ({
+      item_id: r.item_id,
+      sku: r.items?.sku || '—',
+      quantity: Number(r.quantity),
+      rate: Number(r.rate),
+    }))
+    // Dedupe by item_id (same item can appear on multiple lines)
+    const seen = new Set<number>()
+    const deduped: InvoiceItem[] = []
+    for (const it of rows) {
+      if (seen.has(it.item_id)) continue
+      seen.add(it.item_id)
+      deduped.push(it)
+    }
+    setInvoiceItems(deduped)
+  }
+
+  // ---------- Manual search ----------
+  function onSearchChange(q: string) {
+    setSearchQuery(q)
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+    if (!q || q.trim().length < 2) {
+      setSearchOptions([])
+      return
+    }
+    searchTimerRef.current = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const results = await searchItemsShared(q)
+        setSearchOptions(results as SearchItem[])
+      } catch (e) {
+        console.error('search error', e)
+        setSearchOptions([])
+      } finally {
+        setSearching(false)
+      }
+    }, 250)
+  }
+
+  // ---------- Add a row from either the invoice list or the search list ----------
+  function addManualRow(itemId: number) {
+    const fromInvoice = invoiceItems.find((i) => i.item_id === itemId)
+    const fromSearch = searchOptions.find((i) => i.item_id === itemId)
+    const item = fromInvoice || fromSearch
+    if (!item) return
+
+    if (rows.some((r) => r.item_id === itemId)) {
+      setMessage('Item already in the return list. Edit its quantity below.')
       return
     }
 
-    const itemIds = lines.map((pi) => pi.item_id)
-    const { data: priorReturns } = await supabase
-      .from('returns')
-      .select('item_id, quantity')
-      .in('item_id', itemIds)
-      .eq('return_type', 'Supplier')
-      .eq('party_id', pickedSupplier.id)
+    const rate = 'rate' in item
+      ? Number(item.rate)
+      : Number((item as any).cost_price) || 0
 
-    const returnedByItem: Record<number, number> = {}
-    for (const r of priorReturns || []) {
-      returnedByItem[r.item_id] =
-        (returnedByItem[r.item_id] || 0) + Number(r.quantity)
-    }
-
-    const enriched: PurchaseItem[] = lines.map((pi) => ({
-      ...pi,
-      returned_qty: returnedByItem[pi.item_id] || 0,
-    }))
-
-    setSelectedPurchaseItems(enriched)
-    setCheckedItemIds([])
-    setRows([])
-  }
-
-  // ---------- Checkbox toggle (manual flow) ----------
-  function toggleChecked(pi: PurchaseItem) {
-    const alreadyReturned = pi.returned_qty || 0
-    const remaining = pi.quantity - alreadyReturned
-    if (remaining <= 0) return
-
-    const isChecked = checkedItemIds.includes(pi.item_id)
-    const item = items.find((i) => i.item_id === pi.item_id)
-
-    if (isChecked) {
-      setCheckedItemIds((prev) => prev.filter((id) => id !== pi.item_id))
-      setRows((prev) =>
-        prev.filter((r) => !(r.item_id === pi.item_id && r.source === 'manual'))
-      )
-    } else {
-      setCheckedItemIds((prev) => [...prev, pi.item_id])
-      setRows((prev) => [
-        ...prev,
-        {
-          rowId: nextRowId,
-          detail_id: pi.detail_id,
-          item_id: pi.item_id,
-          sku: item?.sku || '—',
-          original_qty: pi.quantity,
-          already_returned: alreadyReturned,
-          rate: Number(pi.rate),
-          return_qty: 1,
-          reason: DEFAULT_REASON,
-          source: 'manual',
-        },
-      ])
-      setNextRowId((n) => n + 1)
-    }
+    setRows((prev) => [
+      ...prev,
+      {
+        rowId: nextRowId,
+        item_id: itemId,
+        sku: item.sku,
+        rate,
+        return_qty: 1,
+        reason: DEFAULT_REASON,
+        source: 'manual',
+      },
+    ])
+    setNextRowId((n) => n + 1)
+    setSearchQuery('')
+    setSearchOptions([])
   }
 
   // ---------- CSV import (CN) ----------
@@ -235,7 +240,6 @@ export default function PurchaseReturnPage() {
   ) {
     setMessage('')
 
-    // Returns can only use existing items — skip "new" rows.
     const usableMatched = matched.filter(
       (r) => r.matchedItemId && r.matchedItemSku
     )
@@ -249,41 +253,27 @@ export default function PurchaseReturnPage() {
 
     let nextId = nextRowId
     const newRows: ReturnRow[] = []
-    const newChecked: number[] = []
 
     for (const r of usableMatched) {
-      const item_id = r.matchedItemId!
-      const sku = r.matchedItemSku!
-      // Check local items table for the sku (fallback to parsed)
-      const localItem = items.find((i) => i.item_id === item_id)
-
+      if (rows.some((row) => row.item_id === r.matchedItemId)) continue
       newRows.push({
         rowId: nextId++,
-        detail_id: 0, // no invoice link from CSV
-        item_id,
-        sku: localItem?.sku || sku,
-        original_qty: 0, // unknown for CSV-imported rows
-        already_returned: 0,
+        item_id: r.matchedItemId!,
+        sku: r.matchedItemSku!,
         rate: r.rate,
         return_qty: r.qty,
         reason: DEFAULT_REASON,
         source: 'csv',
       })
-      if (!newChecked.includes(item_id)) newChecked.push(item_id)
     }
 
     setRows((prev) => [...prev, ...newRows])
     setNextRowId(nextId)
-    setCheckedItemIds((prev) => [...prev, ...newChecked.filter((id) => !prev.includes(id))])
 
     const skipped = newItems.length
-    if (skipped > 0) {
-      setMessage(
-        `Imported ${newRows.length} rows. ${skipped} row(s) skipped (items not in DB — returns can only use existing items).`
-      )
-    } else {
-      setMessage(`Imported ${newRows.length} rows from CN. Review and click Save Return.`)
-    }
+    const parts: string[] = [`Imported ${newRows.length} rows.`]
+    if (skipped > 0) parts.push(`${skipped} row(s) skipped (items not in DB).`)
+    setMessage(parts.join(' '))
   }
 
   function updateRow(rowId: number, patch: Partial<ReturnRow>) {
@@ -293,14 +283,13 @@ export default function PurchaseReturnPage() {
   }
 
   function removeRow(rowId: number) {
-    const row = rows.find((r) => r.rowId === rowId)
     setRows((prev) => prev.filter((r) => r.rowId !== rowId))
-    if (row) {
-      setCheckedItemIds((prev) => prev.filter((id) => id !== row.item_id))
-    }
   }
 
-  const totalReturnValue = rows.reduce((s, r) => s + r.return_qty * r.rate, 0)
+  const totalReturnValue = rows.reduce(
+    (s, r) => s + r.return_qty * r.rate,
+    0
+  )
 
   // ---------- Save ----------
   async function saveReturn() {
@@ -308,7 +297,7 @@ export default function PurchaseReturnPage() {
     if (!pickedSupplier.id) return setMessage('Please select a supplier.')
 
     const validRows = rows.filter((r) => r.return_qty > 0 && r.item_id)
-    if (validRows.length === 0) return setMessage('Select at least one item.')
+    if (validRows.length === 0) return setMessage('Add at least one item.')
 
     setSaving(true)
 
@@ -334,6 +323,23 @@ export default function PurchaseReturnPage() {
       return
     }
 
+    // Decrease stock for each returned item
+    for (const r of validRows) {
+      const { data: item } = await supabase
+        .from('items')
+        .select('current_stock')
+        .eq('item_id', r.item_id)
+        .single()
+      if (item) {
+        await supabase
+          .from('items')
+          .update({
+            current_stock: Number(item.current_stock) - r.return_qty,
+          })
+          .eq('item_id', r.item_id)
+      }
+    }
+
     const supplier = suppliers.find((s) => s.party_id === pickedSupplier.id)
     if (supplier) {
       const newBalance = Number(supplier.current_balance) - totalReturnValue
@@ -345,11 +351,12 @@ export default function PurchaseReturnPage() {
 
     setMessage(`Saved return of ₹${totalReturnValue.toFixed(2)}.`)
 
-    setCheckedItemIds([])
     setRows([])
+    setSearchQuery('')
+    setSearchOptions([])
+    setPickedPurchaseId(null)
+    setInvoiceItems([])
     await loadBase()
-    if (pickedSupplier.id) await loadSupplierPurchases(pickedSupplier.id)
-    if (pickedPurchaseId) await loadPurchaseItems(pickedPurchaseId)
 
     setSaving(false)
   }
@@ -357,18 +364,18 @@ export default function PurchaseReturnPage() {
   function resetForm() {
     setPickedSupplier({ id: null, label: '', isNew: false })
     setPickedPurchaseId(null)
-    setSelectedPurchaseItems([])
+    setInvoiceItems([])
     setSupplierPurchases([])
-    setCheckedItemIds([])
     setRows([])
     setReturnDate(new Date().toISOString().slice(0, 10))
+    setSearchQuery('')
+    setSearchOptions([])
     setMessage('')
   }
 
   const supplierName = (id: number) =>
     suppliers.find((s) => s.party_id === id)?.party_name || '—'
-
-  // ============ RENDER ============
+    // ============ RENDER ============
   return (
     <div className="min-h-screen bg-gray-100 p-4 sm:p-8">
       <div className="max-w-6xl mx-auto">
@@ -382,7 +389,9 @@ export default function PurchaseReturnPage() {
           </div>
           <div className="flex items-end gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Return Date</label>
+              <label className="block text-xs font-medium text-gray-600 mb-1">
+                Return Date
+              </label>
               <input
                 type="date"
                 value={returnDate}
@@ -393,7 +402,11 @@ export default function PurchaseReturnPage() {
             <button
               onClick={() => setShowImport(true)}
               disabled={!pickedSupplier.id}
-              title={!pickedSupplier.id ? 'Select a supplier first' : 'Import CN CSV'}
+              title={
+                !pickedSupplier.id
+                  ? 'Select a supplier first'
+                  : 'Import CN CSV'
+              }
               className="h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
             >
               <Upload className="size-4" />
@@ -404,11 +417,17 @@ export default function PurchaseReturnPage() {
 
         <div className="bg-white border border-gray-300 rounded p-4 sm:p-6 mb-6 shadow-sm">
 
+          {/* Supplier + Invoice picker */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Supplier</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Supplier
+              </label>
               <SmartCombobox
-                options={suppliers.map((s) => ({ value: s.party_id, label: s.party_name }))}
+                options={suppliers.map((s) => ({
+                  value: s.party_id,
+                  label: s.party_name,
+                }))}
                 value={
                   pickedSupplier.id
                     ? String(pickedSupplier.id)
@@ -417,7 +436,11 @@ export default function PurchaseReturnPage() {
                     : null
                 }
                 onValueChange={(v, label, isNew) =>
-                  setPickedSupplier({ id: isNew ? null : Number(v), label, isNew })
+                  setPickedSupplier({
+                    id: isNew ? null : Number(v),
+                    label,
+                    isNew,
+                  })
                 }
                 placeholder="Select or type supplier..."
                 inputDataAttr="preturn-supplier"
@@ -426,12 +449,14 @@ export default function PurchaseReturnPage() {
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">
-                Original Invoice (for manual entry — optional)
+                Original Invoice (optional — helps prefill items)
               </label>
               <select
                 value={pickedPurchaseId || ''}
                 onChange={(e) =>
-                  setPickedPurchaseId(e.target.value ? Number(e.target.value) : null)
+                  setPickedPurchaseId(
+                    e.target.value ? Number(e.target.value) : null
+                  )
                 }
                 disabled={!pickedSupplier.id || supplierPurchases.length === 0}
                 className="w-full h-10 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
@@ -445,76 +470,53 @@ export default function PurchaseReturnPage() {
                 </option>
                 {supplierPurchases.map((p) => (
                   <option key={p.purchase_id} value={p.purchase_id}>
-                    #{p.purchase_id} · {p.purchase_date} · Inv: {p.invoice_no || '—'} · ₹{Number(p.total_amount).toFixed(2)}
+                    #{p.purchase_id} · {p.purchase_date} · Inv:{' '}
+                    {p.invoice_no || '—'} · ₹
+                    {Number(p.total_amount).toFixed(2)}
                   </option>
                 ))}
               </select>
             </div>
           </div>
 
-          {pickedPurchaseId && (
-            <>
-              {selectedPurchaseItems.length === 0 ? (
-                <div className="px-3 py-4 text-center text-sm text-gray-400 border border-gray-200 rounded mb-6">
-                  No items in this purchase.
-                </div>
-              ) : (
-                <div className="mb-6">
-                  <div className="text-xs font-medium text-gray-600 mb-2">
-                    Items in this invoice — check the ones you want to return:
-                  </div>
-                  <div className="border border-gray-300 rounded divide-y divide-gray-200 max-h-72 overflow-y-auto">
-                    {selectedPurchaseItems.map((pi) => {
-                      const item = items.find((i) => i.item_id === pi.item_id)
-                      const returned = pi.returned_qty || 0
-                      const remaining = pi.quantity - returned
-                      const fullyReturned = remaining <= 0
-                      const checked = checkedItemIds.includes(pi.item_id)
-                      return (
-                        <label
-                          key={pi.detail_id}
-                          className={`flex items-center gap-3 px-3 py-2 ${
-                            fullyReturned
-                              ? 'bg-gray-100 opacity-70 cursor-not-allowed'
-                              : checked
-                              ? 'bg-blue-50 cursor-pointer'
-                              : 'hover:bg-gray-50 cursor-pointer'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={checked}
-                            disabled={fullyReturned}
-                            onChange={() => toggleChecked(pi)}
-                            className="size-4 accent-blue-600"
-                          />
-                          <span className="flex-1 font-mono text-sm text-gray-800">
-                            {item?.sku || '—'}
-                          </span>
-                          <span className="text-xs text-gray-500">
-                            Qty: {pi.quantity}
-                            {returned > 0 && (
-                              <span className="ml-2 text-orange-700">
-                                · returned: {returned} · left: {remaining}
-                              </span>
-                            )}
-                          </span>
-                          <span className="text-sm text-gray-600 w-24 text-right">
-                            ₹ {Number(pi.rate).toFixed(2)}
-                          </span>
-                          {fullyReturned && (
-                            <span className="text-xs font-medium px-2 py-0.5 rounded bg-red-100 text-red-800">
-                              Fully Returned
-                            </span>
-                          )}
-                        </label>
-                      )
-                    })}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
+          {/* Manual search / invoice item picker */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              {invoiceItems.length > 0
+                ? `Items in invoice (${invoiceItems.length}) — select to add`
+                : 'Add item manually'}
+            </label>
+            <SmartCombobox
+              options={
+                invoiceItems.length > 0
+                  ? invoiceItems.map((it) => ({
+                      value: it.item_id,
+                      label: `${it.sku} · qty ${it.quantity} · ₹${it.rate.toFixed(2)}`,
+                    }))
+                  : searchOptions.map((it) => ({
+                      value: it.item_id,
+                      label: `${it.sku} · stock ${it.current_stock} · cp ₹${Number(
+                        it.cost_price
+                      ).toFixed(0)}`,
+                    }))
+              }
+              value={null}
+              onValueChange={(v, _l, isNew) => {
+                if (isNew) return
+                addManualRow(Number(v))
+              }}
+              onSearch={(q) => onSearchChange(q)}
+              placeholder={
+                invoiceItems.length > 0
+                  ? 'Pick from invoice items above…'
+                  : searching
+                  ? 'Searching…'
+                  : 'Type 2+ letters to search SKU…'
+              }
+              allowCreate={false}
+              focusNextOnSelect={false}
+            />
+          </div>
 
           {rows.length > 0 && (
             <div className="mb-6">
@@ -525,14 +527,24 @@ export default function PurchaseReturnPage() {
                 <table className="w-full border-collapse text-sm min-w-[720px]">
                   <thead>
                     <tr className="bg-gray-100">
-                      <th className="w-10 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">#</th>
-                      <th className="border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Item</th>
-                      <th className="w-20 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Inv Qty</th>
-                      <th className="w-20 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Already Ret.</th>
-                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Rate</th>
-                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Return Qty</th>
-                      <th className="w-44 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
-                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                      <th className="w-10 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                        #
+                      </th>
+                      <th className="border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                        Item
+                      </th>
+                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">
+                        Rate
+                      </th>
+                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">
+                        Return Qty
+                      </th>
+                      <th className="w-44 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">
+                        Reason
+                      </th>
+                      <th className="w-28 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">
+                        Amount
+                      </th>
                       <th className="w-10 border-b border-gray-300 px-2 py-2"></th>
                     </tr>
                   </thead>
@@ -540,32 +552,44 @@ export default function PurchaseReturnPage() {
                     {rows.map((row, idx) => {
                       const amount = row.return_qty * row.rate
                       const isCsv = row.source === 'csv'
-                      const maxQty = row.original_qty - row.already_returned
-                      const hasMax = maxQty > 0
                       return (
-                        <tr key={row.rowId} className={`border-b border-gray-200 ${isCsv ? 'bg-emerald-50/40' : ''}`}>
-                          <td className="px-2 py-1 text-center text-gray-500 text-xs">{idx + 1}</td>
-                          <td className="px-2 py-1 text-gray-800 font-mono text-xs">{row.sku}</td>
-                          <td className="px-2 py-1 text-right text-gray-600">
-                            {isCsv ? '—' : row.original_qty}
+                        <tr
+                          key={row.rowId}
+                          className={`border-b border-gray-200 ${
+                            isCsv ? 'bg-emerald-50/40' : ''
+                          }`}
+                        >
+                          <td className="px-2 py-1 text-center text-gray-500 text-xs">
+                            {idx + 1}
                           </td>
-                          <td className="px-2 py-1 text-right text-orange-700">
-                            {isCsv ? '—' : row.already_returned > 0 ? row.already_returned : '—'}
+                          <td className="px-2 py-1 text-gray-800 font-mono text-xs">
+                            {row.sku}
                           </td>
-                          <td className="px-2 py-1 text-right text-gray-800">₹ {row.rate.toFixed(2)}</td>
+                          <td className="px-2 py-1">
+                            <input
+                              type="number"
+                              value={row.rate || ''}
+                              onChange={(e) =>
+                                updateRow(row.rowId, {
+                                  rate: parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              className="w-full h-8 px-2 text-sm text-right border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            />
+                          </td>
                           <td className="px-2 py-1">
                             <input
                               type="number"
                               value={row.return_qty || ''}
+                              min={1}
                               onChange={(e) =>
                                 updateRow(row.rowId, {
-                                  return_qty: hasMax
-                                    ? Math.min(parseFloat(e.target.value) || 0, maxQty)
-                                    : parseFloat(e.target.value) || 0,
+                                  return_qty: Math.max(
+                                    0,
+                                    parseFloat(e.target.value) || 0
+                                  ),
                                 })
                               }
-                              max={hasMax ? maxQty : undefined}
-                              min={1}
                               className="w-full h-8 px-2 text-sm text-right border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </td>
@@ -573,12 +597,16 @@ export default function PurchaseReturnPage() {
                             <select
                               value={row.reason}
                               onChange={(e) =>
-                                updateRow(row.rowId, { reason: e.target.value })
+                                updateRow(row.rowId, {
+                                  reason: e.target.value,
+                                })
                               }
                               className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                             >
                               {REASONS.map((r) => (
-                                <option key={r} value={r}>{r}</option>
+                                <option key={r} value={r}>
+                                  {r}
+                                </option>
                               ))}
                             </select>
                           </td>
@@ -591,7 +619,7 @@ export default function PurchaseReturnPage() {
                               className="text-red-500 hover:text-red-700"
                               title="Remove row"
                             >
-                              <X className="size-3.5" />
+                              <Trash2 className="size-3.5" />
                             </button>
                           </td>
                         </tr>
@@ -615,7 +643,9 @@ export default function PurchaseReturnPage() {
           <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 pt-4 border-t border-gray-200">
             <button
               onClick={saveReturn}
-              disabled={saving || rows.length === 0 || totalReturnValue === 0}
+              disabled={
+                saving || rows.length === 0 || totalReturnValue === 0
+              }
               className="h-10 px-6 text-sm font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
             >
               <Save className="size-4" />
@@ -628,7 +658,9 @@ export default function PurchaseReturnPage() {
               <X className="size-4" />
               Clear
             </button>
-            {message && <div className="text-sm text-gray-700">{message}</div>}
+            {message && (
+              <div className="text-sm text-gray-700">{message}</div>
+            )}
           </div>
         </div>
 
@@ -641,25 +673,42 @@ export default function PurchaseReturnPage() {
           <table className="w-full border-collapse text-sm min-w-[600px]">
             <thead>
               <tr className="bg-gray-100">
-                <th className="w-16 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">ID</th>
-                <th className="border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">Supplier</th>
-                <th className="w-48 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
-                <th className="w-28 border-b border-gray-300 px-3 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                <th className="w-16 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">
+                  ID
+                </th>
+                <th className="border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">
+                  Supplier
+                </th>
+                <th className="w-48 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">
+                  Reason
+                </th>
+                <th className="w-28 border-b border-gray-300 px-3 py-2 text-right text-xs font-semibold text-gray-600">
+                  Amount
+                </th>
               </tr>
             </thead>
             <tbody>
               {todayReturns.length === 0 ? (
                 <tr>
-                  <td colSpan={4} className="px-3 py-4 text-center text-sm text-gray-400">
+                  <td
+                    colSpan={4}
+                    className="px-3 py-4 text-center text-sm text-gray-400"
+                  >
                     No supplier returns today yet.
                   </td>
                 </tr>
               ) : (
                 todayReturns.map((r: any) => (
                   <tr key={r.return_id} className="hover:bg-gray-50">
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-600">{r.return_id}</td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">{supplierName(r.party_id)}</td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">{r.reason || '—'}</td>
+                    <td className="border-b border-gray-200 px-3 py-2 text-gray-600">
+                      {r.return_id}
+                    </td>
+                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">
+                      {supplierName(r.party_id)}
+                    </td>
+                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">
+                      {r.reason || '—'}
+                    </td>
                     <td className="border-b border-gray-200 px-3 py-2 text-right font-medium text-gray-800">
                       ₹ {Number(r.total_amount).toFixed(2)}
                     </td>

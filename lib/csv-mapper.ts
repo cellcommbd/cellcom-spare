@@ -1,14 +1,11 @@
 // lib/csv-mapper.ts
-// Flexible CSV parser with user-defined column mapping.
-// v6 — uses the new object-signature generateSku from csv-parser.
+// Thin wrapper around csv-parser's parseCSV.
+// Manual column mapping produces a synthetic CSV in the parser's
+// expected 6-column format, then defers to parseCSV for everything else.
+//
+// This eliminates the drift problem: all parsing logic lives in csv-parser.ts.
 
-import {
-  ParsedRow,
-  AliasMaps,
-  ItemLookup,
-  generateSku,
-  Quality,
-} from './csv-parser'
+import { ParsedRow, AliasMaps, ItemLookup, parseCSV } from './csv-parser'
 
 export type ColumnRole =
   | 'brand'
@@ -30,7 +27,7 @@ export type ColumnMapping = {
   [columnIndex: number]: ColumnRole
 }
 
-// ---------- CSV Splitter ----------
+// ---------- CSV splitter ----------
 export function splitCSVLines(text: string): string[][] {
   const rows: string[][] = []
   const lines = text.split(/\r?\n/)
@@ -97,7 +94,6 @@ export function detectColumns(csvText: string): {
     return { columns: [], dataRows: [], error: 'CSV is empty.' }
   }
 
-  // Find header row — scan first 15 rows for one with at least 3 non-empty columns
   let headerIndex = -1
   for (let i = 0; i < Math.min(rows.length, 15); i++) {
     if (rows[i].length >= 3 && rows[i].some((c) => c.length > 0)) {
@@ -150,382 +146,62 @@ export function validateMapping(mapping: ColumnMapping): {
   return { valid: missing.length === 0, missing }
 }
 
-// ---------- Extract network from text ----------
-function extractNetwork(text: string): string | null {
-  const m = text.match(/\b(4G|5G)\b/i)
-  return m ? m[1].toUpperCase() : null
-}
-
-// ---------- Part code map (mirrors parser v6) ----------
-const PART_CODE_MAP: Record<string, string> = {
-  BP: 'BP',
-  'BACK PANEL': 'BP',
-  'BACK COVER': 'BP',
-  BK: 'BP',
-  'BACK PANEL WITH LENS': 'BP',
-
-  FH: 'FH',
-  'FULL HOUSING': 'FH',
-
-  MF: 'MF',
-  'MIDDLE FRAME': 'MF',
-  MD: 'MF',
-  MIDDLE: 'MF',
-
-  MFF: 'MFF',
-  'MIDDLE FRAME WITH FLEX': 'MFF',
-
-  LCD: 'LCD',
-  'LCD FLEX': 'LCD',
-
-  LCDCON: 'LCDCON',
-  'LCD CONNECTOR': 'LCDCON',
-  'LCD CONN': 'LCDCON',
-  'LCD CONN.': 'LCDCON',
-
-  BATCON: 'BATCON',
-  'BATTERY CONNECTOR': 'BATCON',
-  'BATTERY CONN': 'BATCON',
-  'BATTERY CONN.': 'BATCON',
-  'B/C': 'BATCON',
-
-  BOARDCONN: 'BOARDCONN',
-  'BOARD CONN': 'BOARDCONN',
-  'BOARD CONN.': 'BOARDCONN',
-
-  SENSORCONN: 'SENSORCONN',
-  'SENSOR CONN': 'SENSORCONN',
-  'ON OFF SENSOR CONN': 'SENSORCONN',
-
-  ONOFF: 'ONOFF',
-  'ON OFF FLEX': 'ONOFF',
-  'ON OFF SWITCH': 'ONOFF',
-
-  VOL: 'VOL',
-  'VOL FLEX': 'VOL',
-  'VOLUME FLEX': 'VOL',
-
-  CCFLEX: 'CCFLEX',
-  'CC FLEX': 'CCFLEX',
-  'CHARGING FLEX': 'CCFLEX',
-
-  RB: 'RB',
-  'RINGER BOX': 'RB',
-  RINGER: 'RB',
-
-  SPK: 'SPK',
-  SPEAKER: 'SPK',
-
-  SPKJ: 'SPKJ',
-  'SPEAKER JALI': 'SPKJ',
-  'SPEAKER FLEX': 'SPKJ',
-  'SPK FLEX': 'SPKJ',
-
-  CG: 'CG',
-  'CAMERA GLASS': 'CG',
-
-  CL: 'CL',
-  'CAMERA LENS': 'CL',
-
-  CAM: 'CAM',
-  CAMERA: 'CAM',
-
-  SIMTRAY: 'SIMTRAY',
-  'SIM TRAY': 'SIMTRAY',
-  'SIM TRY': 'SIMTRAY',
-  'OUT SIM TRY': 'SIMTRAY',
-  'OUT SIM TRAY': 'SIMTRAY',
-
-  GASKIT: 'GASKIT',
-  'GAS KIT': 'GASKIT',
-
-  OUTKEY: 'OUTKEY',
-  'OUT KEY': 'OUTKEY',
-
-  MIC: 'MIC',
-  'CHINA MIC': 'MIC',
-
-  VIB: 'VIB',
-  VIBRATOR: 'VIB',
-
-  ANT: 'ANT',
-  ANTENNA: 'ANT',
-
-  CHG: 'CHG',
-}
-
-function normalizePartCode(raw: string | null): string | null {
-  if (!raw) return null
-  const upper = raw.toUpperCase().trim().replace(/\.$/, '')
-  return PART_CODE_MAP[upper] || upper
-}
-
-// ---------- Parse description into brand + model ----------
-function parseDescription(
-  description: string,
-  aliases: AliasMaps
-): {
-  brandCode: string | null
-  modelName: string | null
-  network: string | null
-} {
-  const cleaned = description.trim().toUpperCase()
-
-  let network: string | null = null
-  const networkMatch = cleaned.match(/\((4G|5G)\)/i)
-  if (networkMatch) network = networkMatch[1].toUpperCase()
-
-  let noNet = cleaned.replace(/\((4G|5G)\)/gi, ' ')
-  noNet = noNet.replace(/\((\d{4})\)/g, ' $1 ')
-  noNet = noNet.replace(/[()]/g, ' ')
-  noNet = noNet.replace(/\+/g, ' PLUS ')
-  noNet = noNet.replace(/[-_/]/g, ' ')
-
-  const words = noNet.split(/\s+/).filter(Boolean)
-  if (words.length === 0) return { brandCode: null, modelName: null, network }
-
-  const firstWord = words[0]
-  let brandCode: string | null = null
-
-  if (aliases.brandAliases[firstWord]) {
-    brandCode = aliases.brandAliases[firstWord]
-  } else {
-    const twoWord = words.slice(0, 2).join('')
-    if (aliases.brandAliases[twoWord]) {
-      brandCode = aliases.brandAliases[twoWord]
-      words.splice(0, 2)
-      return { brandCode, modelName: words.join(' ') || null, network }
-    }
-    brandCode = firstWord
+// ---------- Build synthetic CSV from user-mapped columns ----------
+function buildSyntheticCsv(
+  dataRows: string[][],
+  mapping: ColumnMapping
+): string {
+  const roleToCol: Partial<Record<ColumnRole, number>> = {}
+  for (const [colIdxStr, role] of Object.entries(mapping)) {
+    if (role === 'ignore') continue
+    roleToCol[role] = Number(colIdxStr)
   }
 
-  const modelWords = words.slice(1)
-  return { brandCode, modelName: modelWords.join(' ') || null, network }
-}
+  const lines: string[] = ['Description of Goods,Type of Goods,Quality,Quantity,Price,Unit']
 
-// ---------- Part type phrases (longest-first) ----------
-const PART_TYPE_PHRASES = [
-  'MIDDLE FRAME WITH FLEX',
-  'ON OFF SENSOR CONN',
-  'BATTERY CONNECTOR',
-  'BATTERY CONN.',
-  'BATTERY CONN',
-  'BOARD CONN.',
-  'BOARD CONN',
-  'LCD CONNECTOR',
-  'LCD CONN.',
-  'LCD CONN',
-  'ON OFF SWITCH',
-  'ON OFF FLEX',
-  'OUT SIM TRAY',
-  'OUT SIM TRY',
-  'SIM TRAY',
-  'SIM TRY',
-  'SPEAKER JALI',
-  'SPEAKER FLEX',
-  'SPK FLEX',
-  'SPEAKER',
-  'CAMERA GLASS',
-  'CAMERA LENS',
-  'CAMERA FLEX',
-  'CHARGING FLEX',
-  'CC FLEX',
-  'MIDDLE FRAME',
-  'BACK PANEL',
-  'BACK PANLE',
-  'BACK PANAL',
-  'BACK PANNEL',
-  'BACKPANEL',
-  'BACK COVER',
-  'FULL HOUSING',
-  'LCD FLEX',
-  'RINGER BOX',
-  'RINGER',
-  'VOLUME FLEX',
-  'VOL FLEX',
-  'GAS KIT',
-  'OUT KEY',
-  'VIBRATOR',
-  'ANTENNA',
-  'B/C',
-  'MIC',
-  'BP',
-  'FH',
-  'MF',
-  'MD',
-  'BK',
-  'LCD',
-  'RB',
-  'SPK',
-]
+  for (const row of dataRows) {
+    if (!row || row.length === 0) continue
+    const firstCell = (row[0] || '').toLowerCase()
+    if (firstCell.includes('total') || firstCell === '') continue
 
-function extractPartFromDescription(desc: string): {
-  partText: string | null
-  cleanedDesc: string
-} {
-  const upper = desc.toUpperCase()
-  for (const phrase of PART_TYPE_PHRASES) {
-    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i')
-    if (re.test(upper)) {
-      const cleaned = desc
-        .replace(new RegExp(escaped, 'gi'), ' ')
-        .replace(/\s+/g, ' ')
-        .trim()
-      return { partText: phrase, cleanedDesc: cleaned }
-    }
-  }
-  return { partText: null, cleanedDesc: desc }
-}
+    const qtyStr =
+      roleToCol.quantity !== undefined ? row[roleToCol.quantity] || '' : ''
+    const rateStr =
+      roleToCol.rate !== undefined ? row[roleToCol.rate] || '' : ''
+    const qty = parseFloat(qtyStr.replace(/[^\d.-]/g, '')) || 0
+    const rate = parseFloat(rateStr.replace(/[^\d.-]/g, '')) || 0
+    if (qty <= 0) continue
 
-// ---------- Extract quality from description ----------
-function extractQuality(desc: string): {
-  quality: Quality
-  cleanedDesc: string
-} {
-  const upper = desc.toUpperCase()
-  let cleaned = desc
+    let desc = ''
+    let rawPart = ''
 
-  if (/\b100\s*%?\s*OG\b/i.test(upper)) {
-    cleaned = cleaned.replace(/\b100\s*%?\s*OG\b/gi, ' ')
-    return { quality: '100 OG', cleanedDesc: cleaned }
-  }
-
-  if (/\bCARE\s*OG\b/i.test(upper)) {
-    cleaned = cleaned.replace(/\bCARE\s*OG\b/gi, ' ')
-    return { quality: 'Care OG', cleanedDesc: cleaned }
-  }
-
-  if (/\bORG\b/i.test(upper)) {
-    cleaned = cleaned.replace(/\bORG\b/gi, ' ')
-    return { quality: 'ORG', cleanedDesc: cleaned }
-  }
-
-  if (/\bOG\b/i.test(upper) || /\bCHINA\s*OG\b/i.test(upper)) {
-    cleaned = cleaned.replace(/\bCHINA\s*OG\b/gi, ' ')
-    cleaned = cleaned.replace(/\bOG\b/gi, ' ')
-    return { quality: 'OG', cleanedDesc: cleaned }
-  }
-
-  return { quality: 'Normal', cleanedDesc: cleaned }
-}
-
-// ---------- Extract variant, year, flag, network from brackets/braces ----------
-const FLAG_MAP: Record<string, string> = {
-  WL: 'WL',
-  'W/L': 'WL',
-  'WITH LENS': 'WL',
-  'WITH LOGO': 'WL',
-  FLEX: 'FLEX',
-  'ON OFF': 'ONOFF',
-  ONOFF: 'ONOFF',
-  SET: 'SET',
-  FRONT: 'FRONT',
-  BACK: 'BACK',
-  ONLY: 'ONLY',
-  'W/C': 'WC',
-  WC: 'WC',
-  'W/CL': 'WCL',
-  WCL: 'WCL',
-}
-
-function extractMarkers(desc: string): {
-  variant: string | null
-  year: string | null
-  flag: string | null
-  networkFromMarker: string | null
-  cleanedDesc: string
-} {
-  const notes: string[] = []
-  const re = /[\[{]([^\]}]+)[\]}]/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(desc)) !== null) {
-    notes.push(m[1].trim())
-  }
-
-  let cleaned = desc.replace(/[\[{][^\]}]*[\]}]/g, ' ')
-
-  let variant: string | null = null
-  let year: string | null = null
-  let flag: string | null = null
-  let networkFromMarker: string | null = null
-
-  for (const note of notes) {
-    const upper = note.toUpperCase().trim()
-
-    // Network only
-    if (/^(4G|5G)$/.test(upper)) {
-      if (!networkFromMarker) networkFromMarker = upper
-      continue
+    if (roleToCol.description !== undefined) {
+      desc = (row[roleToCol.description] || '').trim()
+      if (roleToCol.part_type !== undefined) {
+        rawPart = (row[roleToCol.part_type] || '').trim()
+      }
+    } else {
+      const brand = roleToCol.brand !== undefined ? (row[roleToCol.brand] || '').trim() : ''
+      const model = roleToCol.model !== undefined ? (row[roleToCol.model] || '').trim() : ''
+      const part = roleToCol.part_type !== undefined ? (row[roleToCol.part_type] || '').trim() : ''
+      desc = `${brand} ${model}`.trim()
+      rawPart = part
     }
 
-    // Year
-    if (/^(19|20)\d{2}$/.test(upper)) {
-      if (!year) year = upper
-      continue
+    // Escape commas and quotes in the description
+    const esc = (s: string) => {
+      if (s.includes(',') || s.includes('"')) {
+        return `"${s.replace(/"/g, '""')}"`
+      }
+      return s
     }
 
-    // Flag
-    if (FLAG_MAP[upper]) {
-      if (!flag) flag = FLAG_MAP[upper]
-      continue
-    }
-
-    // Variant
-    if (!variant) variant = upper.replace(/\.$/, '')
+    lines.push(
+      `${esc(desc)},${esc(rawPart)},,${qty},${rate},Pcs`
+    )
   }
 
-  cleaned = cleaned.replace(/\s+/g, ' ').trim()
-  return { variant, year, flag, networkFromMarker, cleanedDesc: cleaned }
-}
-
-// ---------- Clean leftover supplier notes ----------
-function cleanSupplierNotes(desc: string): string {
-  let cleaned = desc
-  cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
-  cleaned = cleaned.replace(/\{[^}]*\}/g, ' ')
-  cleaned = cleaned.replace(/\([^)]*\)/g, ' ')
-  cleaned = cleaned.replace(
-    /\b(BOX\s*PACK(ING)?|BOX\s*PECKING|CHINA|100%|W\/C|W\/CL|WC|ORI|ORIG|METAL|SMALL|EXX\s*-?\s*BEE|EXXBEE|C\+)\b/gi,
-    ' '
-  )
-  cleaned = cleaned.replace(/\s+/g, ' ').trim()
-  return cleaned
-}
-
-// ---------- Extract color from (COLOR) ----------
-function extractColor(desc: string): {
-  color: string | null
-  cleanedDesc: string
-} {
-  const found: string[] = []
-  const re = /\(([^)]+)\)/g
-  let m: RegExpExecArray | null
-  while ((m = re.exec(desc)) !== null) {
-    const content = m[1].trim()
-    if (
-      content.length > 2 &&
-      /[A-Z]/i.test(content) &&
-      !/^[0-9]/.test(content) &&
-      !/(^|\s)(OG|CARE|100%|MAIN|OCTA|FLEX|SET|ON OFF)(\s|$)/i.test(content)
-    ) {
-      found.push(content)
-    }
-  }
-
-  const cleaned = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
-  return { color: found[0] || null, cleanedDesc: cleaned }
-}
-
-// ---------- Normalize model name ----------
-function normalizeModelName(model: string | null): string | null {
-  if (!model) return null
-  const cleaned = model
-    .toUpperCase()
-    .replace(/\s+/g, ' ')
-    .replace(/[^A-Z0-9\s]/g, '')
-    .trim()
-  return cleaned || null
+  return lines.join('\n')
 }
 
 // ---------- Main apply mapping ----------
@@ -538,188 +214,8 @@ export function applyMapping(
   const { columns, dataRows, error } = detectColumns(csvText)
   if (error || columns.length === 0) return []
 
-  const itemBySku: Record<string, ItemLookup> = {}
-  for (const it of items) {
-    itemBySku[it.sku.toUpperCase()] = it
-  }
-
-  const roleToCol: Partial<Record<ColumnRole, number>> = {}
-  for (const [colIdxStr, role] of Object.entries(mapping)) {
-    if (role === 'ignore') continue
-    roleToCol[role] = Number(colIdxStr)
-  }
-
-  const result: ParsedRow[] = []
-
-  for (let i = 0; i < dataRows.length; i++) {
-    const row = dataRows[i]
-    if (!row || row.length === 0) continue
-
-    const firstCell = (row[0] || '').toLowerCase()
-    if (firstCell.includes('total') || firstCell === '') continue
-
-    const qtyStr =
-      roleToCol.quantity !== undefined ? row[roleToCol.quantity] || '0' : '0'
-    const rateStr =
-      roleToCol.rate !== undefined ? row[roleToCol.rate] || '0' : '0'
-
-    const qty = parseFloat(qtyStr.replace(/[^\d.-]/g, '')) || 0
-    const rate = parseFloat(rateStr.replace(/[^\d.-]/g, '')) || 0
-
-    if (qty <= 0) continue
-
-    let brandCode: string | null = null
-    let modelName: string | null = null
-    let network: string | null = null
-    let year: string | null = null
-    let variant: string | null = null
-    let partCode: string | null = null
-    let quality: Quality = 'Normal'
-    let flag: string | null = null
-    let color: string | null = null
-    let rawDescription = ''
-    let rawType = ''
-
-    if (roleToCol.description !== undefined) {
-      // Description-based: extract everything from one column
-      const desc = row[roleToCol.description] || ''
-      rawDescription = desc
-
-      // Extract color first (from parentheses)
-      const c = extractColor(desc)
-      color = c.color
-      let working = c.cleanedDesc
-
-      // Extract markers ([...] and {...})
-      const mk = extractMarkers(working)
-      variant = mk.variant
-      year = mk.year
-      flag = mk.flag
-      if (mk.networkFromMarker) network = mk.networkFromMarker
-      working = mk.cleanedDesc
-
-      // Extract quality
-      const q = extractQuality(working)
-      quality = q.quality
-      working = q.cleanedDesc
-
-      // Extract part type
-      if (roleToCol.part_type !== undefined) {
-        // explicit part column
-        const rawPart = (row[roleToCol.part_type] || '').toUpperCase().trim()
-        if (rawPart) {
-          rawType = rawPart
-          partCode =
-            aliases.partAliases[rawPart] || normalizePartCode(rawPart)
-        }
-      }
-      if (!partCode) {
-        const extracted = extractPartFromDescription(working)
-        if (extracted.partText) {
-          rawType = extracted.partText
-          partCode =
-            aliases.partAliases[extracted.partText.toUpperCase()] ||
-            normalizePartCode(extracted.partText)
-          working = extracted.cleanedDesc
-        }
-      }
-
-      // Clean remaining notes
-      working = cleanSupplierNotes(working)
-
-      const parsed = parseDescription(working, aliases)
-      brandCode = parsed.brandCode
-      modelName = normalizeModelName(parsed.modelName)
-      if (parsed.network && !network) network = parsed.network
-    } else {
-      // Separate columns: Brand, Model, Part Type
-      const brandRaw =
-        roleToCol.brand !== undefined
-          ? (row[roleToCol.brand] || '').toUpperCase().trim()
-          : ''
-      const modelRaw =
-        roleToCol.model !== undefined ? (row[roleToCol.model] || '').trim() : ''
-      const partRaw =
-        roleToCol.part_type !== undefined
-          ? (row[roleToCol.part_type] || '').toUpperCase().trim()
-          : ''
-
-      rawDescription = `${brandRaw} ${modelRaw}`.trim()
-      rawType = partRaw
-
-      network = extractNetwork(modelRaw)
-      brandCode = aliases.brandAliases[brandRaw] || brandRaw || null
-      modelName = normalizeModelName(
-        modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim()
-      )
-      partCode = aliases.partAliases[partRaw] || normalizePartCode(partRaw)
-    }
-
-    // Fallback: no model but brand+part exist → UNKNOWN
-    if (brandCode && !modelName && partCode) {
-      modelName = 'UNKNOWN'
-    }
-
-    const sku = generateSku({
-      brandCode,
-      modelName,
-      variant,
-      year,
-      partCode,
-      network,
-      quality,
-      flag,
-      color,
-    })
-
-    let matchedItemId: number | null = null
-    let matchedItemSku: string | null = null
-    let status: 'matched' | 'new' | 'error' = 'new'
-    let errorMessage: string | undefined
-
-    if (!brandCode) {
-      status = 'error'
-      errorMessage = `Unknown brand in: "${rawDescription}"`
-    } else if (!modelName) {
-      status = 'error'
-      errorMessage = `No model. brand=${brandCode} raw="${rawDescription}"`
-    } else if (!partCode) {
-      status = 'error'
-      errorMessage = `Unknown part. rawType="${rawType}" raw="${rawDescription}"`
-    } else if (!sku) {
-      status = 'error'
-      errorMessage = `Could not build SKU for "${rawDescription}"`
-    } else if (itemBySku[sku.toUpperCase()]) {
-      const found = itemBySku[sku.toUpperCase()]
-      matchedItemId = found.item_id
-      matchedItemSku = found.sku
-      status = 'matched'
-    }
-
-    result.push({
-      rowNumber: i + 1,
-      rawDescription,
-      rawType,
-      qty,
-      rate,
-      brandCode,
-      modelName,
-      network,
-      year,
-      variant,
-      partCode,
-      quality,
-      flag,
-      color,
-      generatedSku: sku,
-      matchedItemId,
-      matchedItemSku,
-      status,
-      errorMessage,
-    })
-  }
-
-  return result
+  const synthetic = buildSyntheticCsv(dataRows, mapping)
+  return parseCSV(synthetic, aliases, items)
 }
 
 // ---------- Default mapping from auto-guess ----------

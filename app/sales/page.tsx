@@ -51,6 +51,8 @@ type PickedShop = {
   isNew: boolean
 }
 
+const COUNTER_SALE_NAME = 'Counter Sale'
+
 export default function SalesEntryPageWrapper() {
   return (
     <Suspense
@@ -130,7 +132,7 @@ function SalesEntryPage() {
     }
   }, [pendingFocusRowId, rows])
 
-  // Focus the qty input after prefill (visible one only)
+  // Focus the qty input after prefill / item select
   useEffect(() => {
     if (pendingFocusQtyRowId == null) return
     const candidates = Array.from(
@@ -208,19 +210,32 @@ function SalesEntryPage() {
         .eq('bill_date', today)
         .order('sale_id', { ascending: false }),
     ])
-    setShops(s.data || [])
+    const parties = (s.data as Party[]) || []
+    setShops(parties)
     setTodaySales(t.data || [])
+
+    // Auto-select Counter Sale as default
+    const counter = parties.find((p) => p.party_name === COUNTER_SALE_NAME)
+    if (counter) {
+      setPickedShop((prev) => {
+        // Don't override if user already picked something
+        if (prev.id || prev.isNew) return prev
+        return { id: counter.party_id, label: counter.party_name, isNew: false }
+      })
+    }
   }
 
-  const shopOptions = shops.map((s) => ({
-    value: s.party_id,
-    label: s.party_name,
-  }))
+  // Hide Counter Sale from the dropdown
+  const shopOptions = shops
+    .filter((s) => s.party_name !== COUNTER_SALE_NAME)
+    .map((s) => ({
+      value: s.party_id,
+      label: s.party_name,
+    }))
 
   const prevBalance =
     shops.find((s) => s.party_id === pickedShop.id)?.current_balance || 0
 
-  // Server-side multi-word item search — delegates to search_items RPC
   async function searchItems(rowId: number, query: string) {
     if (!query || query.trim().length < 2) {
       setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
@@ -277,16 +292,21 @@ function SalesEntryPage() {
     setRows((prev) =>
       prev.map((r) => {
         if (r.rowId !== rowId) return r
+        const qty = r.quantity > 0 ? r.quantity : 1
         return {
           ...r,
           item_id: item.item_id,
           sku: item.sku,
+          quantity: qty,
           rate: item.selling_price,
-          amount: Number(r.quantity) * Number(item.selling_price),
+          amount: Number(qty) * Number(item.selling_price),
           cost_price: item.cost_price,
         }
       })
     )
+
+    // Focus qty input for this row, text selected
+    setPendingFocusQtyRowId(rowId)
   }
 
   function handleItemTab(row: SaleRow, idx: number) {
@@ -301,19 +321,58 @@ function SalesEntryPage() {
     }
   }
 
+  function handleQtyKeyDown(
+    rowId: number,
+    idx: number,
+    e: React.KeyboardEvent<HTMLInputElement>
+  ) {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault()
+      // Focus the rate input in the same row
+      const row = e.currentTarget.closest('tr') ?? e.currentTarget.closest('.grid')
+      if (!row) return
+      const rateInput = row.querySelector<HTMLInputElement>(
+        'input[data-rate-row]'
+      )
+      if (rateInput) {
+        rateInput.focus()
+        try {
+          rateInput.select()
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
   function handleRateTab(
     rowId: number,
     idx: number,
     e: React.KeyboardEvent
   ) {
+    if (e.key !== 'Tab' && e.key !== 'Enter') return
+    e.preventDefault()
+
     const isLastRow = idx === rows.length - 1
-    if (!isLastRow) return
     const row = rows[idx]
-    if (row.item_id) {
-      e.preventDefault()
+
+    if (isLastRow && row.item_id) {
       addRow()
+    } else if (!isLastRow) {
+      // Focus next row's item combo
+      const nextRowId = rows[idx + 1]?.rowId
+      if (nextRowId) {
+        const el = itemRefs.current[nextRowId]?.current
+        if (el) {
+          el.focus()
+          try {
+            el.select()
+          } catch {
+            // ignore
+          }
+        }
+      }
     } else {
-      e.preventDefault()
       const saveBtn = document.getElementById('save-sale-btn')
       saveBtn?.focus()
     }
@@ -344,7 +403,7 @@ function SalesEntryPage() {
   async function saveSale() {
     setMessage('')
 
-    if (!pickedShop.label) {
+    if (!pickedShop.label && !pickedShop.id) {
       setMessage('Please select or enter a Shop.')
       return
     }
@@ -411,7 +470,13 @@ function SalesEntryPage() {
 
     setMessage(`Saved sale #${saleId}. Stock decreased.`)
 
-    setPickedShop({ id: null, label: '', isNew: false })
+    // Reset to default Counter Sale
+    const counter = shops.find((s) => s.party_name === COUNTER_SALE_NAME)
+    setPickedShop(
+      counter
+        ? { id: counter.party_id, label: counter.party_name, isNew: false }
+        : { id: null, label: '', isNew: false }
+    )
     setRows([
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
@@ -420,17 +485,20 @@ function SalesEntryPage() {
     await loadData()
 
     setTimeout(() => {
-      const el = document.querySelector<HTMLInputElement>(
-        'input[data-row-item="shop-input"]'
-      )
-      el?.focus()
+      const el = itemRefs.current[1]?.current
+      if (el) el.focus()
     }, 100)
 
     setSaving(false)
   }
 
   function resetForm() {
-    setPickedShop({ id: null, label: '', isNew: false })
+    const counter = shops.find((s) => s.party_name === COUNTER_SALE_NAME)
+    setPickedShop(
+      counter
+        ? { id: counter.party_id, label: counter.party_name, isNew: false }
+        : { id: null, label: '', isNew: false }
+    )
     setRows([
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
@@ -523,7 +591,13 @@ function SalesEntryPage() {
                 placeholder="Select or type shop..."
                 inputDataAttr="shop-input"
                 focusNextOnSelect={true}
+                nextFieldSelector={`input[data-row-item="row-1"]`}
               />
+              {pickedShop.label === COUNTER_SALE_NAME && (
+                <div className="mt-1 text-[11px] text-slate-500">
+                  Defaulting to Counter Sale. Pick a shop to change.
+                </div>
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -591,7 +665,8 @@ function SalesEntryPage() {
                   placeholder="Type 2+ letters to search SKU…"
                   allowCreate={false}
                   inputDataAttr={`row-${row.rowId}`}
-                  focusNextOnSelect={true}
+                  focusNextOnSelect={false}
+                  inputRef={getItemRef(row.rowId)}
                 />
                 <div className="grid grid-cols-2 gap-3 mt-3">
                   <div>
@@ -600,7 +675,6 @@ function SalesEntryPage() {
                     </label>
                     <input
                       data-qty-row={`qty-${row.rowId}`}
-                      data-focus-next={`row-${row.rowId}`}
                       ref={(el) => {
                         qtyRefs.current[row.rowId] = el
                       }}
@@ -611,22 +685,9 @@ function SalesEntryPage() {
                           quantity: parseFloat(e.target.value) || 0,
                         })
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          const next = e.currentTarget
-                            .closest('.grid')
-                            ?.querySelector<HTMLInputElement>(
-                              'input[type="number"]:not([data-qty-row])'
-                            )
-                          next?.focus()
-                          try {
-                            next?.select()
-                          } catch {
-                            // ignore
-                          }
-                        }
-                      }}
+                      onKeyDown={(e) =>
+                        handleQtyKeyDown(row.rowId, idx, e)
+                      }
                       className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -635,6 +696,7 @@ function SalesEntryPage() {
                       Rate
                     </label>
                     <input
+                      data-rate-row={`rate-${row.rowId}`}
                       type="number"
                       value={row.rate || ''}
                       onChange={(e) =>
@@ -642,11 +704,7 @@ function SalesEntryPage() {
                           rate: parseFloat(e.target.value) || 0,
                         })
                       }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === 'Tab') {
-                          handleRateTab(row.rowId, idx, e)
-                        }
-                      }}
+                      onKeyDown={(e) => handleRateTab(row.rowId, idx, e)}
                       className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
                   </div>
@@ -763,7 +821,13 @@ function SalesEntryPage() {
                   placeholder="Select or type shop..."
                   inputDataAttr="shop-input"
                   focusNextOnSelect={true}
+                  nextFieldSelector={`input[data-row-item="row-1"]`}
                 />
+                {pickedShop.label === COUNTER_SALE_NAME && (
+                  <div className="mt-1 text-[11px] text-slate-500">
+                    Defaulting to Counter Sale. Pick a shop to change.
+                  </div>
+                )}
               </div>
 
               <div>
@@ -820,14 +884,13 @@ function SalesEntryPage() {
                           placeholder="Type 2+ letters to search SKU…"
                           allowCreate={false}
                           inputDataAttr={`row-${row.rowId}`}
-                          focusNextOnSelect={true}
+                          focusNextOnSelect={false}
                           inputRef={getItemRef(row.rowId)}
                         />
                       </td>
                       <td className="px-2 py-1">
                         <input
                           data-qty-row={`qty-${row.rowId}`}
-                          data-focus-next={`row-${row.rowId}`}
                           ref={(el) => {
                             qtyRefs.current[row.rowId] = el
                           }}
@@ -838,27 +901,15 @@ function SalesEntryPage() {
                               quantity: parseFloat(e.target.value) || 0,
                             })
                           }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault()
-                              const next = e.currentTarget
-                                .closest('tr')
-                                ?.querySelector<HTMLInputElement>(
-                                  'input[type="number"]:not([data-qty-row])'
-                                )
-                              next?.focus()
-                              try {
-                                next?.select()
-                              } catch {
-                                // ignore
-                              }
-                            }
-                          }}
+                          onKeyDown={(e) =>
+                            handleQtyKeyDown(row.rowId, idx, e)
+                          }
                           className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </td>
                       <td className="px-2 py-1">
                         <input
+                          data-rate-row={`rate-${row.rowId}`}
                           type="number"
                           value={row.rate || ''}
                           onChange={(e) =>
@@ -866,11 +917,7 @@ function SalesEntryPage() {
                               rate: parseFloat(e.target.value) || 0,
                             })
                           }
-                          onKeyDown={(e) => {
-                            if (e.key === 'Tab' || e.key === 'Enter') {
-                              handleRateTab(row.rowId, idx, e)
-                            }
-                          }}
+                          onKeyDown={(e) => handleRateTab(row.rowId, idx, e)}
                           className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
                       </td>

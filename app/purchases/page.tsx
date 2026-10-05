@@ -98,10 +98,7 @@ export default function PurchaseEntryPage() {
   const [recentPurchases, setRecentPurchases] = useState<PurchaseHeader[]>([])
   const [recentLineCounts, setRecentLineCounts] = useState<Record<number, number>>({})
 
-  // Per-row search results cache (rowId -> items)
-  const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>(
-    {}
-  )
+  const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>({})
 
   const [pickedSupplier, setPickedSupplier] = useState<PickedSupplier>({
     id: null,
@@ -161,7 +158,6 @@ export default function PurchaseEntryPage() {
   }, [pendingFocusRowId, rows])
 
   async function loadData() {
-    // No longer fetching all items — search happens on demand per row.
     const [p, r] = await Promise.all([
       supabase
         .from('parties')
@@ -179,15 +175,17 @@ export default function PurchaseEntryPage() {
 
     if (r.data && r.data.length > 0) {
       const ids = r.data.map((x: any) => x.purchase_id)
-      const { data: lines } = await supabase
-        .from('purchase_items')
-        .select('purchase_id')
-        .in('purchase_id', ids)
-      const counts: Record<number, number> = {}
-      for (const l of lines || []) {
-        counts[l.purchase_id] = (counts[l.purchase_id] || 0) + 1
+      const { data: counts, error } = await supabase.rpc('purchase_line_counts', {
+        p_ids: ids,
+      })
+      if (error) {
+        console.error('purchase_line_counts RPC error:', error)
       }
-      setRecentLineCounts(counts)
+      const map: Record<number, number> = {}
+      for (const row of (counts as any[]) || []) {
+        map[row.purchase_id] = Number(row.line_count)
+      }
+      setRecentLineCounts(map)
     } else {
       setRecentLineCounts({})
     }
@@ -198,8 +196,6 @@ export default function PurchaseEntryPage() {
     label: s.party_name,
   }))
 
-  // Server-side item search per row — prefix matches first
-    // Server-side multi-word item search — delegates to search_items RPC
   async function searchItems(rowId: number, query: string) {
     if (!query || query.trim().length < 2) {
       setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
@@ -210,6 +206,7 @@ export default function PurchaseEntryPage() {
     const items = results as Item[]
     setRowItemOptions((prev) => ({ ...prev, [rowId]: items }))
   }
+
   function addRow(): number {
     const newId = nextRowId
     setRows((prev) => [...prev, emptyRow(newId)])
@@ -297,9 +294,6 @@ export default function PurchaseEntryPage() {
     }
   }
 
-  // ============================================================
-  // IMPORT — fill grid only. Does NOT touch the DB.
-  // ============================================================
   async function handleCSVImport(
     matched: ParsedRow[],
     newItems: ParsedRow[],
@@ -359,14 +353,15 @@ export default function PurchaseEntryPage() {
       }
 
       for (const r of newItems) {
-        if (!r.generatedSku || !r.brandCode || !r.modelName || !r.partCode)
+        if (!r.generatedSku || !r.brandCode || !r.partCode)
           continue
 
         const brandCode = r.brandCode.toUpperCase()
         const partCode = r.partCode.toUpperCase()
         const brandId = brandByCode[brandCode] || null
-        const mKey = brandId ? modelKey(brandId, r.modelName, r.network) : ''
-        const modelId = mKey ? modelByKey[mKey] || null : null
+        const modelId = r.modelName && brandId
+          ? modelByKey[modelKey(brandId, r.modelName, r.network)] || null
+          : null
         const partId = partByCode[partCode] || null
 
         finalRows.push({
@@ -410,6 +405,31 @@ export default function PurchaseEntryPage() {
     }
   }
 
+  async function handleSkipRows(skipped: ParsedRow[]) {
+    if (skipped.length === 0) return
+    const supplierId = pickedSupplier.id || null
+    const invoice = invoiceNo.trim() || null
+
+    const rows = skipped.map((r) => ({
+      import_context: 'purchase',
+      party_id: supplierId,
+      invoice_no: invoice,
+      raw_description: r.rawDescription,
+      raw_type: r.rawType,
+      quality: r.quality,
+      qty: r.qty,
+      rate: r.rate,
+      error_message: r.errorMessage || 'Skipped by user',
+      resolved: false,
+    }))
+
+    const { error } = await supabase.from('skipped_import_rows').insert(rows)
+    if (error) {
+      console.error('Failed to save skipped rows:', error.message)
+      setMessage(`Warning: ${rows.length} skipped row(s) could not be saved.`)
+    }
+  }
+
   const subtotal = rows.reduce((s, r) => s + (r.amount || 0), 0)
   const freightNum = parseFloat(freight) || 0
   const total = subtotal + freightNum
@@ -433,8 +453,6 @@ export default function PurchaseEntryPage() {
 
     for (const r of validRows) {
       if (!r.item_id) continue
-      // We don't have the item loaded, so skip prediction when not searched
-      // (server-side search means we don't have cost_price for every row)
       const rowOptions = rowItemOptions[r.rowId] || []
       const item = rowOptions.find((i) => i.item_id === r.item_id)
       if (!item) continue
@@ -485,11 +503,7 @@ export default function PurchaseEntryPage() {
     }
     return pickedSupplier.id
   }
-
-  // ============================================================
-  // SAVE — batched, transactional-ish, SKU-deduped
-  // ============================================================
-  async function savePurchase() {
+    async function savePurchase() {
     setMessage('')
 
     if (!pickedSupplier.label) {
@@ -515,7 +529,6 @@ export default function PurchaseEntryPage() {
 
     const skuToCreatedId: Record<string, number> = {}
 
-    // 1. Load master data
     const [brandsRes, modelsRes, partsRes] = await Promise.all([
       supabase.from('brands').select('brand_id, brand_code'),
       supabase.from('models').select('model_id, brand_id, model_name, network'),
@@ -537,16 +550,15 @@ export default function PurchaseEntryPage() {
       modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
     }
 
-    // 2. Identify missing brands/parts, gather pending rows
     const missingBrandCodes = new Set<string>()
     const missingPartCodes = new Set<string>()
     const pending: PurchaseRow[] = []
 
     for (const r of validRows) {
       if (r.item_id) continue
-      if (!r.sku || !r.brand_code || !r.model_name || !r.part_code) {
+      if (!r.sku || !r.brand_code || !r.part_code) {
         setMessage(
-          `Row ${r.rowId}: missing SKU or brand/model/part info. Please pick an existing SKU.`
+          `Row ${r.rowId}: missing SKU or brand/part info. Please pick an existing SKU.`
         )
         setSaving(false)
         return
@@ -560,7 +572,6 @@ export default function PurchaseEntryPage() {
       pending.push({ ...r, brand_code: brandCode, part_code: partCode })
     }
 
-    // 3. Bulk-create missing brands
     if (missingBrandCodes.size > 0) {
       const inserts = Array.from(missingBrandCodes).map((code) => ({
         brand_name: code,
@@ -580,25 +591,24 @@ export default function PurchaseEntryPage() {
       }
     }
 
-    // 4. Identify missing models
     const missingModelKeys = new Map<
       string,
       { brandId: number; model_name: string; network: string | null }
     >()
     for (const r of pending) {
+      if (!r.model_name) continue
       const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
       if (!brandId) continue
-      const key = modelKey(brandId, r.model_name!, r.network)
+      const key = modelKey(brandId, r.model_name, r.network)
       if (!r.model_id && !modelByKey[key]) {
         missingModelKeys.set(key, {
           brandId,
-          model_name: r.model_name!,
+          model_name: r.model_name,
           network: r.network,
         })
       }
     }
 
-    // 5. Bulk-create missing models
     if (missingModelKeys.size > 0) {
       const inserts = Array.from(missingModelKeys.values()).map((m) => ({
         brand_id: m.brandId,
@@ -619,7 +629,6 @@ export default function PurchaseEntryPage() {
       }
     }
 
-    // 6. Bulk-create missing parts
     if (missingPartCodes.size > 0) {
       const inserts = Array.from(missingPartCodes).map((code) => ({
         part_name: code,
@@ -639,11 +648,10 @@ export default function PurchaseEntryPage() {
       }
     }
 
-    // 7. Build + dedupe + bulk-insert items
     type ItemInsert = {
       sku: string
       brand_id: number
-      model_id: number
+      model_id: number | null
       part_id: number
       quality: string
       variant: string | null
@@ -657,13 +665,12 @@ export default function PurchaseEntryPage() {
     for (const r of pending) {
       const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
       const partId = r.part_id || partByCode[r.part_code!.toUpperCase()]
-      const mKey = brandId ? modelKey(brandId, r.model_name!, r.network) : ''
-      const modelId = r.model_id || (mKey ? modelByKey[mKey] : undefined)
+      const modelId = r.model_name && brandId
+        ? (r.model_id || modelByKey[modelKey(brandId, r.model_name, r.network)] || null)
+        : null
 
-      if (!brandId || !modelId || !partId) {
-        setMessage(
-          `Row ${r.rowId}: could not resolve brand/model/part for ${r.sku}.`
-        )
+      if (!brandId || !partId) {
+        setMessage(`Row ${r.rowId}: could not resolve brand/part for ${r.sku}.`)
         setSaving(false)
         return
       }
@@ -682,7 +689,6 @@ export default function PurchaseEntryPage() {
       })
     }
 
-    // Dedupe within batch
     const seenSkus = new Set<string>()
     const batchUnique = itemInserts.filter((it) => {
       if (seenSkus.has(it.sku)) return false
@@ -690,7 +696,6 @@ export default function PurchaseEntryPage() {
       return true
     })
 
-    // Check which SKUs already exist in DB and reuse their IDs
     const uniqueItemInserts: typeof itemInserts = []
     if (batchUnique.length > 0) {
       const skusToCheck = batchUnique.map((it) => it.sku)
@@ -731,7 +736,6 @@ export default function PurchaseEntryPage() {
       }
     }
 
-    // 8. Insert purchase header
     const validSubtotal = validRows.reduce((s, r) => s + r.amount, 0)
 
     const { data: purchaseData, error: purchaseError } = await supabase
@@ -758,7 +762,6 @@ export default function PurchaseEntryPage() {
 
     const purchaseId = purchaseData.purchase_id
 
-    // 9. Bulk-insert purchase lines
     const lineInserts: {
       purchase_id: number
       item_id: number
@@ -857,284 +860,292 @@ export default function PurchaseEntryPage() {
     suppliers.find((s) => s.party_id === id)?.party_name || '—'
 
   function itemLabel(it: Item): string {
-  const parts = [
-    it.sku,
-    `stock ${it.current_stock}`,
-    `cp ₹${Number(it.cost_price).toFixed(0)}`,
-    it.quality && it.quality !== 'Normal' ? it.quality : null,
-    it.variant || null,
-  ].filter(Boolean)
-  return parts.join(' · ')
-}
+    const parts = [
+      it.sku,
+      `stock ${it.current_stock}`,
+      `cp ₹${Number(it.cost_price).toFixed(0)}`,
+      it.quality && it.quality !== 'Normal' ? it.quality : null,
+      it.variant || null,
+    ].filter(Boolean)
+    return parts.join(' · ')
+  }
 
-function itemOptionsFor(rowId: number) {
-  return (rowItemOptions[rowId] || []).map((it) => ({
-    value: it.item_id,
-    label: itemLabel(it),
-  }))
-}
+  function itemOptionsFor(rowId: number) {
+    return (rowItemOptions[rowId] || []).map((it) => ({
+      value: it.item_id,
+      label: itemLabel(it),
+    }))
+  }
+    return (
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
+      <div className="max-w-6xl mx-auto">
 
-return (
-  <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
-    <div className="max-w-6xl mx-auto">
-
-      <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
-            Purchase Entry
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Enter supplier invoices. Freight auto-distributed. Stock & cost update automatically.
-          </p>
-        </div>
-        <button
-          onClick={() => setShowImport(true)}
-          disabled={importing}
-          className="h-11 sm:h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
-        >
-          <Upload className="size-4" />
-          {importing ? 'Importing...' : 'Import CSV'}
-        </button>
-      </div>
-
-      {/* MOBILE VIEW */}
-      <div className="md:hidden space-y-4 mb-6">
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-4">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Supplier
-            </label>
-            <SmartCombobox
-              options={supplierOptions}
-              value={
-                pickedSupplier.id
-                  ? String(pickedSupplier.id)
-                  : pickedSupplier.isNew
-                  ? `__new__${pickedSupplier.label}`
-                  : null
-              }
-              onValueChange={(v: string, label: string, isNew: boolean) => {
-                setPickedSupplier({
-                  id: isNew ? null : Number(v),
-                  label,
-                  isNew,
-                })
-              }}
-              placeholder="Select or type supplier..."
-              focusNextOnSelect={true}
-            />
+            <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
+              Purchase Entry
+            </h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1">
+              Enter supplier invoices. Freight auto-distributed. Stock & cost update automatically.
+            </p>
           </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Invoice No
-            </label>
-            <input
-              type="text"
-              value={invoiceNo}
-              onChange={(e) => setInvoiceNo(e.target.value)}
-              placeholder="e.g. 12345"
-              className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Purchase Date
-            </label>
-            <input
-              type="date"
-              value={purchaseDate}
-              onChange={(e) => setPurchaseDate(e.target.value)}
-              className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
+          <div className="flex items-center gap-2">
+            <Link
+              href="/imports/skipped"
+              className="h-11 sm:h-10 px-4 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center justify-center"
+            >
+              Skipped rows
+            </Link>
+            <button
+              onClick={() => setShowImport(true)}
+              disabled={importing}
+              className="h-11 sm:h-10 px-4 text-sm font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 flex items-center justify-center gap-2 disabled:opacity-50 shadow-sm"
+            >
+              <Upload className="size-4" />
+              {importing ? 'Importing...' : 'Import CSV'}
+            </button>
           </div>
         </div>
 
-        <div className="space-y-3">
-          {rows.map((row, idx) => {
-            const pred = costPredictions.get(row.rowId)
-            const isPending = !row.item_id && row.sku
-            return (
-              <div
-                key={row.rowId}
-                className={`bg-white border rounded-xl p-3 shadow-sm ${
-                  isPending ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-xs font-semibold text-slate-500">
-                    Item #{idx + 1}
-                    {isPending && (
-                      <span className="ml-2 text-amber-700">
-                        (new — will be created on save)
-                      </span>
-                    )}
+        {/* MOBILE VIEW */}
+        <div className="md:hidden space-y-4 mb-6">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Supplier
+              </label>
+              <SmartCombobox
+                options={supplierOptions}
+                value={
+                  pickedSupplier.id
+                    ? String(pickedSupplier.id)
+                    : pickedSupplier.isNew
+                    ? `__new__${pickedSupplier.label}`
+                    : null
+                }
+                onValueChange={(v: string, label: string, isNew: boolean) => {
+                  setPickedSupplier({
+                    id: isNew ? null : Number(v),
+                    label,
+                    isNew,
+                  })
+                }}
+                placeholder="Select or type supplier..."
+                focusNextOnSelect={true}
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Invoice No
+              </label>
+              <input
+                type="text"
+                value={invoiceNo}
+                onChange={(e) => setInvoiceNo(e.target.value)}
+                placeholder="e.g. 12345"
+                className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">
+                Purchase Date
+              </label>
+              <input
+                type="date"
+                value={purchaseDate}
+                onChange={(e) => setPurchaseDate(e.target.value)}
+                className="w-full h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            {rows.map((row, idx) => {
+              const pred = costPredictions.get(row.rowId)
+              const isPending = !row.item_id && row.sku
+              return (
+                <div
+                  key={row.rowId}
+                  className={`bg-white border rounded-xl p-3 shadow-sm ${
+                    isPending ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-xs font-semibold text-slate-500">
+                      Item #{idx + 1}
+                      {isPending && (
+                        <span className="ml-2 text-amber-700">
+                          (new — will be created on save)
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => removeRow(row.rowId)}
+                      className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
                   </div>
-                  <button
-                    onClick={() => removeRow(row.rowId)}
-                    className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
-                </div>
-                <SmartCombobox
-                  options={itemOptionsFor(row.rowId)}
-                  value={row.item_id ? String(row.item_id) : null}
-                  onValueChange={(v: string, label: string, isNew: boolean) => {
-                    if (isNew) return
-                    handleItemSelect(row.rowId, Number(v))
-                  }}
-                  onTabKey={() => handleItemTab(row, idx)}
-                  onSearch={(q) => searchItems(row.rowId, q)}
-                  placeholder={
-                    isPending ? row.sku : 'Type 2+ letters to search SKU…'
-                  }
-                  allowCreate={false}
-                  inputDataAttr={`row-${row.rowId}`}
-                  focusNextOnSelect={true}
-                  nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
-                />
-                <div className="grid grid-cols-2 gap-3 mt-3">
-                  <div>
-                    <label className="block text-xs text-slate-600 mb-1">
-                      Qty
-                    </label>
-                    <input
-                      data-qty-row={`qty-${row.rowId}`}
-                      ref={(el) => {
-                        qtyRefs.current[row.rowId] = el
-                      }}
-                      type="number"
-                      value={row.quantity || ''}
-                      onChange={(e) =>
-                        updateRow(row.rowId, {
-                          quantity: parseFloat(e.target.value) || 0,
-                        })
-                      }
-                      className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-slate-600 mb-1">
-                      Rate
-                    </label>
-                    <input
-                      type="number"
-                      value={row.rate || ''}
-                      onChange={(e) =>
-                        updateRow(row.rowId, {
-                          rate: parseFloat(e.target.value) || 0,
-                        })
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Tab') handleRateTab(row.rowId, idx, e)
-                      }}
-                      className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
-                  <div className="text-xs text-slate-500">
-                    {pred ? (
-                      <span
-                        className={
-                          pred.change > 0.01
-                            ? 'text-red-600'
-                            : pred.change < -0.01
-                            ? 'text-green-600'
-                            : 'text-slate-500'
+                  <SmartCombobox
+                    options={itemOptionsFor(row.rowId)}
+                    value={row.item_id ? String(row.item_id) : null}
+                    onValueChange={(v: string, label: string, isNew: boolean) => {
+                      if (isNew) return
+                      handleItemSelect(row.rowId, Number(v))
+                    }}
+                    onTabKey={() => handleItemTab(row, idx)}
+                    onSearch={(q) => searchItems(row.rowId, q)}
+                    placeholder={
+                      isPending ? row.sku : 'Type 2+ letters to search SKU…'
+                    }
+                    allowCreate={false}
+                    inputDataAttr={`row-${row.rowId}`}
+                    focusNextOnSelect={true}
+                    nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
+                  />
+                  <div className="grid grid-cols-2 gap-3 mt-3">
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">
+                        Qty
+                      </label>
+                      <input
+                        data-qty-row={`qty-${row.rowId}`}
+                        ref={(el) => {
+                          qtyRefs.current[row.rowId] = el
+                        }}
+                        type="number"
+                        value={row.quantity || ''}
+                        onChange={(e) =>
+                          updateRow(row.rowId, {
+                            quantity: parseFloat(e.target.value) || 0,
+                          })
                         }
-                      >
-                        New cost: ₹{pred.new_cost.toFixed(2)}
-                      </span>
-                    ) : (
-                      'Amount'
-                    )}
+                        className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-slate-600 mb-1">
+                        Rate
+                      </label>
+                      <input
+                        type="number"
+                        value={row.rate || ''}
+                        onChange={(e) =>
+                          updateRow(row.rowId, {
+                            rate: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === 'Tab') handleRateTab(row.rowId, idx, e)
+                        }}
+                        className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
                   </div>
-                  <span className="text-base font-bold text-slate-800">
-                    ₹ {row.amount.toFixed(2)}
-                  </span>
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
+                    <div className="text-xs text-slate-500">
+                      {pred ? (
+                        <span
+                          className={
+                            pred.change > 0.01
+                              ? 'text-red-600'
+                              : pred.change < -0.01
+                              ? 'text-green-600'
+                              : 'text-slate-500'
+                          }
+                        >
+                          New cost: ₹{pred.new_cost.toFixed(2)}
+                        </span>
+                      ) : (
+                        'Amount'
+                      )}
+                    </div>
+                    <span className="text-base font-bold text-slate-800">
+                      ₹ {row.amount.toFixed(2)}
+                    </span>
+                  </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })}
 
-          <button
-            onClick={addRow}
-            className="w-full h-12 text-sm font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 flex items-center justify-center gap-1"
-          >
-            <Plus className="size-4" />
-            Add Item
-          </button>
+            <button
+              onClick={addRow}
+              className="w-full h-12 text-sm font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-xl hover:bg-blue-50 flex items-center justify-center gap-1"
+            >
+              <Plus className="size-4" />
+              Add Item
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-600">Subtotal</span>
+              <span className="font-medium text-slate-800">
+                ₹ {subtotal.toFixed(2)}
+              </span>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-600 mb-1">
+                Freight Charges
+              </label>
+              <input
+                ref={freightInputRef}
+                type="number"
+                value={freight}
+                onChange={(e) => setFreight(e.target.value)}
+                className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="flex justify-between text-base border-t border-slate-200 pt-2">
+              <span className="font-semibold text-slate-800">Total</span>
+              <span className="font-bold text-slate-900">
+                ₹ {total.toFixed(2)}
+              </span>
+            </div>
+            <div>
+              <label className="block text-xs text-slate-600 mb-1">
+                Cash Paid Today
+              </label>
+              <input
+                type="number"
+                value={cashPaid}
+                onChange={(e) => {
+                  setCashPaid(e.target.value)
+                  setCashPaidTouched(true)
+                }}
+                className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              id="save-purchase-btn"
+              onClick={savePurchase}
+              disabled={saving}
+              className="flex-1 h-12 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
+            >
+              <Save className="size-4" />
+              {saving ? 'Saving...' : 'Save Purchase'}
+            </button>
+            <button
+              onClick={resetForm}
+              className="h-12 px-4 text-sm text-slate-700 border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+
+          {message && (
+            <div className="text-sm text-slate-700 bg-white border border-slate-200 rounded-lg p-3">
+              {message}
+            </div>
+          )}
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm space-y-3">
-          <div className="flex justify-between text-sm">
-            <span className="text-slate-600">Subtotal</span>
-            <span className="font-medium text-slate-800">
-              ₹ {subtotal.toFixed(2)}
-            </span>
-          </div>
-          <div>
-            <label className="block text-xs text-slate-600 mb-1">
-              Freight Charges
-            </label>
-            <input
-              ref={freightInputRef}
-              type="number"
-              value={freight}
-              onChange={(e) => setFreight(e.target.value)}
-              className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-          <div className="flex justify-between text-base border-t border-slate-200 pt-2">
-            <span className="font-semibold text-slate-800">Total</span>
-            <span className="font-bold text-slate-900">
-              ₹ {total.toFixed(2)}
-            </span>
-          </div>
-          <div>
-            <label className="block text-xs text-slate-600 mb-1">
-              Cash Paid Today
-            </label>
-            <input
-              type="number"
-              value={cashPaid}
-              onChange={(e) => {
-                setCashPaid(e.target.value)
-                setCashPaidTouched(true)
-              }}
-              className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-
-        <div className="flex gap-3">
-          <button
-            id="save-purchase-btn"
-            onClick={savePurchase}
-            disabled={saving}
-            className="flex-1 h-12 text-sm font-semibold text-white bg-blue-600 rounded-xl hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2 shadow-sm"
-          >
-            <Save className="size-4" />
-            {saving ? 'Saving...' : 'Save Purchase'}
-          </button>
-          <button
-            onClick={resetForm}
-            className="h-12 px-4 text-sm text-slate-700 border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-
-        {message && (
-          <div className="text-sm text-slate-700 bg-white border border-slate-200 rounded-lg p-3">
-            {message}
-          </div>
-        )}
-      </div>
-      {/* DESKTOP VIEW */}
+        {/* DESKTOP VIEW */}
         <div className="hidden md:block">
           <div className="bg-white border border-slate-200 rounded-xl p-6 mb-6 shadow-sm">
 
@@ -1494,9 +1505,9 @@ return (
         open={showImport}
         onClose={() => setShowImport(false)}
         onImport={handleCSVImport}
+        onSkipRows={handleSkipRows}
       />
 
-      {/* Delete confirmation modal */}
       {confirmDelete && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6">

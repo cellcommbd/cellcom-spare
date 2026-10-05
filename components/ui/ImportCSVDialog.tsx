@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase'
 import {
   parseCSV,
   groupParsedRows,
+  flagDuplicates,
   AliasMaps,
   ItemLookup,
   ParsedRow,
@@ -28,6 +29,7 @@ import {
   Sparkles,
   Settings2,
   Pencil,
+  SkipForward,
 } from 'lucide-react'
 
 type Props = {
@@ -35,6 +37,8 @@ type Props = {
   onClose: () => void
   onImport: (matched: ParsedRow[], newItems: ParsedRow[], margin: number) => void
   actionLabel?: string
+  /** Optional: called with any rows the user skipped (either individually or via "Skip all errors") */
+  onSkipRows?: (skipped: ParsedRow[]) => void
 }
 
 const ROLE_OPTIONS: { value: ColumnRole; label: string }[] = [
@@ -52,6 +56,7 @@ export function ImportCSVDialog({
   onClose,
   onImport,
   actionLabel,
+  onSkipRows,
 }: Props) {
   const [csvText, setCsvText] = useState('')
   const [mode, setMode] = useState<'auto' | 'manual'>('auto')
@@ -64,6 +69,8 @@ export function ImportCSVDialog({
   const [error, setError] = useState('')
   const [margin, setMargin] = useState('1.5')
   const [editingRow, setEditingRow] = useState<number | null>(null)
+  // NEW: which original indices the user has chosen to skip
+  const [skippedIndices, setSkippedIndices] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     if (open && !aliases) loadAliases()
@@ -114,6 +121,7 @@ export function ImportCSVDialog({
       setCsvText(text)
       setParsedRows([])
       setDetected([])
+      setSkippedIndices(new Set())
     }
     reader.readAsText(file)
   }
@@ -148,6 +156,7 @@ export function ImportCSVDialog({
       }
       setParsedRows(rows)
       setEditingRow(null)
+      setSkippedIndices(new Set())
     } catch (e: any) {
       setError(e.message || 'Failed to parse CSV')
     }
@@ -169,14 +178,15 @@ export function ImportCSVDialog({
       }
       setParsedRows(rows)
       setEditingRow(null)
+      setSkippedIndices(new Set())
     } catch (e: any) {
       setError(e.message || 'Failed to parse CSV')
     }
   }
 
   function updateRow(index: number, patch: Partial<ParsedRow>) {
-    setParsedRows((prev) =>
-      prev.map((r, i) => {
+    setParsedRows((prev) => {
+      const updated = prev.map((r, i) => {
         if (i !== index) return r
         const merged = { ...r, ...patch }
 
@@ -219,11 +229,51 @@ export function ImportCSVDialog({
 
         return merged
       })
-    )
+
+      return flagDuplicates(updated)
+    })
+  }
+
+  // NEW: skip one row
+  function skipRow(index: number) {
+    setSkippedIndices((prev) => {
+      const next = new Set(prev)
+      next.add(index)
+      return next
+    })
+    if (editingRow === index) setEditingRow(null)
+    // Persist this skipped row immediately
+    const row = parsedRows[index]
+    if (row && onSkipRows) {
+      onSkipRows([row])
+    }
+  }
+
+  // NEW: unskip one row
+  function unskipRow(index: number) {
+    setSkippedIndices((prev) => {
+      const next = new Set(prev)
+      next.delete(index)
+      return next
+    })
+  }
+
+  // NEW: skip all currently-erroring rows
+  function skipAllErrors() {
+    setSkippedIndices((prev) => {
+      const next = new Set(prev)
+      parsedRows.forEach((r, i) => {
+        if (r.status === 'error') next.add(i)
+      })
+      return next
+    })
   }
 
   function handleFill() {
-    const { matched, newItems } = groupParsedRows(parsedRows)
+    // Build the effective set of rows: parsed rows minus skipped ones
+    const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
+
+    const { matched, newItems } = groupParsedRows(effectiveRows)
 
     const usableMatched = matched.filter(
       (r) => r.status !== 'error' && r.generatedSku
@@ -236,6 +286,9 @@ export function ImportCSVDialog({
       setError('No valid rows to import.')
       return
     }
+
+    // Skips are saved immediately on skip click — nothing to do here.
+
     onImport(usableMatched, usableNew, Number(margin) || 1.5)
     resetAndClose()
   }
@@ -248,14 +301,30 @@ export function ImportCSVDialog({
     setError('')
     setMode('auto')
     setEditingRow(null)
+    setSkippedIndices(new Set())
     onClose()
   }
 
   if (!open) return null
 
   const grouped = groupParsedRows(parsedRows)
-  const totalUsable = grouped.matched.length + grouped.newItems.length
+  // effective usable count = everything not skipped and not erroring
+  const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
+  const groupedEffective = groupParsedRows(effectiveRows)
+  const totalUsable =
+    groupedEffective.matched.filter((r) => r.status !== 'error').length +
+    groupedEffective.newItems.filter((r) => r.status !== 'error').length
   const mappingValidation = validateMapping(mapping)
+
+  // Sort: errors first, then new, then matched. Keeps original order within each group.
+  const sortedRows: { row: ParsedRow; originalIndex: number }[] = parsedRows
+    .map((row, originalIndex) => ({ row, originalIndex }))
+    .sort((a, b) => {
+      const order: Record<string, number> = { error: 0, new: 1, matched: 2 }
+      const diff = order[a.row.status] - order[b.row.status]
+      if (diff !== 0) return diff
+      return a.originalIndex - b.originalIndex
+    })
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -334,6 +403,7 @@ export function ImportCSVDialog({
                     setDetected([])
                     setError('')
                     setEditingRow(null)
+                    setSkippedIndices(new Set())
                   }}
                   placeholder="Paste CSV text here..."
                   rows={6}
@@ -463,24 +533,39 @@ export function ImportCSVDialog({
 
               {parsedRows.length > 0 && (
                 <>
-                  <div className="flex items-center gap-4 mt-6 mb-3 text-sm">
+                  <div className="flex items-center gap-4 mt-6 mb-3 text-sm flex-wrap">
                     <span className="flex items-center gap-1 text-green-700 font-medium">
                       <Check className="w-4 h-4" />
-                      {grouped.matched.length} matched
+                      {groupedEffective.matched.filter((r) => r.status !== 'error').length} matched
                     </span>
                     <span className="flex items-center gap-1 text-amber-700 font-medium">
                       <Sparkles className="w-4 h-4" />
-                      {grouped.newItems.length} new
+                      {groupedEffective.newItems.filter((r) => r.status !== 'error').length} new
                     </span>
                     {grouped.errors.length > 0 && (
                       <span className="flex items-center gap-1 text-red-700 font-medium">
                         <AlertCircle className="w-4 h-4" />
-                        {grouped.errors.length} errors
+                        {grouped.errors.length - skippedIndices.size} errors
                       </span>
                     )}
-                    <span className="text-xs text-slate-500 ml-auto">
-                      Tip: click the pencil on an error row to fix it
-                    </span>
+                    {skippedIndices.size > 0 && (
+                      <span className="flex items-center gap-1 text-slate-500 font-medium">
+                        <SkipForward className="w-4 h-4" />
+                        {skippedIndices.size} skipped
+                      </span>
+                    )}
+                    <div className="ml-auto flex items-center gap-2">
+                      {grouped.errors.length > 0 && (
+                        <button
+                          onClick={skipAllErrors}
+                          className="h-7 px-3 text-xs font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-100 flex items-center gap-1"
+                          title="Mark all erroring rows as skipped"
+                        >
+                          <SkipForward className="w-3.5 h-3.5" />
+                          Skip all errors
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="border border-slate-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
@@ -494,74 +579,115 @@ export function ImportCSVDialog({
                           <th className="px-3 py-2 text-right">Qty</th>
                           <th className="px-3 py-2 text-right">Rate</th>
                           <th className="px-3 py-2 text-center">Status</th>
-                          <th className="px-3 py-2 text-center w-10"></th>
+                          <th className="px-3 py-2 text-center w-20">Actions</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {parsedRows.map((r, i) => (
-                          <tr
-                            key={i}
-                            className={
-                              r.status === 'matched'
-                                ? 'bg-green-50/50'
-                                : r.status === 'new'
-                                ? 'bg-amber-50/50'
-                                : 'bg-red-50/50'
-                            }
-                          >
-                            <td className="px-3 py-1.5 text-slate-500">
-                              {i + 1}
-                            </td>
-                            <td className="px-3 py-1.5 text-slate-700">
-                              {r.rawDescription}
-                            </td>
-                            <td className="px-3 py-1.5 text-slate-600">
-                              {r.rawType}
-                            </td>
-                            <td className="px-3 py-1.5 font-mono text-slate-800">
-                              {r.generatedSku || '—'}
-                            </td>
-                            <td className="px-3 py-1.5 text-right">{r.qty}</td>
-                            <td className="px-3 py-1.5 text-right">
-                              ₹ {r.rate.toFixed(2)}
-                            </td>
-                            <td className="px-3 py-1.5 text-center">
-                              {r.status === 'matched' && (
-                                <span className="text-green-700 text-[10px] font-semibold">
-                                  MATCHED
-                                </span>
-                              )}
-                              {r.status === 'new' && (
-                                <span className="text-amber-700 text-[10px] font-semibold">
-                                  NEW
-                                </span>
-                              )}
-                              {r.status === 'error' && (
-                                <span
-                                  className="text-red-700 text-[10px] font-semibold"
-                                  title={r.errorMessage}
-                                >
-                                  ERROR
-                                </span>
-                              )}
-                            </td>
-                            <td className="px-3 py-1.5 text-center">
-                              <button
-                                onClick={() =>
-                                  setEditingRow(editingRow === i ? null : i)
-                                }
-                                className={`p-1 rounded hover:bg-slate-200 ${
-                                  r.status === 'error'
-                                    ? 'text-red-600'
-                                    : 'text-slate-400'
-                                }`}
-                                title="Edit row"
-                              >
-                                <Pencil className="w-3.5 h-3.5" />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                        {sortedRows.map(({ row: r, originalIndex }) => {
+                          const isSkipped = skippedIndices.has(originalIndex)
+                          return (
+                            <tr
+                              key={originalIndex}
+                              className={
+                                isSkipped
+                                  ? 'bg-slate-100 opacity-60 line-through'
+                                  : r.status === 'error'
+                                  ? 'bg-red-100 border-l-4 border-red-500'
+                                  : r.status === 'matched'
+                                  ? 'bg-green-50/50'
+                                  : 'bg-amber-50/50'
+                              }
+                            >
+                              <td className="px-3 py-1.5 text-slate-500 align-top">
+                                {r.rowNumber}
+                              </td>
+                              <td className="px-3 py-1.5 text-slate-700 align-top">
+                                <div>{r.rawDescription}</div>
+                                {r.status === 'error' && r.errorMessage && !isSkipped && (
+                                  <div className="mt-0.5 text-[10px] text-red-700 font-medium">
+                                    ⚠ {r.errorMessage}
+                                  </div>
+                                )}
+                                {isSkipped && (
+                                  <div className="mt-0.5 text-[10px] text-slate-600 font-medium italic">
+                                    Skipped — will be saved to /imports/skipped
+                                  </div>
+                                )}
+                              </td>
+                              <td className="px-3 py-1.5 text-slate-600 align-top">
+                                {r.rawType}
+                              </td>
+                              <td className="px-3 py-1.5 font-mono text-slate-800 align-top">
+                                {r.generatedSku || '—'}
+                              </td>
+                              <td className="px-3 py-1.5 text-right align-top">
+                                {r.qty || '—'}
+                              </td>
+                              <td className="px-3 py-1.5 text-right align-top">
+                                {r.rate ? `₹ ${r.rate.toFixed(2)}` : '—'}
+                              </td>
+                              <td className="px-3 py-1.5 text-center align-top">
+                                {isSkipped ? (
+                                  <span className="text-slate-500 text-[10px] font-semibold">
+                                    SKIPPED
+                                  </span>
+                                ) : r.status === 'matched' ? (
+                                  <span className="text-green-700 text-[10px] font-semibold">
+                                    MATCHED
+                                  </span>
+                                ) : r.status === 'new' ? (
+                                  <span className="text-amber-700 text-[10px] font-semibold">
+                                    NEW
+                                  </span>
+                                ) : (
+                                  <span className="text-red-700 text-[10px] font-semibold">
+                                    ERROR
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-3 py-1.5 text-center align-top">
+                                <div className="flex items-center justify-center gap-1">
+                                  {!isSkipped && (
+                                    <button
+                                      onClick={() =>
+                                        setEditingRow(
+                                          editingRow === originalIndex
+                                            ? null
+                                            : originalIndex
+                                        )
+                                      }
+                                      className={`p-1 rounded hover:bg-slate-200 ${
+                                        r.status === 'error'
+                                          ? 'text-red-600'
+                                          : 'text-slate-400'
+                                      }`}
+                                      title="Edit row"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                  {!isSkipped ? (
+                                    <button
+                                      onClick={() => skipRow(originalIndex)}
+                                      className="p-1 rounded text-slate-500 hover:bg-slate-200 hover:text-slate-700"
+                                      title="Skip this row (will be saved for later review)"
+                                    >
+                                      <SkipForward className="w-3.5 h-3.5" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => unskipRow(originalIndex)}
+                                      className="p-1 rounded text-blue-600 hover:bg-blue-100"
+                                      title="Un-skip this row"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -584,7 +710,7 @@ export function ImportCSVDialog({
           <div className="flex items-center gap-4">
             <div className="text-xs text-slate-500">
               {parsedRows.length > 0
-                ? `${totalUsable} rows ready (${grouped.matched.length} matched + ${grouped.newItems.length} new)`
+                ? `${totalUsable} rows ready (${groupedEffective.matched.filter((r) => r.status !== 'error').length} matched + ${groupedEffective.newItems.filter((r) => r.status !== 'error').length} new)${skippedIndices.size > 0 ? `, ${skippedIndices.size} skipped` : ''}`
                 : 'Waiting for CSV input...'}
             </div>
             {parsedRows.length > 0 && (
@@ -614,6 +740,7 @@ export function ImportCSVDialog({
               >
                 <Sparkles className="w-4 h-4" />
                 {actionLabel || 'Create All & Fill'} ({totalUsable})
+                {skippedIndices.size > 0 && ` · ${skippedIndices.size} skipped`}
               </button>
             )}
           </div>
@@ -622,8 +749,9 @@ export function ImportCSVDialog({
     </div>
   )
 }
+
 /* ============================================================
-   Edit row panel — inline editor for a single preview row
+   Edit row panel — unchanged from original
    ============================================================ */
 function EditRowPanel({
   row,
@@ -857,9 +985,7 @@ function EditRowPanel({
 }
 
 /* ============================================================
-   Local SKU builder — mirrors lib/csv-parser v12 generateSku
-   Template: BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK]
-             - [FLAG] - [COLOR] - [QUALITY]
+   Local SKU builder — mirrors lib/csv-parser generateSku
    ============================================================ */
 function buildSkuFromParts(row: {
   brandCode: string | null
