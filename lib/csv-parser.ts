@@ -1,19 +1,6 @@
 // lib/csv-parser.ts
-// v23 — Adds BACK CAMERA / FRONT CAMERA / FLASH FLEX phrases to PART_TYPE_PHRASES
-//       so BCAM / FCAM / FF parts resolve correctly.
-//
-// Inherited from v22/v21/v20:
-//   - Quality enum: Normal | OG | 100 OG | Care OG | China OG
-//   - ORI / ORG / ORIG / ORIGINAL → Care OG
-//   - MIX OG → OG
-//   - Mixed bracket quality: [OG W/C], [W/C OG]
-//   - Trailing unbracketed quality + flag markers caught
-//   - Unknown bracket contents dropped (except year-containing model aliases)
-//   - EXX-BEE dropped; SPEAKER + EXX-BEE → part ESPK
-//   - Size markers → variant slot
-//   - Generic parts (no model) skip model segment
-//   - Single-digit models allowed
-//   - CONVHOUSING, ONOFFSWITCH added
+// v25 — Makes extractPartFromDescription also scan DB aliases (part_type_aliases),
+//       so new phrases work without code changes.
 //
 // SKU = BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]
 
@@ -49,6 +36,7 @@ export type ParsedRow = {
 export type AliasMaps = {
   brandAliases: Record<string, string>
   partAliases: Record<string, string>
+  colorAliases?: Record<string, string>
   validBrandCodes?: string[]
 }
 
@@ -84,11 +72,16 @@ export function resetBrandCodeWarnings(): void {
 
 const SIZE_MARKERS: Record<string, string> = {
   '20MM': '20MM', '20 MM': '20MM',
+  '18MM': '18MM', '18 MM': '18MM',
+  '16MM': '16MM', '16 MM': '16MM',
   '15MM': '15MM', '15 MM': '15MM',
   '10MM': '10MM', '10 MM': '10MM',
   BIG: 'BIG', 'BIG SIZE': 'BIGSIZE', BIGSIZE: 'BIGSIZE',
   SMALL: 'SMALL', 'SMALL SIZE': 'SMALLSIZE', SMALLSIZE: 'SMALLSIZE',
   MEDIUM: 'MEDIUM', 'MEDIUM SIZE': 'MEDIUMSIZE', MEDIUMSIZE: 'MEDIUMSIZE',
+  '4 PIN': '4PIN', '4PIN': '4PIN',
+  '3 PIN': '3PIN', '3PIN': '3PIN',
+  '2 PIN': '2PIN', '2PIN': '2PIN',
 }
 
 const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|SPARK|DISPLAY|FOR|MAINBOARD|MAIN BOARD)$/i
@@ -112,6 +105,12 @@ function containsColorWord(text: string): boolean {
   })
 }
 
+function resolveColorAlias(text: string, colorAliases?: Record<string, string>): string | null {
+  if (!colorAliases) return null
+  const upper = text.toUpperCase().trim()
+  return colorAliases[upper] || null
+}
+
 const PART_CODE_MAP: Record<string, string> = {
   BP: 'BP', 'BACK PANEL': 'BP', 'BACK COVER': 'BP', BK: 'BP',
   'BACK PANEL WITH LENS': 'BP', 'BACK PANEL WL': 'BP',
@@ -132,7 +131,8 @@ const PART_CODE_MAP: Record<string, string> = {
   SENSORSIDE: 'SENSORSIDE', 'SENSOR SIDE': 'SENSORSIDE', 'SENSOR [SIDE]': 'SENSORSIDE',
   SENSOR: 'SENSOR',
   ONOFF: 'ONOFF', 'ON OFF FLEX': 'ONOFF',
-  ONOFFSWITCH: 'ONOFFSWITCH', 'ON OFF SWITCH': 'ONOFFSWITCH', 'ONOFF SWITCH': 'ONOFFSWITCH', SWITCH: 'ONOFFSWITCH',
+  ONOFFSWITCH: 'ONOFFSWITCH', 'ON OFF SWITCH': 'ONOFFSWITCH', 'ONOFF SWITCH': 'ONOFFSWITCH',
+  SWITCH: 'ONOFFSWITCH', TIKLI: 'ONOFFSWITCH',
   VOL: 'VOL', 'VOL FLEX': 'VOL', 'VOLUME FLEX': 'VOL',
   CCFLEX: 'CCFLEX', 'CC FLEX': 'CCFLEX', 'CHARGING FLEX': 'CCFLEX',
   CHG: 'CHG',
@@ -143,7 +143,7 @@ const PART_CODE_MAP: Record<string, string> = {
   SPKFL: 'SPKFL', 'ONLY FLEX': 'SPKFL', 'SPEAKER FLEX ONLY': 'SPKFL', 'FLEX ONLY': 'SPKFL',
   SPKJ: 'SPKJ', 'SPEAKER JALI': 'SPKJ', 'SPEAKER/RINGER JALI': 'SPKJ', 'RINGER JALI': 'SPKJ',
   ESPK: 'ESPK', 'EXX-BEE': 'ESPK', 'EXX BEE': 'ESPK', EXXBEE: 'ESPK',
-  EARPIECE: 'ESPK', 'EAR SPEAKER': 'ESPK',
+  EARPIECE: 'ESPK', 'EAR SPEAKER': 'ESPK', 'EAR SPK': 'ESPK',
   ESPKF: 'ESPKF', 'EXX-BEE FLEX': 'ESPKF', 'EARPIECE FLEX': 'ESPKF',
   ESPKFL: 'ESPKFL', 'EXX-BEE ONLY FLEX': 'ESPKFL', 'EARPIECE FLEX ONLY': 'ESPKFL',
   CG: 'CG', 'CAMERA GLASS': 'CG', CL: 'CL', 'CAMERA LENS': 'CL',
@@ -161,12 +161,13 @@ const PART_CODE_MAP: Record<string, string> = {
   MIC: 'MIC', 'CHINA MIC': 'MIC',
   VIB: 'VIB', VIBRATOR: 'VIB',
   ANT: 'ANT', ANTENNA: 'ANT',
-INRUBBER: 'INRUBBER', 'IN RUBBER': 'INRUBBER',
+  INRUBBER: 'INRUBBER', 'IN RUBBER': 'INRUBBER',
   BACKGLASS: 'BACKGLASS', 'BACK GLASS': 'BACKGLASS',
   CONVHOUSING: 'CONVHOUSING', 'CONVERTER HOUSING': 'CONVHOUSING',
   'CONVETOR HOUSING': 'CONVHOUSING', 'CONVERT HOUSING': 'CONVHOUSING',
   'CONVERT HOUSIG': 'CONVHOUSING',
   CONVERTER: 'CONVHOUSING', CONVETOR: 'CONVHOUSING', CONVERT: 'CONVHOUSING',
+  NETWORKWIRE: 'NETWORKWIRE', 'NETWORK WIRE': 'NETWORKWIRE',
 }
 
 const FLAG_MAP: Record<string, string> = {
@@ -178,11 +179,12 @@ const FLAG_MAP: Record<string, string> = {
 
 const PART_CODE_TOKENS = new Set<string>([
   'BP', 'BK', 'FH', 'MF', 'MD', 'MFF', 'LCD', 'LCDCON', 'LCDRING',
-  'BATCON', 'BOARDCONN', 'SENSORCONN', 'SENSORSIDE', 'ONOFF', 'ONOFFSWITCH', 'VOL',
+  'BATCON', 'BOARDCONN', 'SENSORCONN', 'SENSORSIDE', 'SENSOR',
+  'ONOFF', 'ONOFFSWITCH', 'VOL',
   'CCFLEX', 'CHG', 'RB', 'SPK', 'SPKF', 'SPKFL', 'SPKJ', 'ESPK',
   'ESPKF', 'ESPKFL', 'CG', 'CL', 'CAM', 'ST', 'GASKIT', 'GASKITF',
   'GASKITB', 'OUTKEY', 'MIC', 'VIB', 'ANT', 'INRUBBER', 'BACKGLASS',
-  'FF', 'BCAM', 'FCAM', 'CONVHOUSING',
+  'FF', 'BCAM', 'FCAM', 'CONVHOUSING', 'NETWORKWIRE',
 ])
 
 const QUALITY_TOKEN_REGEX = /^(100\s*%?\s*(?:OG|ORIG|ORIGINAL)|100OG|OG|ORI|ORIG|ORIGINAL|ORG|CARE(?:\s*(?:OG|ORIG|ORIGINAL))?|CHINA\s*(?:OG|ORIG|ORIGINAL)|C\+|MIX\s+OG)$/i
@@ -191,8 +193,10 @@ const TRAILING_QUALITY_REGEX = /\s+(100\s*%?(?:\s*(?:OG|ORIG|ORIGINAL))?|100OG|O
 
 const TRAILING_FLAG_REGEX = /\s+(W\s*\/\s*C(?:\s*\/\s*L)?|WC|WCL|W\s*\/\s*CL|WL)\b/i
 
+// Hardcoded phrase list — DB aliases are merged in extractPartFromDescription
 const PART_TYPE_PHRASES: string[] = [
-  // Camera + flash phrases (v23 additions)
+  'EAR SPEAKER',
+  'EAR SPK',
   'BACK CAMERA',
   'FRONT CAMERA',
   'BACK CAM',
@@ -208,9 +212,8 @@ const PART_TYPE_PHRASES: string[] = [
   'SENSOR',
   'IN RUBBER',
   'INRUBBER',
-  'IN RUBBER',
-  'INRUBBER',
-  // Existing phrases (longest-first ordering preserved)
+  'NETWORK WIRE',
+  'NETWORKWIRE',
   'MIDDLE FRAME WITH FLEX',
   'ON OFF SENSOR CONN',
   'ONLY EARPIECE FLEX',
@@ -249,6 +252,7 @@ const PART_TYPE_PHRASES: string[] = [
   'GAS KIT',
   'ON OFF SWITCH',
   'ONOFF SWITCH',
+  'TIKLI',
   'ON OFF FLEX',
   'ONLY FLEX',
   'FLEX ONLY',
@@ -339,7 +343,9 @@ function normalizeTypos(desc: string): string {
     .replace(/\bHOUSIG\b/gi, 'HOUSING')
     .replace(/\bSAMRT\b/gi, 'SMART')
     .replace(/\bCONVETOR\b/gi, 'CONVERTER')
+    .replace(/\bCONNVETOR\b/gi, 'CONVERTER')
     .replace(/\bCOVERT\b/gi, 'CONVERT')
+    .replace(/\bSILVAR\b/gi, 'SILVER')
     .replace(/\bEXX\s*-\s*BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXX\s+BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXXBEE\b/gi, 'EXX-BEE')
@@ -423,7 +429,6 @@ function extractParentheticals(desc: string): ParentheticalResult {
   const cleanedDesc = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
   return { colors, network, quality, flag, size, variant, year, cleanedDesc }
 }
-
 function extractQualityFromMarkers(markers: string[]): {
   quality: Quality
   remainingMarkers: string[]
@@ -474,7 +479,10 @@ function extractQualityFromMarkers(markers: string[]): {
   return { quality, remainingMarkers: remaining }
 }
 
-function classifyMarkers(markers: string[]): {
+function classifyMarkers(
+  markers: string[],
+  colorAliases?: Record<string, string>
+): {
   variant: string | null; year: string | null; network: string | null
   flag: string | null; size: string | null; color: string | null
   modelAlias: string | null
@@ -513,15 +521,15 @@ function classifyMarkers(markers: string[]): {
     if (/^METAL$/.test(upper)) {
       if (!variant) variant = 'METAL'; continue
     }
-    if (containsColorWord(upper)) {
-      if (!color) color = upper.replace(/\s*\/\s*/g, '-').replace(/\s+/g, '-')
+
+    const aliasColor = resolveColorAlias(upper, colorAliases)
+    if (aliasColor) {
+      if (!color) color = aliasColor
       continue
     }
 
-    // v24: any remaining short alphanumeric token becomes a variant
-    // (catches {M12}, {M14}, {M16}, {N6}, etc. — model sub-versions)
-    if (/^[A-Z]{1,2}\d{1,3}$/i.test(upper) || /^[A-Z]\d[A-Z]$/i.test(upper)) {
-      if (!variant) variant = upper
+    if (containsColorWord(upper)) {
+      if (!color) color = upper.replace(/\s*\/\s*/g, '-').replace(/\s+/g, '-')
       continue
     }
   }
@@ -529,12 +537,24 @@ function classifyMarkers(markers: string[]): {
   return { variant, year, network, flag, size, color, modelAlias }
 }
 
-function extractPartFromDescription(desc: string): {
+// ============================================================
+// v25: Part extraction now also scans DB aliases (part_type_aliases).
+// ============================================================
+function extractPartFromDescription(
+  desc: string,
+  aliases?: AliasMaps
+): {
   partText: string | null
   cleanedDesc: string
 } {
   const upper = desc.toUpperCase()
-  for (const phrase of PART_TYPE_PHRASES) {
+
+  const dbPhrases = aliases ? Object.keys(aliases.partAliases) : []
+  const allPhrases = Array.from(new Set([...dbPhrases, ...PART_TYPE_PHRASES]))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+
+  for (const phrase of allPhrases) {
     const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'i')
     if (re.test(upper)) {
@@ -736,16 +756,13 @@ function normalizeModelName(model: string | null): { model: string | null; strip
     cleaned = cleaned.replace(/\s+\d$/, '').trim()
   }
 
-  // v24: strip trailing junk tokens (EXB, GR, KG7, GO 2021)
-  cleaned = cleaned.replace(/\s+(EXB|GR|KG\d|GO\s*\d{4})\s*$/i, '').trim()
-
-  // v24: strip trailing short alphanumeric junk tokens (EXB, GR, Kg7, A13 when trailing a model like A12)
-  cleaned = cleaned.replace(/\s+(EXB|GR|GO\s*\d{4}|KG\d|A\d{1,2}[A-Z]?)\s*$/i, '').trim()
-
   cleaned = cleaned.replace(/\s*\+\s*$/, '').replace(/^\+\s*/, '').trim()
   if (!cleaned) return { model: null, strippedPart: null }
 
   cleaned = cleaned.replace(TRAILING_QUALITY_REGEX, '').trim()
+  if (!cleaned) return { model: null, strippedPart: null }
+
+  cleaned = cleaned.replace(/\s+(SMALL|BIG|MEDIUM|BIGSIZE|SMALLSIZE|MEDIUMSIZE|\d{1,3}\s*MM|\d{1,2}\s*PIN)\s*$/i, '').trim()
   if (!cleaned) return { model: null, strippedPart: null }
 
   const words = cleaned.split(/\s+/)
@@ -769,9 +786,7 @@ function normalizeModelName(model: string | null): { model: string | null; strip
 
   return { model: cleaned, strippedPart }
 }
-// ============================================================
-// SKU generation
-// ============================================================
+
 export function generateSku(fields: {
   brandCode: string | null
   modelName: string | null
@@ -817,9 +832,6 @@ export function generateSku(fields: {
   return seg.filter(Boolean).join('-')
 }
 
-// ============================================================
-// Duplicate SKU detection within a single file.
-// ============================================================
 export function flagDuplicates(rows: ParsedRow[]): ParsedRow[] {
   const skuMap = new Map<string, number[]>()
 
@@ -860,9 +872,6 @@ export function flagDuplicates(rows: ParsedRow[]): ParsedRow[] {
   return next
 }
 
-// ============================================================
-// Main parse
-// ============================================================
 export function parseCSV(
   text: string,
   aliases: AliasMaps,
@@ -877,7 +886,7 @@ export function parseCSV(
     const line = lines[i]
     const qty = findColumnIndex(line, ['quantity', 'qty'])
     const rate = findColumnIndex(line, ['rate', 'price'])
-    const desc = findColumnIndex(line, ['descriptionofgoods', 'description', 'item', 'product'])
+    const desc = findColumnIndex(line, ['descriptionofgoods', 'description', 'item', 'product', 'itemname'])
     const brand = findColumnIndex(line, ['brand'])
     if (qty !== -1 && rate !== -1 && (desc !== -1 || brand !== -1)) {
       headerRowIndex = i
@@ -895,7 +904,7 @@ export function parseCSV(
   const colBrand = findColumnIndex(header, ['brand'])
   const colModel = findColumnIndex(header, ['model'])
   const colPart = findColumnIndex(header, ['parttype', 'typeofgoods', 'type', 'part'])
-  const colDesc = findColumnIndex(header, ['descriptionofgoods', 'description', 'item', 'product'])
+  const colDesc = findColumnIndex(header, ['descriptionofgoods', 'description', 'item', 'product', 'itemname'])
   const colQty = findColumnIndex(header, ['quantity', 'qty'])
   const colRate = findColumnIndex(header, ['rate', 'price'])
 
@@ -944,6 +953,7 @@ export function parseCSV(
     let quality: Quality = 'Normal'
     let flag: string | null = null
     let color: string | null = null
+    let sizeFromDesc: string | null = null
 
     if (isNewFormat) {
       const brandRaw = normalizeTypos((row[colBrand] || '').toUpperCase().trim())
@@ -970,10 +980,10 @@ export function parseCSV(
       if (rawDescription) {
         const normalized = normalizeTypos(rawDescription)
 
-        // v24: detect "N PIN" pattern → variant
-        const pinMatch = normalized.toUpperCase().match(/\b(\d)\s*PIN\b/)
-        if (pinMatch) {
-          variant = `${pinMatch[1]}PIN`
+        // v24: leading N PIN detection
+        const leadingPinMatch = normalized.toUpperCase().match(/^(\d{1,2})\s*PIN\b/)
+        if (leadingPinMatch) {
+          sizeFromDesc = `${leadingPinMatch[1]}PIN`
         }
 
         const par = extractParentheticals(normalized)
@@ -985,7 +995,7 @@ export function parseCSV(
         const qRes = extractQualityFromMarkers(markerRes.markers)
         quality = par.quality || qRes.quality
 
-        const cRes = classifyMarkers(qRes.remainingMarkers)
+        const cRes = classifyMarkers(qRes.remainingMarkers, aliases.colorAliases)
         year = cRes.year
         if (!year && par.year) year = par.year
 
@@ -995,10 +1005,17 @@ export function parseCSV(
         if (!color && par.colors.length > 0) color = par.colors[0]
         if (!color && cRes.color) color = cRes.color
 
-        if (!variant) {
-          variant = par.variant || cRes.variant
-          if (cRes.size) variant = cRes.size
-          else if (par.size) variant = par.size
+        variant = par.variant || cRes.variant
+        if (cRes.size) variant = cRes.size
+        else if (par.size) variant = par.size
+
+        // v24: combine leading N PIN + size word into one variant
+        const sizeWordMatch = working.toUpperCase().match(/\b(SMALL|BIG|MEDIUM)\b/)
+        if (sizeFromDesc && sizeWordMatch) {
+          variant = `${sizeFromDesc}-${sizeWordMatch[1]}`
+          working = working.replace(new RegExp(`\\b${sizeWordMatch[1]}\\b`, 'gi'), ' ')
+        } else if (sizeFromDesc && !variant) {
+          variant = sizeFromDesc
         }
 
         if (cRes.modelAlias) {
@@ -1014,6 +1031,17 @@ export function parseCSV(
             else if (/(ORI|ORIG|ORIGINAL|ORG)/.test(u)) quality = 'Care OG'
             else if (/OG/.test(u)) quality = 'OG'
             working = working.replace(TRAILING_QUALITY_REGEX, '').trim()
+          }
+        }
+
+        // v24: catch unbracketed trailing color words (with alias)
+        if (!color) {
+          const trailingColorMatch = working.toUpperCase().match(/\s+(SILVAR|SILVER|GR|GRAY|GREY|BLACK|WHITE|BLU|GRN|GOLD)\s*$/i)
+          if (trailingColorMatch) {
+            const raw = trailingColorMatch[1].toUpperCase()
+            const resolved = resolveColorAlias(raw, aliases.colorAliases) || raw
+            color = resolved
+            working = working.replace(new RegExp(`\\s+${raw}\\s*$`, 'i'), ' ').trim()
           }
         }
 
@@ -1064,7 +1092,7 @@ export function parseCSV(
           partCode = aliases.partAliases[rawType] || normalizePartCode(rawType)
         }
         if (!partCode) {
-          const extracted = extractPartFromDescription(working)
+          const extracted = extractPartFromDescription(working, aliases)
           if (extracted.partText) {
             rawType = extracted.partText
             partCode =
@@ -1074,7 +1102,7 @@ export function parseCSV(
           }
         }
         for (let pass = 0; pass < 4; pass++) {
-          const re = extractPartFromDescription(working)
+          const re = extractPartFromDescription(working, aliases)
           if (re.partText && re.cleanedDesc !== working) {
             working = re.cleanedDesc
           } else {
@@ -1168,9 +1196,6 @@ export function parseCSV(
   return flagged
 }
 
-// ============================================================
-// Group parsed rows
-// ============================================================
 export function groupParsedRows(rows: ParsedRow[]): {
   matched: ParsedRow[]
   newItems: ParsedRow[]

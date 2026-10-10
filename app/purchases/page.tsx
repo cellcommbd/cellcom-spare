@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { ImportCSVDialog } from '../../components/ui/ImportCSVDialog'
+import { NewItemDialog } from '../../components/ui/new-item-dialog'
 import { ParsedRow } from '../../lib/csv-parser'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
 import {
@@ -21,6 +22,7 @@ type Party = {
   party_id: number
   party_name: string
   party_type: 'Customer' | 'Supplier'
+  purchase_prefix?: string | null
 }
 
 type Item = {
@@ -137,6 +139,10 @@ export default function PurchaseEntryPage() {
   const [showImport, setShowImport] = useState(false)
   const [importing, setImporting] = useState(false)
 
+  const [showNewItem, setShowNewItem] = useState(false)
+  const [newItemRowId, setNewItemRowId] = useState<number | null>(null)
+  const [newItemInitialText, setNewItemInitialText] = useState('')
+
   const [confirmDelete, setConfirmDelete] = useState<PurchaseHeader | null>(null)
   const [deleting, setDeleting] = useState(false)
 
@@ -196,6 +202,21 @@ export default function PurchaseEntryPage() {
     label: s.party_name,
   }))
 
+  async function suggestInvoiceNo(partyId: number, partyName: string, prefix?: string | null) {
+    try {
+      const { count } = await supabase
+        .from('purchases')
+        .select('purchase_id', { count: 'exact', head: true })
+        .eq('party_id', partyId)
+
+      const next = (count || 0) + 1
+      const pfx = (prefix || partyName.slice(0, 2)).toUpperCase()
+      setInvoiceNo(`${pfx}-${next}`)
+    } catch (e) {
+      console.error('suggestInvoiceNo failed:', e)
+    }
+  }
+
   async function searchItems(rowId: number, query: string) {
     if (!query || query.trim().length < 2) {
       setRowItemOptions((prev) => ({ ...prev, [rowId]: [] }))
@@ -205,6 +226,40 @@ export default function PurchaseEntryPage() {
     const results = await searchItemsShared(query)
     const items = results as Item[]
     setRowItemOptions((prev) => ({ ...prev, [rowId]: items }))
+  }
+
+  function openNewItemDialog(rowId: number, initialText: string) {
+    setNewItemRowId(rowId)
+    setNewItemInitialText(initialText)
+    setShowNewItem(true)
+  }
+
+  async function handleNewItemCreated(item: {
+    item_id: number
+    sku: string
+    is_phone_part: boolean
+  }) {
+    if (newItemRowId == null) return
+
+    const { data } = await supabase
+      .from('items')
+      .select('item_id, sku, current_stock, cost_price, selling_price, quality, variant')
+      .eq('item_id', item.item_id)
+      .single()
+
+    const full = (data as Item) || null
+
+    updateRow(newItemRowId, {
+      item_id: item.item_id,
+      sku: item.sku,
+      quantity: 1,
+      rate: full?.cost_price || 0,
+      amount: Number(full?.cost_price || 0),
+    })
+
+    setShowNewItem(false)
+    setNewItemRowId(null)
+    setNewItemInitialText('')
   }
 
   function addRow(): number {
@@ -439,8 +494,7 @@ export default function PurchaseEntryPage() {
       setCashPaid(total.toFixed(2))
     }
   }, [total, cashPaidTouched])
-
-  const costPredictions = useMemo(() => {
+    const costPredictions = useMemo(() => {
     const validRows = rows.filter(
       (r) => r.item_id && r.quantity > 0 && r.rate > 0
     )
@@ -503,7 +557,8 @@ export default function PurchaseEntryPage() {
     }
     return pickedSupplier.id
   }
-    async function savePurchase() {
+
+  async function savePurchase() {
     setMessage('')
 
     if (!pickedSupplier.label) {
@@ -924,11 +979,12 @@ export default function PurchaseEntryPage() {
                     : null
                 }
                 onValueChange={(v: string, label: string, isNew: boolean) => {
-                  setPickedSupplier({
-                    id: isNew ? null : Number(v),
-                    label,
-                    isNew,
-                  })
+                  const id = isNew ? null : Number(v)
+                  setPickedSupplier({ id, label, isNew })
+                  if (id) {
+                    const party = suppliers.find((s) => s.party_id === id)
+                    suggestInvoiceNo(id, label, party?.purchase_prefix)
+                  }
                 }}
                 placeholder="Select or type supplier..."
                 focusNextOnSelect={true}
@@ -1004,6 +1060,8 @@ export default function PurchaseEntryPage() {
                     inputDataAttr={`row-${row.rowId}`}
                     focusNextOnSelect={true}
                     nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
+                    showReferenceLink={true}
+                    onCreateNew={(text) => openNewItemDialog(row.rowId, text)}
                   />
                   <div className="grid grid-cols-2 gap-3 mt-3">
                     <div>
@@ -1164,11 +1222,12 @@ export default function PurchaseEntryPage() {
                       : null
                   }
                   onValueChange={(v: string, label: string, isNew: boolean) => {
-                    setPickedSupplier({
-                      id: isNew ? null : Number(v),
-                      label,
-                      isNew,
-                    })
+                    const id = isNew ? null : Number(v)
+                    setPickedSupplier({ id, label, isNew })
+                    if (id) {
+                      const party = suppliers.find((s) => s.party_id === id)
+                      suggestInvoiceNo(id, label, party?.purchase_prefix)
+                    }
                   }}
                   placeholder="Select or type supplier..."
                   focusNextOnSelect={true}
@@ -1252,6 +1311,8 @@ export default function PurchaseEntryPage() {
                             focusNextOnSelect={true}
                             nextFieldSelector={`input[data-qty-row="qty-${row.rowId}"]`}
                             inputRef={getItemRef(row.rowId)}
+                            showReferenceLink={true}
+                            onCreateNew={(text) => openNewItemDialog(row.rowId, text)}
                           />
                         </td>
                         <td className="px-2 py-1">
@@ -1506,6 +1567,17 @@ export default function PurchaseEntryPage() {
         onClose={() => setShowImport(false)}
         onImport={handleCSVImport}
         onSkipRows={handleSkipRows}
+      />
+
+      <NewItemDialog
+        open={showNewItem}
+        onClose={() => {
+          setShowNewItem(false)
+          setNewItemRowId(null)
+          setNewItemInitialText('')
+        }}
+        initialText={newItemInitialText}
+        onCreated={handleNewItemCreated}
       />
 
       {confirmDelete && (

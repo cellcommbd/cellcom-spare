@@ -79,9 +79,10 @@ export function ImportCSVDialog({
   async function loadAliases() {
     setLoading(true)
 
-    const [brandRes, partRes] = await Promise.all([
+    const [brandRes, partRes, colorRes] = await Promise.all([
       supabase.from('brand_aliases').select('csv_code, brand_code'),
       supabase.from('part_type_aliases').select('csv_text, part_code'),
+      supabase.from('parser_color_aliases').select('csv_text, color_value'),
     ])
 
     const allItems: any[] = []
@@ -107,7 +108,12 @@ export function ImportCSVDialog({
       partAliases[String(r.csv_text).toUpperCase()] = String(r.part_code)
     }
 
-    setAliases({ brandAliases, partAliases })
+    const colorAliases: Record<string, string> = {}
+    for (const r of ((colorRes.data as any[]) || [])) {
+      colorAliases[String(r.csv_text).toUpperCase()] = String(r.color_value)
+    }
+
+    setAliases({ brandAliases, partAliases, colorAliases })
     setItems(allItems as ItemLookup[])
     setLoading(false)
   }

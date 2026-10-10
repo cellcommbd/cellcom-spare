@@ -51,6 +51,14 @@ type PickedShop = {
   isNew: boolean
 }
 
+type ReportLine = {
+  bill_date: string | null
+  sku: string | null
+  quantity: number
+  rate: number
+  amount: number
+}
+
 const COUNTER_SALE_NAME = 'Counter Sale'
 
 export default function SalesEntryPageWrapper() {
@@ -75,6 +83,13 @@ function SalesEntryPage() {
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
   const [isOwner, setIsOwner] = useState(false)
 
+  // ---- Sales report state ----
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const [reportFrom, setReportFrom] = useState(todayStr)
+  const [reportTo, setReportTo] = useState(todayStr)
+  const [reportLines, setReportLines] = useState<ReportLine[]>([])
+  const [reportLoading, setReportLoading] = useState(false)
+
   const [rowItemOptions, setRowItemOptions] = useState<Record<number, Item[]>>(
     {}
   )
@@ -84,9 +99,7 @@ function SalesEntryPage() {
     label: '',
     isNew: false,
   })
-  const [billDate, setBillDate] = useState(
-    new Date().toISOString().slice(0, 10)
-  )
+  const [billDate, setBillDate] = useState(todayStr)
 
   const [rows, setRows] = useState<SaleRow[]>([
     { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
@@ -122,6 +135,12 @@ function SalesEntryPage() {
     setIsOwner(getRole() === 'owner')
     loadData()
   }, [])
+
+  // Reload report when date range changes
+  useEffect(() => {
+    loadReport()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportFrom, reportTo])
 
   useEffect(() => {
     if (pendingFocusRowId == null) return
@@ -214,18 +233,52 @@ function SalesEntryPage() {
     setShops(parties)
     setTodaySales(t.data || [])
 
-    // Auto-select Counter Sale as default
     const counter = parties.find((p) => p.party_name === COUNTER_SALE_NAME)
     if (counter) {
       setPickedShop((prev) => {
-        // Don't override if user already picked something
         if (prev.id || prev.isNew) return prev
         return { id: counter.party_id, label: counter.party_name, isNew: false }
       })
     }
   }
 
-  // Hide Counter Sale from the dropdown
+  async function loadReport() {
+    setReportLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('sale_items')
+        .select(`
+          quantity, rate, amount,
+          sales!inner ( bill_date ),
+          items!inner ( sku )
+        `)
+        .gte('sales.bill_date', reportFrom)
+        .lte('sales.bill_date', reportTo)
+
+      if (error) {
+        console.error('report error:', error.message)
+        setReportLines([])
+      } else {
+        const lines: ReportLine[] = (data || []).map((row: any) => ({
+          bill_date: row.sales?.bill_date || null,
+          sku: row.items?.sku || null,
+          quantity: row.quantity,
+          rate: row.rate,
+          amount: row.amount,
+        }))
+        lines.sort((a, b) =>
+          (a.bill_date || '') < (b.bill_date || '') ? 1 : -1
+        )
+        setReportLines(lines)
+      }
+    } catch (e) {
+      console.error('report fetch failed:', e)
+      setReportLines([])
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
   const shopOptions = shops
     .filter((s) => s.party_name !== COUNTER_SALE_NAME)
     .map((s) => ({
@@ -305,7 +358,6 @@ function SalesEntryPage() {
       })
     )
 
-    // Focus qty input for this row, text selected
     setPendingFocusQtyRowId(rowId)
   }
 
@@ -328,7 +380,6 @@ function SalesEntryPage() {
   ) {
     if (e.key === 'Enter' || e.key === 'Tab') {
       e.preventDefault()
-      // Focus the rate input in the same row
       const row = e.currentTarget.closest('tr') ?? e.currentTarget.closest('.grid')
       if (!row) return
       const rateInput = row.querySelector<HTMLInputElement>(
@@ -359,7 +410,6 @@ function SalesEntryPage() {
     if (isLastRow && row.item_id) {
       addRow()
     } else if (!isLastRow) {
-      // Focus next row's item combo
       const nextRowId = rows[idx + 1]?.rowId
       if (nextRowId) {
         const el = itemRefs.current[nextRowId]?.current
@@ -470,7 +520,6 @@ function SalesEntryPage() {
 
     setMessage(`Saved sale #${saleId}. Stock decreased.`)
 
-    // Reset to default Counter Sale
     const counter = shops.find((s) => s.party_name === COUNTER_SALE_NAME)
     setPickedShop(
       counter
@@ -483,6 +532,7 @@ function SalesEntryPage() {
     setNextRowId(2)
     setRowItemOptions({})
     await loadData()
+    await loadReport()
 
     setTimeout(() => {
       const el = itemRefs.current[1]?.current
@@ -528,6 +578,7 @@ function SalesEntryPage() {
     else {
       setMessage('Deleted sale #' + id)
       await loadData()
+      await loadReport()
     }
   }
 
@@ -667,6 +718,7 @@ function SalesEntryPage() {
                   inputDataAttr={`row-${row.rowId}`}
                   focusNextOnSelect={false}
                   inputRef={getItemRef(row.rowId)}
+                  showReferenceLink={true}
                 />
                 <div className="grid grid-cols-2 gap-3 mt-3">
                   <div>
@@ -771,6 +823,91 @@ function SalesEntryPage() {
               {message}
             </div>
           )}
+
+          {/* Mobile Sales Report */}
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 space-y-2">
+              <div className="text-sm font-semibold text-slate-700">
+                Sales Report ({reportLines.length})
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-slate-600 mb-0.5">From</label>
+                  <input
+                    type="date"
+                    value={reportFrom}
+                    onChange={(e) => setReportFrom(e.target.value)}
+                    className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-slate-600 mb-0.5">To</label>
+                  <input
+                    type="date"
+                    value={reportTo}
+                    onChange={(e) => setReportTo(e.target.value)}
+                    className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  />
+                </div>
+              </div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="border-b border-slate-200 px-2 py-2 text-left text-[10px] font-semibold text-slate-600">Date</th>
+                    <th className="border-b border-slate-200 px-2 py-2 text-left text-[10px] font-semibold text-slate-600">SKU</th>
+                    <th className="w-12 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Qty</th>
+                    <th className="w-16 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Rate</th>
+                    <th className="w-20 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Amt</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {reportLoading ? (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-6 text-center text-xs text-slate-400">
+                        Loading...
+                      </td>
+                    </tr>
+                  ) : reportLines.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-6 text-center text-xs text-slate-400">
+                        No sales in this range.
+                      </td>
+                    </tr>
+                  ) : (
+                    reportLines.map((l, i) => (
+                      <tr key={i} className="border-b border-slate-100">
+                        <td className="px-2 py-1.5 text-slate-600 whitespace-nowrap">
+                          {l.bill_date ? l.bill_date.slice(5) : '—'}
+                        </td>
+                        <td className="px-2 py-1.5 font-mono text-slate-800 break-all">
+                          {l.sku || '—'}
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-slate-800">{l.quantity}</td>
+                        <td className="px-2 py-1.5 text-right text-slate-800">
+                          {Number(l.rate).toFixed(0)}
+                        </td>
+                        <td className="px-2 py-1.5 text-right font-medium text-slate-800">
+                          {Number(l.amount).toFixed(0)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {reportLines.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-slate-50 border-t border-slate-200">
+                      <td colSpan={4} className="px-2 py-2 text-right text-xs font-semibold text-slate-700">Total</td>
+                      <td className="px-2 py-2 text-right text-sm font-bold text-slate-900">
+                        ₹ {reportLines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
         </div>
 
         {/* ============ DESKTOP VIEW ============ */}
@@ -886,6 +1023,7 @@ function SalesEntryPage() {
                           inputDataAttr={`row-${row.rowId}`}
                           focusNextOnSelect={false}
                           inputRef={getItemRef(row.rowId)}
+                          showReferenceLink={true}
                         />
                       </td>
                       <td className="px-2 py-1">
@@ -992,53 +1130,85 @@ function SalesEntryPage() {
             </div>
           </div>
 
+          {/* Desktop Sales Report */}
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <span className="text-sm font-semibold text-slate-700">
-                Today's Sales ({todaySales.length})
+                Sales Report ({reportLines.length})
               </span>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-600">From</label>
+                <input
+                  type="date"
+                  value={reportFrom}
+                  onChange={(e) => setReportFrom(e.target.value)}
+                  className="h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+                <label className="text-xs text-slate-600">To</label>
+                <input
+                  type="date"
+                  value={reportTo}
+                  onChange={(e) => setReportTo(e.target.value)}
+                  className="h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                />
+              </div>
             </div>
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="bg-slate-100">
-                  <th className="w-16 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Bill #</th>
-                  <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Shop</th>
-                  <th className="w-28 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
-                  <th className="w-24 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {todaySales.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-3 py-6 text-center text-sm text-slate-400">
-                      No sales today yet.
-                    </td>
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="bg-slate-100">
+                    <th className="w-24 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Date</th>
+                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">SKU</th>
+                    <th className="w-20 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Qty</th>
+                    <th className="w-24 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Rate</th>
+                    <th className="w-28 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
                   </tr>
-                ) : (
-                  todaySales.map((s) => (
-                    <tr key={s.sale_id} className="hover:bg-slate-50">
-                      <td className="border-b border-slate-100 px-3 py-2 text-slate-600">{s.sale_id}</td>
-                      <td className="border-b border-slate-100 px-3 py-2 text-slate-800">{shopName(s.party_id)}</td>
-                      <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">
-                        ₹ {Number(s.total_amount).toFixed(2)}
-                      </td>
-                      <td className="border-b border-slate-100 px-3 py-2">
-                        {(isOwner ||
-                          s.entry_date?.slice(0, 10) ===
-                            new Date().toISOString().slice(0, 10)) && (
-                          <button
-                            onClick={() => deleteSale(s.sale_id)}
-                            className="text-xs font-medium text-red-600 hover:text-red-800"
-                          >
-                            Delete
-                          </button>
-                        )}
+                </thead>
+                <tbody>
+                  {reportLoading ? (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
+                        Loading...
                       </td>
                     </tr>
-                  ))
+                  ) : reportLines.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
+                        No sales in this date range.
+                      </td>
+                    </tr>
+                  ) : (
+                    reportLines.map((l, i) => (
+                      <tr key={i} className="hover:bg-slate-50">
+                        <td className="border-b border-slate-100 px-3 py-2 text-slate-600 whitespace-nowrap">
+                          {l.bill_date || '—'}
+                        </td>
+                        <td className="border-b border-slate-100 px-3 py-2 font-mono text-slate-800">
+                          {l.sku || '—'}
+                        </td>
+                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">{l.quantity}</td>
+                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
+                          ₹ {Number(l.rate).toFixed(2)}
+                        </td>
+                        <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">
+                          ₹ {Number(l.amount).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+                {reportLines.length > 0 && (
+                  <tfoot>
+                    <tr className="bg-slate-50 border-t border-slate-200">
+                      <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-slate-700">Total</td>
+                      <td className="px-3 py-2 text-right text-base font-bold text-slate-900">
+                        ₹ {reportLines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
                 )}
-              </tbody>
-            </table>
+              </table>
+            </div>
           </div>
         </div>
       </div>

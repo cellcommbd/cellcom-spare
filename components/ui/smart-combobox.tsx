@@ -1,7 +1,7 @@
 'use client'
 
 import * as React from 'react'
-import { Check, ChevronDown, Plus, X } from 'lucide-react'
+import { Check, ChevronDown, Plus, X, ExternalLink } from 'lucide-react'
 
 export type ComboOption = {
   value: string
@@ -23,6 +23,10 @@ type SmartComboboxProps = {
   inputRef?: React.RefObject<HTMLInputElement | null>
   onSearch?: (query: string) => void
   searchDebounceMs?: number
+  /** Show "Browse all codes" link in dropdown when there are no matches */
+  showReferenceLink?: boolean
+  /** If provided, shows "+ Create new item" option when no matches */
+  onCreateNew?: (typedText: string) => void
 }
 
 function splitLabel(label: string): {
@@ -77,17 +81,17 @@ export function SmartCombobox({
   inputRef: externalInputRef,
   onSearch,
   searchDebounceMs = 300,
+  showReferenceLink = false,
+  onCreateNew,
 }: SmartComboboxProps) {
   const [open, setOpen] = React.useState(false)
   const [inputText, setInputText] = React.useState('')
   const [hovered, setHovered] = React.useState(false)
-  // Tracks whether the user is actively typing (vs. just displaying a selected label)
   const [typing, setTyping] = React.useState(false)
   const wrapperRef = React.useRef<HTMLDivElement>(null)
   const internalRef = React.useRef<HTMLInputElement>(null)
   const inputRef = externalInputRef ?? internalRef
 
-  // Store onSearch in a ref so debounce effect doesn't depend on it
   const onSearchRef = React.useRef(onSearch)
   React.useEffect(() => {
     onSearchRef.current = onSearch
@@ -100,7 +104,6 @@ export function SmartCombobox({
 
   const selectedOption = stringOptions.find((o) => o.value === value)
 
-  // Sync input text when the external value changes and the user isn't typing
   React.useEffect(() => {
     if (!typing) {
       if (value === null || value === '') {
@@ -119,7 +122,6 @@ export function SmartCombobox({
         !wrapperRef.current.contains(e.target as Node)
       ) {
         setOpen(false)
-        // If the user typed but didn't select, revert to the selected label
         setTyping(false)
         if (selectedOption) {
           const { primary } = splitLabel(selectedOption.label)
@@ -133,11 +135,10 @@ export function SmartCombobox({
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [selectedOption])
 
-  // Debounced server-side search
   const debounceTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   React.useEffect(() => {
     if (!onSearchRef.current) return
-    if (!typing) return // don't search when we're just displaying a label
+    if (!typing) return
     if (debounceTimer.current) clearTimeout(debounceTimer.current)
     debounceTimer.current = setTimeout(() => {
       onSearchRef.current?.(inputText.trim())
@@ -168,7 +169,11 @@ export function SmartCombobox({
   const showCreateOption =
     allowCreate && typing && inputText.trim().length > 0 && !exactMatch
 
-  // Show clear button when there's a value OR the user has typed something
+  // New: show the "no match" helper section
+  const noMatches = filteredOptions.length === 0 && typing && trimmed.length > 0
+  const showNoMatchHelpers =
+    noMatches && (showReferenceLink || !!onCreateNew) && !showCreateOption
+
   const hasContent = !!value || inputText.length > 0
   const showClear = (hovered || open) && hasContent
 
@@ -213,7 +218,22 @@ export function SmartCombobox({
     })
   }
 
-  return (
+  function handleBrowseReference(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    window.open('/reference', '_blank', 'noopener,noreferrer')
+  }
+
+  function handleCreateNew(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!onCreateNew) return
+    const typed = inputText.trim()
+    setOpen(false)
+    setTyping(false)
+    onCreateNew(typed)
+  }
+    return (
     <div className="relative" ref={wrapperRef}>
       <div
         className="relative"
@@ -233,8 +253,6 @@ export function SmartCombobox({
           }}
           onFocus={(e) => {
             setOpen(true)
-            // If a value is already selected and user hasn't started typing,
-            // select all text so typing replaces it
             if (value && !typing) {
               try {
                 e.target.select()
@@ -246,7 +264,6 @@ export function SmartCombobox({
           onKeyDown={(e) => {
             if (e.key === 'Tab') {
               setOpen(false)
-              // Commit display back to selected label
               setTyping(false)
               if (selectedOption) {
                 const { primary } = splitLabel(selectedOption.label)
@@ -258,7 +275,6 @@ export function SmartCombobox({
             }
             if (e.key === 'Escape') {
               if (typing && (inputText.length > 0 || value)) {
-                // First Escape: revert to selected label (or clear)
                 setTyping(false)
                 if (selectedOption) {
                   const { primary } = splitLabel(selectedOption.label)
@@ -267,7 +283,6 @@ export function SmartCombobox({
                   setInputText('')
                 }
               } else {
-                // Second Escape (or nothing to revert): close dropdown
                 setOpen(false)
               }
             }
@@ -301,7 +316,15 @@ export function SmartCombobox({
 
       {open && (
         <div className="absolute z-50 mt-1 w-full max-h-[60vh] md:max-h-64 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-lg">
-          {filteredOptions.length === 0 && !showCreateOption && (
+
+          {/* No matches + helpers */}
+          {noMatches && (
+            <div className="px-3 py-3 text-sm text-slate-500">
+              No matches for &ldquo;{inputText.trim()}&rdquo;
+            </div>
+          )}
+
+          {!noMatches && filteredOptions.length === 0 && !showCreateOption && (
             <div className="px-3 py-3 text-sm text-slate-400">
               {onSearch && inputText.trim().length < 2
                 ? 'Type at least 2 letters to search…'
@@ -309,6 +332,35 @@ export function SmartCombobox({
             </div>
           )}
 
+          {/* Reference + Create helper block */}
+          {showNoMatchHelpers && (
+            <div className="border-t border-slate-200 bg-slate-50">
+              {showReferenceLink && (
+                <button
+                  type="button"
+                  onPointerDown={handleBrowseReference}
+                  className="w-full text-left px-3 py-3 md:py-2 text-xs text-blue-600 hover:bg-blue-50 flex items-center gap-2 border-b border-slate-100 last:border-b-0"
+                >
+                  <ExternalLink className="size-3.5 shrink-0" />
+                  <span>Browse all codes (Reference)</span>
+                </button>
+              )}
+              {onCreateNew && (
+                <button
+                  type="button"
+                  onPointerDown={handleCreateNew}
+                  className="w-full text-left px-3 py-3 md:py-2 text-xs text-emerald-700 hover:bg-emerald-50 flex items-center gap-2 border-b border-slate-100 last:border-b-0"
+                >
+                  <Plus className="size-3.5 shrink-0" />
+                  <span>
+                    Create new item &ldquo;{inputText.trim()}&rdquo;
+                  </span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Regular options */}
           {filteredOptions.map((opt) => {
             const { primary, secondary } = splitLabel(opt.label)
             const isSelected = value === opt.value
@@ -357,7 +409,8 @@ export function SmartCombobox({
             )
           })}
 
-          {showCreateOption && (
+          {/* Add as new (from allowCreate path) — only when nothing else is showing */}
+          {showCreateOption && filteredOptions.length === 0 && (
             <div className="border-t border-slate-200 bg-slate-50">
               <div
                 onPointerDown={(e) => {

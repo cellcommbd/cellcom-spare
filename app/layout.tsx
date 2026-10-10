@@ -17,6 +17,7 @@ import {
   Users,
   AlertTriangle,
   BarChart3,
+  BookOpen,
   LogOut,
   Menu,
   X,
@@ -33,6 +34,7 @@ const ownerNav = [
   { href: '/purchases', label: 'Purchases', Icon: ShoppingBag },
   { href: '/items', label: 'Items', Icon: Package },
   { href: '/brands', label: 'Brands', Icon: Tag },
+  { href: '/reference', label: 'Reference', Icon: BookOpen },
   { href: '/parties', label: 'Parties', Icon: Users },
   { href: '/losses', label: 'Losses', Icon: AlertTriangle },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
@@ -45,6 +47,7 @@ const staffNav = [
   { href: '/returns', label: 'Returns', Icon: RotateCcw },
   { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/payments', label: 'Payments', Icon: Wallet },
+  { href: '/reference', label: 'Reference', Icon: BookOpen },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
 ]
 

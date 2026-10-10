@@ -1,45 +1,40 @@
+// lib/item-search.ts
+// Thin wrapper around the `search_items` RPC.
+// Searches across SKU, brand, model, part code, part name, quality, variant, color.
+
 import { supabase } from './supabase'
 
-export type ItemSearchResult = {
+export type SearchItemResult = {
   item_id: number
   sku: string
   current_stock: number
-  cost_price: number
-  selling_price: number
+  cost_price: number | null
+  selling_price: number | null
   quality: string | null
   variant: string | null
+  brand_id?: number | null
 }
 
-/**
- * Multi-word, cross-field item search.
- * - Splits query on whitespace
- * - Each token matches SKU OR brand code OR brand name OR model name OR part code
- * - All tokens AND-ed (each additional token narrows results)
- * - Result count capped based on viewport:
- *     10 on mobile (< 768px)
- *     25 on desktop (>= 768px)
- */
-export async function searchItems(
-  query: string
-): Promise<ItemSearchResult[]> {
-  const q = (query || '').trim()
-  if (q.length < 2) return []
+export async function searchItems(query: string): Promise<SearchItemResult[]> {
+  const trimmed = query.trim()
+  if (trimmed.length < 2) return []
 
-  const isDesktop =
-    typeof window !== 'undefined' &&
-    window.matchMedia('(min-width: 768px)').matches
+  try {
+    const { data, error } = await supabase.rpc('search_items', {
+      p_query: trimmed,
+    })
 
-  const limit = isDesktop ? 25 : 10
+    if (error) {
+      // Soft-fail: network blip, special char, transient PostgREST issue.
+      // Return empty so callers don't get an unhandled rejection.
+      console.warn('search_items RPC error:', error.message)
+      return []
+    }
 
-  const { data, error } = await supabase.rpc('search_items', {
-    p_query: q,
-    p_limit: limit,
-  })
-
-  if (error) {
-    console.error('search_items error:', error)
+    return (data as SearchItemResult[]) || []
+  } catch (err) {
+    // supabase-js can throw on network failure (fetch rejects).
+    console.warn('search_items failed:', err instanceof Error ? err.message : err)
     return []
   }
-
-  return (data || []) as ItemSearchResult[]
 }
