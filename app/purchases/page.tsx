@@ -583,298 +583,157 @@ export default function PurchaseEntryPage() {
       return
     }
 
-    const skuToCreatedId: Record<string, number> = {}
-
     const [brandsRes, modelsRes, partsRes] = await Promise.all([
       supabase.from('brands').select('brand_id, brand_code'),
       supabase.from('models').select('model_id, brand_id, model_name, network'),
       supabase.from('part_types').select('part_id, part_code'),
     ])
 
-    const brandByCode: Record<string, number> = {}
+    const brandById: Record<number, string> = {}
     for (const b of brandsRes.data || []) {
-      brandByCode[String(b.brand_code).toUpperCase()] = b.brand_id
+      brandById[b.brand_id] = String(b.brand_code).toUpperCase()
     }
-    const partByCode: Record<string, number> = {}
+    const partById: Record<number, string> = {}
     for (const p of partsRes.data || []) {
-      partByCode[String(p.part_code).toUpperCase()] = p.part_id
+      partById[p.part_id] = String(p.part_code).toUpperCase()
     }
-    const modelKey = (brandId: number, name: string, net: string | null) =>
-      `${brandId}::${name.toUpperCase()}::${(net || '').toUpperCase()}`
-    const modelByKey: Record<string, number> = {}
+    const modelById: Record<number, { brand_id: number; model_name: string; network: string | null }> = {}
     for (const m of modelsRes.data || []) {
-      modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
-    }
-
-    const missingBrandCodes = new Set<string>()
-    const missingPartCodes = new Set<string>()
-    const pending: PurchaseRow[] = []
-
-    for (const r of validRows) {
-      if (r.item_id) continue
-      if (!r.sku || !r.brand_code || !r.part_code) {
-        setMessage(
-          `Row ${r.rowId}: missing SKU or brand/part info. Please pick an existing SKU.`
-        )
-        setSaving(false)
-        return
-      }
-      const brandCode = r.brand_code.toUpperCase()
-      const partCode = r.part_code.toUpperCase()
-      const brandId = r.brand_id || brandByCode[brandCode]
-      if (!brandId) missingBrandCodes.add(brandCode)
-      const partId = r.part_id || partByCode[partCode]
-      if (!partId) missingPartCodes.add(partCode)
-      pending.push({ ...r, brand_code: brandCode, part_code: partCode })
-    }
-
-    if (missingBrandCodes.size > 0) {
-      const inserts = Array.from(missingBrandCodes).map((code) => ({
-        brand_name: code,
-        brand_code: code,
-      }))
-      const { data, error } = await supabase
-        .from('brands')
-        .insert(inserts)
-        .select()
-      if (error || !data) {
-        setMessage('Failed to create brands: ' + (error?.message || 'unknown'))
-        setSaving(false)
-        return
-      }
-      for (const b of data) {
-        brandByCode[String(b.brand_code).toUpperCase()] = b.brand_id
-      }
-    }
-
-    const missingModelKeys = new Map<
-      string,
-      { brandId: number; model_name: string; network: string | null }
-    >()
-    for (const r of pending) {
-      if (!r.model_name) continue
-      const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
-      if (!brandId) continue
-      const key = modelKey(brandId, r.model_name, r.network)
-      if (!r.model_id && !modelByKey[key]) {
-        missingModelKeys.set(key, {
-          brandId,
-          model_name: r.model_name,
-          network: r.network,
-        })
-      }
-    }
-
-    if (missingModelKeys.size > 0) {
-      const inserts = Array.from(missingModelKeys.values()).map((m) => ({
-        brand_id: m.brandId,
+      modelById[m.model_id] = {
+        brand_id: m.brand_id,
         model_name: m.model_name,
         network: m.network,
-      }))
-      const { data, error } = await supabase
-        .from('models')
-        .insert(inserts)
-        .select()
-      if (error || !data) {
-        setMessage('Failed to create models: ' + (error?.message || 'unknown'))
-        setSaving(false)
-        return
-      }
-      for (const m of data) {
-        modelByKey[modelKey(m.brand_id, m.model_name, m.network)] = m.model_id
       }
     }
 
-    if (missingPartCodes.size > 0) {
-      const inserts = Array.from(missingPartCodes).map((code) => ({
-        part_name: code,
-        part_code: code,
-      }))
-      const { data, error } = await supabase
-        .from('part_types')
-        .insert(inserts)
-        .select()
-      if (error || !data) {
-        setMessage('Failed to create parts: ' + (error?.message || 'unknown'))
-        setSaving(false)
-        return
+    const existingItemIds = validRows
+      .filter((r) => r.item_id)
+      .map((r) => r.item_id as number)
+
+    const itemDetail: Record<
+      number,
+      {
+        item_id: number
+        sku: string
+        brand_id: number | null
+        model_id: number | null
+        part_id: number | null
+        quality: string
+        variant: string | null
+        color: string | null
       }
-      for (const p of data) {
-        partByCode[String(p.part_code).toUpperCase()] = p.part_id
-      }
-    }
+    > = {}
 
-    type ItemInsert = {
-      sku: string
-      brand_id: number
-      model_id: number | null
-      part_id: number
-      quality: string
-      variant: string | null
-      color: string | null
-      cost_price: number
-      selling_price: number
-      current_stock: number
-    }
-    const itemInserts: ItemInsert[] = []
-
-    for (const r of pending) {
-      const brandId = r.brand_id || brandByCode[r.brand_code!.toUpperCase()]
-      const partId = r.part_id || partByCode[r.part_code!.toUpperCase()]
-      const modelId = r.model_name && brandId
-        ? (r.model_id || modelByKey[modelKey(brandId, r.model_name, r.network)] || null)
-        : null
-
-      if (!brandId || !partId) {
-        setMessage(`Row ${r.rowId}: could not resolve brand/part for ${r.sku}.`)
-        setSaving(false)
-        return
-      }
-
-      itemInserts.push({
-        sku: r.sku!,
-        brand_id: brandId,
-        model_id: modelId,
-        part_id: partId,
-        quality: r.quality || 'Normal',
-        variant: r.variant || null,
-        color: r.color || null,
-        cost_price: r.rate,
-        selling_price: Number((r.rate * 1.5).toFixed(2)),
-        current_stock: 0,
-      })
-    }
-
-    const seenSkus = new Set<string>()
-    const batchUnique = itemInserts.filter((it) => {
-      if (seenSkus.has(it.sku)) return false
-      seenSkus.add(it.sku)
-      return true
-    })
-
-    const uniqueItemInserts: typeof itemInserts = []
-    if (batchUnique.length > 0) {
-      const skusToCheck = batchUnique.map((it) => it.sku)
-      const { data: existingRows } = await supabase
+    if (existingItemIds.length > 0) {
+      const { data: itemRows } = await supabase
         .from('items')
-        .select('item_id, sku')
-        .in('sku', skusToCheck)
-
-      const existingBySku = new Map<string, number>()
-      for (const row of existingRows || []) {
-        existingBySku.set(row.sku, row.item_id)
-        skuToCreatedId[row.sku] = row.item_id
-      }
-
-      for (const it of batchUnique) {
-        if (existingBySku.has(it.sku)) continue
-        uniqueItemInserts.push(it)
-      }
-    }
-
-    let createdItemIds: number[] = []
-
-    if (uniqueItemInserts.length > 0) {
-      const { data, error } = await supabase
-        .from('items')
-        .insert(uniqueItemInserts)
-        .select('item_id, sku')
-
-      if (error || !data) {
-        setMessage('Failed to create items: ' + (error?.message || 'unknown'))
-        setSaving(false)
-        return
-      }
-
-      createdItemIds = data.map((x) => x.item_id)
-      for (const row of data) {
-        skuToCreatedId[row.sku] = row.item_id
+        .select('item_id, sku, brand_id, model_id, part_id, quality, variant, color')
+        .in('item_id', existingItemIds)
+      for (const it of itemRows || []) {
+        itemDetail[it.item_id] = it
       }
     }
 
     const validSubtotal = validRows.reduce((s, r) => s + r.amount, 0)
 
-    const { data: purchaseData, error: purchaseError } = await supabase
-      .from('purchases')
-      .insert({
-        party_id: supplierId,
-        invoice_no: invoiceNo.trim() || null,
-        purchase_date: purchaseDate,
-        total_amount: total,
-        freight_charges: freightNum,
-        cash_paid: parseFloat(cashPaid) || 0,
-      })
-      .select()
-      .single()
-
-    if (purchaseError || !purchaseData) {
-      if (createdItemIds.length > 0) {
-        await supabase.from('items').delete().in('item_id', createdItemIds)
-      }
-      setMessage('Save error (header): ' + (purchaseError?.message || 'unknown'))
-      setSaving(false)
-      return
-    }
-
-    const purchaseId = purchaseData.purchase_id
-
-    const lineInserts: {
-      purchase_id: number
-      item_id: number
+    type PayloadLine = {
+      sku: string
+      brand_code: string | null
+      model_name: string | null
+      part_code: string | null
+      network: string | null
+      quality: string
+      variant: string | null
+      color: string | null
       quantity: number
       rate: number
       invoice_rate: number
       amount: number
-    }[] = []
+    }
+
+    const payloadLines: PayloadLine[] = []
 
     for (const r of validRows) {
-      const resolvedId = r.item_id
-        ? r.item_id
-        : r.sku
-        ? skuToCreatedId[r.sku]
-        : null
+      let brand_code: string | null = null
+      let model_name: string | null = null
+      let part_code: string | null = null
+      let network: string | null = null
+      let quality: string = r.quality || 'Normal'
+      let variant: string | null = r.variant || null
+      let color: string | null = r.color || null
+      let sku: string = r.sku || ''
 
-      if (!resolvedId) {
-        await supabase
-          .from('purchase_items')
-          .delete()
-          .eq('purchase_id', purchaseId)
-        await supabase.from('purchases').delete().eq('purchase_id', purchaseId)
-        if (createdItemIds.length > 0) {
-          await supabase.from('items').delete().in('item_id', createdItemIds)
+      if (r.item_id) {
+        const it = itemDetail[r.item_id]
+        if (!it) {
+          setMessage(`Row ${r.rowId}: item not found.`)
+          setSaving(false)
+          return
         }
-        setMessage(`Could not resolve item for row ${r.rowId}.`)
-        setSaving(false)
-        return
+        sku = it.sku
+        if (it.brand_id) brand_code = brandById[it.brand_id] || null
+        if (it.part_id) part_code = partById[it.part_id] || null
+        if (it.model_id && modelById[it.model_id]) {
+          model_name = modelById[it.model_id].model_name
+          network = modelById[it.model_id].network
+        }
+        quality = it.quality || quality
+        variant = it.variant ?? variant
+        color = it.color ?? color
+      } else {
+        if (!r.sku || !r.brand_code || !r.part_code) {
+          setMessage(
+            `Row ${r.rowId}: missing SKU or brand/part info. Please pick an existing SKU.`
+          )
+          setSaving(false)
+          return
+        }
+        brand_code = r.brand_code.toUpperCase()
+        part_code = r.part_code.toUpperCase()
+        model_name = r.model_name
+        network = r.network
       }
 
       const share =
         validSubtotal > 0 ? (r.amount / validSubtotal) * freightNum : 0
       const effectiveRate = r.rate + share / r.quantity
+      const lineAmount = Number((effectiveRate * r.quantity).toFixed(2))
 
-      lineInserts.push({
-        purchase_id: purchaseId,
-        item_id: resolvedId,
+      payloadLines.push({
+        sku,
+        brand_code,
+        model_name,
+        part_code,
+        network,
+        quality,
+        variant,
+        color,
         quantity: r.quantity,
         rate: Number(effectiveRate.toFixed(4)),
         invoice_rate: Number(r.rate.toFixed(4)),
-        amount: Number((effectiveRate * r.quantity).toFixed(2)),
+        amount: lineAmount,
       })
     }
 
-    const { error: linesError } = await supabase
-      .from('purchase_items')
-      .insert(lineInserts)
-
-    if (linesError) {
-      await supabase.from('purchases').delete().eq('purchase_id', purchaseId)
-      if (createdItemIds.length > 0) {
-        await supabase.from('items').delete().in('item_id', createdItemIds)
+    const { data: purchaseIdRaw, error: rpcErr } = await supabase.rpc(
+      'save_purchase_full',
+      {
+        p_party_id: supplierId,
+        p_invoice_no: invoiceNo.trim() || '',
+        p_purchase_date: purchaseDate,
+        p_freight: freightNum,
+        p_cash_paid: parseFloat(cashPaid) || 0,
+        p_items: payloadLines as any,
       }
-      setMessage('Save error (lines): ' + linesError.message)
+    )
+
+    if (rpcErr || !purchaseIdRaw) {
+      setMessage('Save error: ' + (rpcErr?.message || 'unknown'))
       setSaving(false)
       return
     }
+
+    const purchaseId = Number(purchaseIdRaw)
 
     setMessage(
       `Saved purchase #${purchaseId}. Stock and cost updated for ${validRows.length} items.`
@@ -944,7 +803,7 @@ export default function PurchaseEntryPage() {
               Purchase Entry
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              Enter supplier invoices. Freight auto-distributed. Stock & cost update automatically.
+              Enter supplier invoices. Freight auto-distributed. Stock &amp; cost update automatically.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -1050,6 +909,7 @@ export default function PurchaseEntryPage() {
                   <SmartCombobox
                     options={itemOptionsFor(row.rowId)}
                     value={row.item_id ? String(row.item_id) : null}
+                    fallbackLabel={row.item_id && row.sku ? row.sku : null}
                     onValueChange={(v: string, label: string, isNew: boolean) => {
                       if (isNew) return
                       handleItemSelect(row.rowId, Number(v))
@@ -1294,6 +1154,7 @@ export default function PurchaseEntryPage() {
                           <SmartCombobox
                             options={itemOptionsFor(row.rowId)}
                             value={row.item_id ? String(row.item_id) : null}
+                            fallbackLabel={row.item_id && row.sku ? row.sku : null}
                             onValueChange={(
                               v: string,
                               label: string,
