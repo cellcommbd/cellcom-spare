@@ -18,6 +18,7 @@ type PurchaseRow = {
   item_id: number
   quantity: number
   rate: number
+  invoice_rate: number
   purchase_date: string
   party_name: string
   invoice_no: string
@@ -85,6 +86,7 @@ export default function CostHistoryPage() {
   const [sortBy, setSortBy] = useState<
     'change-desc' | 'change-asc' | 'sku'
   >('change-desc')
+  const [changedOnly, setChangedOnly] = useState(true)
 
   useEffect(() => {
     loadData()
@@ -96,7 +98,7 @@ export default function CostHistoryPage() {
     const { data: lines } = await supabase
       .from('purchase_items')
       .select(
-        'detail_id, purchase_id, item_id, quantity, rate, purchases!inner(purchase_date, invoice_no, party_id)'
+        'detail_id, purchase_id, item_id, quantity, rate, invoice_rate, purchases!inner(purchase_date, invoice_no, party_id)'
       )
       .gte('purchases.purchase_date', from)
       .lte('purchases.purchase_date', to)
@@ -140,12 +142,18 @@ export default function CostHistoryPage() {
 
     const flat: PurchaseRow[] = lines.map((l: any) => {
       const it = itemMap[l.item_id] || {}
+      const landed = Number(l.rate)
+      const raw =
+        l.invoice_rate !== null && l.invoice_rate !== undefined
+          ? Number(l.invoice_rate)
+          : landed
       return {
         detail_id: l.detail_id,
         purchase_id: l.purchase_id,
         item_id: l.item_id,
         quantity: Number(l.quantity),
-        rate: Number(l.rate),
+        rate: landed,
+        invoice_rate: raw,
         purchase_date: l.purchases.purchase_date,
         invoice_no: l.purchases.invoice_no,
         party_name: partyMap[l.purchases.party_id] || '—',
@@ -173,10 +181,10 @@ export default function CostHistoryPage() {
           current_stock: 0,
           current_cost: 0,
           purchases: [],
-          minRate: r.rate,
-          maxRate: r.rate,
-          latestRate: r.rate,
-          firstRate: r.rate,
+          minRate: r.invoice_rate,
+          maxRate: r.invoice_rate,
+          latestRate: r.invoice_rate,
+          firstRate: r.invoice_rate,
           change: 0,
           changePct: 0,
           totalQty: 0,
@@ -187,8 +195,8 @@ export default function CostHistoryPage() {
       const a = bySku[r.sku]
       a.purchases.push(r)
       a.totalQty += r.quantity
-      a.minRate = Math.min(a.minRate, r.rate)
-      a.maxRate = Math.max(a.maxRate, r.rate)
+      a.minRate = Math.min(a.minRate, r.invoice_rate)
+      a.maxRate = Math.max(a.maxRate, r.invoice_rate)
     }
 
     for (const sku in bySku) {
@@ -198,17 +206,15 @@ export default function CostHistoryPage() {
           new Date(x.purchase_date).getTime() -
           new Date(y.purchase_date).getTime()
       )
-      a.firstRate = a.purchases[0].rate
-      a.latestRate = a.purchases[a.purchases.length - 1].rate
+      a.firstRate = a.purchases[0].invoice_rate
+      a.latestRate = a.purchases[a.purchases.length - 1].invoice_rate
       a.change = a.latestRate - a.firstRate
       a.changePct = a.firstRate > 0 ? (a.change / a.firstRate) * 100 : 0
       a.suppliers = Array.from(new Set(a.purchases.map((p) => p.party_name)))
 
-      // Detect "all lines on same invoice" — usually means variant merger, not a price change
       const invoices = new Set(a.purchases.map((p) => p.invoice_no))
       a.sameInvoice = invoices.size === 1 && a.purchases.length > 1
 
-      // Build search-friendly display name
       const parts: string[] = [a.sku]
       if (a.quality && a.quality !== 'Normal') parts.push(a.quality)
       if (a.variant) parts.push(a.variant)
@@ -220,6 +226,10 @@ export default function CostHistoryPage() {
 
   const filtered = useMemo(() => {
     let list = aggregates
+
+    if (changedOnly) {
+      list = list.filter((a) => Math.abs(a.change) > 0.009)
+    }
 
     if (search.trim()) {
       const q = search.trim().toUpperCase()
@@ -237,7 +247,7 @@ export default function CostHistoryPage() {
     }
 
     return list
-  }, [aggregates, search, sortBy])
+  }, [aggregates, search, sortBy, changedOnly])
 
   const money = (n: number) =>
     `₹ ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
@@ -247,12 +257,12 @@ export default function CostHistoryPage() {
       'SKU',
       'Quality',
       'Variant',
-      'First Rate',
-      'Latest Rate',
+      'First Invoice Rate',
+      'Latest Invoice Rate',
       'Change',
       'Change %',
-      'Min Rate',
-      'Max Rate',
+      'Min Invoice Rate',
+      'Max Invoice Rate',
       'Total Qty',
       'Suppliers',
       'Same Invoice',
@@ -321,8 +331,8 @@ export default function CostHistoryPage() {
           </div>
         </div>
         <p className="text-xs sm:text-sm text-slate-500 mb-5">
-          Rate history per SKU. Search matches quality, variant, network.
-          Sorted by biggest change first.
+          Rate history per SKU. Shows invoice rate (raw) and landed cost
+          (invoice + freight share) side by side.
         </p>
 
         {/* Filters */}
@@ -370,6 +380,16 @@ export default function CostHistoryPage() {
               </button>
             </div>
 
+            <label className="flex items-center gap-2 text-xs text-slate-700 shrink-0 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={changedOnly}
+                onChange={(e) => setChangedOnly(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300"
+              />
+              Changed only
+            </label>
+
             <div className="flex items-center gap-2 lg:ml-auto">
               <input
                 value={search}
@@ -400,8 +420,8 @@ export default function CostHistoryPage() {
 
         {!loading && (
           <div className="text-xs text-slate-500 mb-3">
-            {filtered.length} SKU{filtered.length === 1 ? '' : 's'} purchased
-            in range
+            {filtered.length} SKU{filtered.length === 1 ? '' : 's'}
+            {changedOnly ? ' with rate change' : ' purchased'} in range
           </div>
         )}
 
@@ -411,7 +431,9 @@ export default function CostHistoryPage() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-400 text-sm">
-            No purchases in this range.
+            {changedOnly
+              ? 'No rate changes in this range.'
+              : 'No purchases in this range.'}
           </div>
         ) : (
           <div className="space-y-3">
@@ -464,7 +486,7 @@ export default function CostHistoryPage() {
 
                     <div className="text-right shrink-0">
                       <div className="text-[10px] uppercase text-slate-500 font-medium">
-                        Change
+                        Change (invoice rate)
                       </div>
                       <div
                         className={`text-sm font-bold flex items-center gap-1 justify-end ${
@@ -487,28 +509,46 @@ export default function CostHistoryPage() {
 
                   {/* History rows */}
                   <div className="divide-y divide-slate-100">
-                    {a.purchases.map((p) => (
-                      <div
-                        key={p.detail_id}
-                        className="px-4 py-2 grid grid-cols-12 gap-2 text-xs items-center"
-                      >
-                        <div className="col-span-3 sm:col-span-2 text-slate-500">
-                          {p.purchase_date}
+                    <div className="px-4 py-1.5 grid grid-cols-12 gap-2 text-[10px] uppercase font-semibold text-slate-500 bg-slate-50">
+                      <div className="col-span-3 sm:col-span-2">Date</div>
+                      <div className="col-span-4 sm:col-span-3">Supplier</div>
+                      <div className="col-span-2">Invoice</div>
+                      <div className="col-span-1 text-right">Qty</div>
+                      <div className="col-span-1 text-right">Inv ₹</div>
+                      <div className="col-span-1 text-right">Landed ₹</div>
+                    </div>
+                    {a.purchases.map((p) => {
+                      const hasFreight = Math.abs(p.rate - p.invoice_rate) > 0.001
+                      return (
+                        <div
+                          key={p.detail_id}
+                          className="px-4 py-2 grid grid-cols-12 gap-2 text-xs items-center"
+                        >
+                          <div className="col-span-3 sm:col-span-2 text-slate-500">
+                            {p.purchase_date}
+                          </div>
+                          <div className="col-span-4 sm:col-span-3 text-slate-700 truncate">
+                            {p.party_name}
+                          </div>
+                          <div className="col-span-2 text-slate-500 truncate">
+                            {p.invoice_no || '—'}
+                          </div>
+                          <div className="col-span-1 text-right text-slate-700">
+                            ×{p.quantity}
+                          </div>
+                          <div className="col-span-1 text-right text-slate-900 font-medium">
+                            {p.invoice_rate.toFixed(2)}
+                          </div>
+                          <div
+                            className={`col-span-1 text-right font-medium ${
+                              hasFreight ? 'text-blue-700' : 'text-slate-400'
+                            }`}
+                          >
+                            {p.rate.toFixed(2)}
+                          </div>
                         </div>
-                        <div className="col-span-4 sm:col-span-3 text-slate-700 truncate">
-                          {p.party_name}
-                        </div>
-                        <div className="col-span-2 text-slate-500 truncate">
-                          {p.invoice_no || '—'}
-                        </div>
-                        <div className="col-span-1 text-right text-slate-700">
-                          ×{p.quantity}
-                        </div>
-                        <div className="col-span-2 text-right font-medium text-slate-900">
-                          {money(p.rate)}
-                        </div>
-                      </div>
-                    ))}
+                      )
+                    })}
                   </div>
                 </div>
               )

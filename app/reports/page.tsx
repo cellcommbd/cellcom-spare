@@ -94,10 +94,9 @@ const REPORTS: ReportCard[] = [
     href: '/reports/low-stock',
     title: 'Low Stock & Reorder',
     description:
-      'Items at or below reorder point — ready to order list.',
+      'Zero-stock and low-stock items — quick view to know what to reorder.',
     Icon: AlertTriangle,
     color: 'amber',
-    comingSoon: true,
   },
   {
     href: '/reports/stock-value',

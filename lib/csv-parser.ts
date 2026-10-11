@@ -478,7 +478,6 @@ function extractQualityFromMarkers(markers: string[]): {
 
   return { quality, remainingMarkers: remaining }
 }
-
 function classifyMarkers(
   markers: string[],
   colorAliases?: Record<string, string>
@@ -1111,6 +1110,18 @@ export function parseCSV(
         }
 
         working = working.replace(/\s+/g, ' ').trim()
+
+        // v25-fix: re-run trailing color check AFTER part extraction,
+        // so a color word sitting before a part word (e.g. "GR TIKLI") is caught.
+        if (!color) {
+          const trailingColorMatch2 = working.toUpperCase().match(/(?:^|\s+)(SILVAR|SILVER|GR|GRAY|GREY|BLACK|WHITE|BLU|GRN|GOLD)\s*$/i)
+          if (trailingColorMatch2) {
+            const raw = trailingColorMatch2[1].toUpperCase()
+            const resolved = resolveColorAlias(raw, aliases.colorAliases) || raw
+            color = resolved
+            working = working.replace(new RegExp(`(?:^|\\s+)${raw}\\s*$`, 'i'), ' ').trim()
+          }
+        }
 
         const bm = extractBrandAndModel(working, aliases, bracketModelHint)
         brandCode = bm.brandCode

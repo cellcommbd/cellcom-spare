@@ -494,7 +494,8 @@ export default function PurchaseEntryPage() {
       setCashPaid(total.toFixed(2))
     }
   }, [total, cashPaidTouched])
-    const costPredictions = useMemo(() => {
+
+  const costPredictions = useMemo(() => {
     const validRows = rows.filter(
       (r) => r.item_id && r.quantity > 0 && r.rate > 0
     )
@@ -822,6 +823,7 @@ export default function PurchaseEntryPage() {
       item_id: number
       quantity: number
       rate: number
+      invoice_rate: number
       amount: number
     }[] = []
 
@@ -855,6 +857,7 @@ export default function PurchaseEntryPage() {
         item_id: resolvedId,
         quantity: r.quantity,
         rate: Number(effectiveRate.toFixed(4)),
+        invoice_rate: Number(r.rate.toFixed(4)),
         amount: Number((effectiveRate * r.quantity).toFixed(2)),
       })
     }
