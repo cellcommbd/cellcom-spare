@@ -295,7 +295,7 @@ export default function FindStockPage() {
                       Stock
                     </th>
                     <th className="w-32 px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wide">
-                      SP / CP
+                      CP / SP
                     </th>
                     <th className="w-24 px-4 py-3"></th>
                   </tr>
@@ -324,10 +324,10 @@ export default function FindStockPage() {
                       </td>
                       <td className="px-4 py-3 text-right">
                         <div className="font-bold text-slate-900">
-                          ₹{Number(r.selling_price).toFixed(0)}
+                          CP ₹{Number(r.cost_price).toFixed(2)}
                         </div>
                         <div className="text-xs text-slate-600">
-                          CP ₹{Number(r.cost_price).toFixed(2)}
+                          SP ₹{Number(r.selling_price).toFixed(0)}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right">
@@ -399,15 +399,15 @@ function ResultCard({
       <div className="flex items-center justify-between pt-3 border-t border-slate-100">
         <div className="flex items-center gap-4">
           <div>
-            <div className="text-[10px] uppercase text-slate-500 font-medium">SP</div>
+            <div className="text-[10px] uppercase text-slate-500 font-medium">CP</div>
             <div className="text-base font-bold text-slate-900">
-              ₹{Number(row.selling_price).toFixed(0)}
+              ₹{Number(row.cost_price).toFixed(2)}
             </div>
           </div>
           <div>
-            <div className="text-[10px] uppercase text-slate-500 font-medium">CP</div>
+            <div className="text-[10px] uppercase text-slate-500 font-medium">SP</div>
             <div className="text-sm font-semibold text-slate-700">
-              ₹{Number(row.cost_price).toFixed(2)}
+              ₹{Number(row.selling_price).toFixed(0)}
             </div>
           </div>
         </div>

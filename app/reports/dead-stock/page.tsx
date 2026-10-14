@@ -14,9 +14,17 @@ type Item = {
   item_id: number
   sku: string
   current_stock: number
-  cost_price: number | null
-  selling_price: number | null
-  is_active: boolean
+  cost_price: number
+  selling_price: number
+  stock_value: number
+  last_sale: string | null
+}
+
+type Summary = {
+  total_value: number
+  total_items: number
+  never_sold_value: number
+  never_sold_items: number
 }
 
 type Tab = 'value' | 'never'
@@ -30,108 +38,63 @@ function money(n: number) {
 export default function DeadStockPage() {
   const [loading, setLoading] = useState(true)
   const [items, setItems] = useState<Item[]>([])
-  const [lastSaleByItem, setLastSaleByItem] = useState<Record<number, string>>({})
-  const [soldItemIds, setSoldItemIds] = useState<Set<number>>(new Set())
+  const [summary, setSummary] = useState<Summary>({
+    total_value: 0,
+    total_items: 0,
+    never_sold_value: 0,
+    never_sold_items: 0,
+  })
   const [search, setSearch] = useState('')
   const [minStock, setMinStock] = useState(1)
   const [tab, setTab] = useState<Tab>('value')
 
   useEffect(() => {
-    loadData()
+    loadSummary()
   }, [])
 
-  async function loadData() {
-    setLoading(true)
+  useEffect(() => {
+    loadItems()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, minStock, search])
 
-    const { data: itemsRes, error: itemsErr } = await supabase
-      .from('items')
-      .select('item_id, sku, current_stock, cost_price, selling_price, is_active')
-      .eq('is_active', true)
-      .gt('current_stock', 0)
-      .order('sku', { ascending: true })
-
-    if (itemsErr) {
-      console.error('dead stock items error:', itemsErr.message)
-      setItems([])
-      setLoading(false)
+  async function loadSummary() {
+    const { data, error } = await supabase.rpc('dead_stock_summary')
+    if (error) {
+      console.error('dead_stock_summary error:', error.message)
       return
     }
-
-    const itemList = (itemsRes as Item[]) || []
-    setItems(itemList)
-
-    const { data: saleLines, error: saleErr } = await supabase
-      .from('sale_items')
-      .select('item_id, sales!inner(bill_date)')
-
-    if (saleErr) {
-      console.error('dead stock sale_items error:', saleErr.message)
-    } else {
-      const lastSale: Record<number, string> = {}
-      const sold = new Set<number>()
-      for (const line of (saleLines as any[]) || []) {
-        const itemId = line.item_id as number
-        const date = line.sales?.bill_date as string | undefined
-        sold.add(itemId)
-        if (date) {
-          if (!lastSale[itemId] || date > lastSale[itemId]) {
-            lastSale[itemId] = date
-          }
-        }
-      }
-      setLastSaleByItem(lastSale)
-      setSoldItemIds(sold)
+    const row = (data as any[])?.[0]
+    if (row) {
+      setSummary({
+        total_value: Number(row.total_value || 0),
+        total_items: Number(row.total_items || 0),
+        never_sold_value: Number(row.never_sold_value || 0),
+        never_sold_items: Number(row.never_sold_items || 0),
+      })
     }
+  }
 
+  async function loadItems() {
+    setLoading(true)
+    const { data, error } = await supabase.rpc('dead_stock_items', {
+      p_never_only: tab === 'never',
+      p_min_stock: minStock,
+      p_search: search.trim() || null,
+      p_limit: 2000,
+    })
+
+    if (error) {
+      console.error('dead_stock_items error:', error.message)
+      setItems([])
+    } else {
+      setItems((data as Item[]) || [])
+    }
     setLoading(false)
   }
 
-  const filtered = useMemo(() => {
-    let list = items.filter((i) => i.current_stock >= minStock)
-
-    if (tab === 'never') {
-      list = list.filter((i) => !soldItemIds.has(i.item_id))
-    }
-
-    if (search.trim()) {
-      const q = search.trim().toUpperCase()
-      list = list.filter((i) => i.sku.toUpperCase().includes(q))
-    }
-
-    list = [...list].sort((a, b) => {
-      const av = Number(a.current_stock) * Number(a.cost_price || 0)
-      const bv = Number(b.current_stock) * Number(b.cost_price || 0)
-      return bv - av
-    })
-
-    return list
-  }, [items, soldItemIds, minStock, search, tab])
-
-  const totalStockValue = useMemo(
-    () =>
-      items.reduce(
-        (s, i) => s + Number(i.current_stock) * Number(i.cost_price || 0),
-        0
-      ),
-    [items]
-  )
-
-  const totalNeverSoldValue = useMemo(() => {
-    return items
-      .filter((i) => !soldItemIds.has(i.item_id))
-      .reduce(
-        (s, i) => s + Number(i.current_stock) * Number(i.cost_price || 0),
-        0
-      )
-  }, [items, soldItemIds])
-
   const filteredValue = useMemo(
-    () =>
-      filtered.reduce(
-        (s, i) => s + Number(i.current_stock) * Number(i.cost_price || 0),
-        0
-      ),
-    [filtered]
+    () => items.reduce((s, i) => s + Number(i.stock_value || 0), 0),
+    [items]
   )
 
   function exportCSV() {
@@ -142,17 +105,13 @@ export default function DeadStockPage() {
       'Stock Value',
       'Last Sale',
     ]
-    const rowsForExport = filtered.map((i) => {
-      const sv = Number(i.current_stock) * Number(i.cost_price || 0)
-      const lastSale = lastSaleByItem[i.item_id] || 'Never'
-      return [
-        i.sku,
-        i.current_stock,
-        (i.cost_price ?? 0).toFixed(2),
-        sv.toFixed(2),
-        lastSale,
-      ]
-    })
+    const rowsForExport = items.map((i) => [
+      i.sku,
+      i.current_stock,
+      Number(i.cost_price || 0).toFixed(2),
+      Number(i.stock_value || 0).toFixed(2),
+      i.last_sale || 'Never',
+    ])
     const csv = [headers, ...rowsForExport]
       .map((r) =>
         r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(',')
@@ -169,6 +128,8 @@ export default function DeadStockPage() {
     a.click()
     URL.revokeObjectURL(url)
   }
+
+  const isCapped = items.length === 2000
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
@@ -224,7 +185,10 @@ export default function DeadStockPage() {
                 Total stock value
               </div>
               <div className="text-base font-bold text-slate-900">
-                {money(totalStockValue)}
+                {money(summary.total_value)}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                {summary.total_items} items
               </div>
             </div>
             <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
@@ -232,7 +196,10 @@ export default function DeadStockPage() {
                 Never-sold value
               </div>
               <div className="text-base font-bold text-amber-800">
-                {money(totalNeverSoldValue)}
+                {money(summary.never_sold_value)}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">
+                {summary.never_sold_items} items
               </div>
             </div>
             <div className="bg-white rounded-lg border border-slate-200 px-3 py-2">
@@ -240,7 +207,7 @@ export default function DeadStockPage() {
                 Showing ({tab === 'never' ? 'never sold' : 'all in stock'})
               </div>
               <div className="text-base font-bold text-slate-900">
-                {filtered.length} items · {money(filteredValue)}
+                {items.length} items · {money(filteredValue)}
               </div>
             </div>
           </div>
@@ -273,7 +240,7 @@ export default function DeadStockPage() {
               </div>
               <button
                 onClick={exportCSV}
-                disabled={filtered.length === 0}
+                disabled={items.length === 0}
                 className="h-9 px-3 text-xs font-medium text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5"
               >
                 <Download className="w-3.5 h-3.5" />
@@ -287,7 +254,7 @@ export default function DeadStockPage() {
           <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-400 text-sm">
             Loading...
           </div>
-        ) : filtered.length === 0 ? (
+        ) : items.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-400 text-sm">
             {tab === 'never'
               ? 'No never-sold items match your filters.'
@@ -295,44 +262,46 @@ export default function DeadStockPage() {
           </div>
         ) : (
           <>
+            {isCapped && (
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-3">
+                Showing first 2000 items. Refine search to see more.
+              </div>
+            )}
+
             <div className="md:hidden space-y-3">
-              {filtered.map((i) => {
-                const sv = Number(i.current_stock) * Number(i.cost_price || 0)
-                const lastSale = lastSaleByItem[i.item_id]
-                return (
-                  <div
-                    key={i.item_id}
-                    className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm"
-                  >
-                    <div className="font-mono text-sm font-semibold text-slate-900 break-all mb-2">
-                      {i.sku}
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-xs">
-                      <div>
-                        <div className="text-slate-500">Stock</div>
-                        <div className="font-medium text-slate-800">
-                          {i.current_stock}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-slate-500">Cost</div>
-                        <div className="font-medium text-slate-800">
-                          {money(i.cost_price ?? 0)}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-slate-500">Value</div>
-                        <div className="font-bold text-amber-800">
-                          {money(sv)}
-                        </div>
+              {items.map((i) => (
+                <div
+                  key={i.item_id}
+                  className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm"
+                >
+                  <div className="font-mono text-sm font-semibold text-slate-900 break-all mb-2">
+                    {i.sku}
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <div className="text-slate-500">Stock</div>
+                      <div className="font-medium text-slate-800">
+                        {i.current_stock}
                       </div>
                     </div>
-                    <div className="text-[11px] text-slate-500 mt-2 pt-2 border-t border-slate-100">
-                      Last sale: {lastSale || 'Never'}
+                    <div>
+                      <div className="text-slate-500">Cost</div>
+                      <div className="font-medium text-slate-800">
+                        {money(i.cost_price || 0)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Value</div>
+                      <div className="font-bold text-amber-800">
+                        {money(i.stock_value)}
+                      </div>
                     </div>
                   </div>
-                )
-              })}
+                  <div className="text-[11px] text-slate-500 mt-2 pt-2 border-t border-slate-100">
+                    Last sale: {i.last_sale || 'Never'}
+                  </div>
+                </div>
+              ))}
             </div>
 
             <div className="hidden md:block bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -357,30 +326,25 @@ export default function DeadStockPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((i) => {
-                    const sv =
-                      Number(i.current_stock) * Number(i.cost_price || 0)
-                    const lastSale = lastSaleByItem[i.item_id]
-                    return (
-                      <tr key={i.item_id} className="hover:bg-slate-50">
-                        <td className="border-b border-slate-100 px-3 py-2 font-mono text-slate-800">
-                          {i.sku}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
-                          {i.current_stock}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
-                          {money(i.cost_price ?? 0)}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-amber-800">
-                          {money(sv)}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right text-xs text-slate-500">
-                          {lastSale || 'Never'}
-                        </td>
-                      </tr>
-                    )
-                  })}
+                  {items.map((i) => (
+                    <tr key={i.item_id} className="hover:bg-slate-50">
+                      <td className="border-b border-slate-100 px-3 py-2 font-mono text-slate-800">
+                        {i.sku}
+                      </td>
+                      <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
+                        {i.current_stock}
+                      </td>
+                      <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
+                        {money(i.cost_price || 0)}
+                      </td>
+                      <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-amber-800">
+                        {money(i.stock_value)}
+                      </td>
+                      <td className="border-b border-slate-100 px-3 py-2 text-right text-xs text-slate-500">
+                        {i.last_sale || 'Never'}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>

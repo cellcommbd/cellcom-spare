@@ -68,7 +68,7 @@ const REPORTS: ReportCard[] = [
     Icon: DollarSign,
     color: 'green',
     ownerOnly: true,
-    comingSoon: true,
+   
   },
   {
     href: '/reports/khata-aging',
@@ -78,7 +78,7 @@ const REPORTS: ReportCard[] = [
     Icon: Users,
     color: 'red',
     ownerOnly: true,
-    comingSoon: true,
+   
   },
   {
     href: '/reports/monthly-pnl',
@@ -88,7 +88,7 @@ const REPORTS: ReportCard[] = [
     Icon: BarChart3,
     color: 'indigo',
     ownerOnly: true,
-    comingSoon: true,
+    
   },
   {
     href: '/reports/low-stock',
@@ -106,7 +106,7 @@ const REPORTS: ReportCard[] = [
     Icon: Package,
     color: 'slate',
     ownerOnly: true,
-    comingSoon: true,
+    
   },
   {
     href: '/reports/recent-activity',
@@ -115,7 +115,7 @@ const REPORTS: ReportCard[] = [
       'Latest sales, purchases, payments, and returns in one list.',
     Icon: CalendarClock,
     color: 'blue',
-    comingSoon: true,
+    
   },
 ]
 
