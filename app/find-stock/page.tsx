@@ -1,13 +1,12 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { Search, RotateCcw, ChevronDown, ChevronUp, X } from 'lucide-react'
+import { Search, X, Package, Sparkles } from 'lucide-react'
 
 // ---------- Types ----------
 type Brand = { brand_id: number; brand_name: string; brand_code: string }
-type PartType = { part_id: number; part_code: string; part_name: string }
 
 type ResultRow = {
   item_id: number
@@ -27,96 +26,61 @@ type ResultRow = {
   total_sold: number
 }
 
-const QUALITY_OPTIONS = [
-  { value: '', label: '— Any —' },
-  { value: 'Normal', label: 'Normal' },
-  { value: 'OG', label: 'OG' },
-  { value: '100 OG', label: '100 OG' },
-  { value: 'ORG', label: 'ORG' },
-  { value: 'Care OG', label: 'Care OG' },
-  { value: 'China OG', label: 'China OG' },
-]
-
 export default function FindStockPage() {
   const router = useRouter()
 
   const [brands, setBrands] = useState<Brand[]>([])
-  const [parts, setParts] = useState<PartType[]>([])
-
   const [query, setQuery] = useState('')
   const [brandId, setBrandId] = useState<number | null>(null)
-  const [partId, setPartId] = useState<number | null>(null)
-  const [quality, setQuality] = useState('')
-  const [stockMin, setStockMin] = useState<string>('')
-  const [stockMax, setStockMax] = useState<string>('')
-  const [costMin, setCostMin] = useState<string>('')
-  const [costMax, setCostMax] = useState<string>('')
-  const [spMin, setSpMin] = useState<string>('')
-  const [spMax, setSpMax] = useState<string>('')
   const [stockOnly, setStockOnly] = useState(true)
-  const [purchasedFrom, setPurchasedFrom] = useState('')
-  const [purchasedTo, setPurchasedTo] = useState('')
-  const [soldFrom, setSoldFrom] = useState('')
-  const [soldTo, setSoldTo] = useState('')
-  const [neverPurchased, setNeverPurchased] = useState(false)
-  const [neverSold, setNeverSold] = useState(false)
 
-  const [showAdvanced, setShowAdvanced] = useState(false)
   const [results, setResults] = useState<ResultRow[]>([])
-  const [searching, setSearching] = useState(false)
+  const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
   const [hasSearched, setHasSearched] = useState(false)
 
+  const inputRef = useRef<HTMLInputElement>(null)
+
   useEffect(() => {
     loadLookups()
+    inputRef.current?.focus()
   }, [])
 
   async function loadLookups() {
-    const [b, p] = await Promise.all([
-      supabase.from('brands').select('*').order('brand_name'),
-      supabase.from('part_types').select('*').order('part_code'),
-    ])
-    setBrands(b.data || [])
-    setParts(p.data || [])
+    const { data } = await supabase
+      .from('brands')
+      .select('*')
+      .order('brand_name')
+    setBrands(data || [])
   }
 
-  async function runSearch() {
-    setSearching(true)
+  async function runSearch(currentQuery: string, currentBrandId: number | null) {
+    setLoading(true)
     setMessage('')
 
-    const numericOrNull = (s: string) => {
-      if (!s || s.trim() === '') return null
-      const n = Number(s)
-      return isNaN(n) ? null : n
-    }
-    const dateOrNull = (s: string) => {
-      if (!s || s.trim() === '') return null
-      return s
-    }
-
     const { data, error } = await supabase.rpc('find_items', {
-      p_query: query.trim() || null,
-      p_brand_id: brandId,
+      p_query: currentQuery.trim() || null,
+      p_brand_id: currentBrandId,
       p_model_id: null,
-      p_part_id: partId,
-      p_quality: quality || null,
-      p_stock_min: numericOrNull(stockMin),
-      p_stock_max: numericOrNull(stockMax),
-      p_cost_min: numericOrNull(costMin),
-      p_cost_max: numericOrNull(costMax),
-      p_sp_min: numericOrNull(spMin),
-      p_sp_max: numericOrNull(spMax),
+      p_part_id: null,
+      p_quality: null,
+      p_stock_min: null,
+      p_stock_max: null,
+      p_cost_min: null,
+      p_cost_max: null,
+      p_sp_min: null,
+      p_sp_max: null,
       p_stock_only: stockOnly,
-      p_purchased_from: dateOrNull(purchasedFrom),
-      p_purchased_to: dateOrNull(purchasedTo),
-      p_sold_from: dateOrNull(soldFrom),
-      p_sold_to: dateOrNull(soldTo),
-      p_never_purchased: neverPurchased,
-      p_never_sold: neverSold,
+      p_purchased_from: null,
+      p_purchased_to: null,
+      p_sold_from: null,
+      p_sold_to: null,
+      p_never_purchased: false,
+      p_never_sold: false,
       p_limit: 200,
     })
 
-    setSearching(false)
+    setLoading(false)
     setHasSearched(true)
 
     if (error) {
@@ -128,471 +92,361 @@ export default function FindStockPage() {
     setResults((data as ResultRow[]) || [])
   }
 
-  const filterKey = JSON.stringify({
-    query, brandId, partId, quality,
-    stockMin, stockMax, costMin, costMax, spMin, spMax,
-    stockOnly, purchasedFrom, purchasedTo, soldFrom, soldTo,
-    neverPurchased, neverSold,
-  })
-
+  // Debounced auto-search on query/brand change
   useEffect(() => {
-    if (!hasSearched && !query && !brandId && !partId && !quality) return
+    const trimmed = query.trim()
+    if (!trimmed && !brandId) {
+      setResults([])
+      setHasSearched(false)
+      return
+    }
     const t = setTimeout(() => {
-      runSearch()
+      runSearch(query, brandId)
     }, 300)
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey])
+  }, [query, brandId, stockOnly])
 
   function resetAll() {
     setQuery('')
     setBrandId(null)
-    setPartId(null)
-    setQuality('')
-    setStockMin(''); setStockMax('')
-    setCostMin(''); setCostMax('')
-    setSpMin(''); setSpMax('')
     setStockOnly(true)
-    setPurchasedFrom(''); setPurchasedTo('')
-    setSoldFrom(''); setSoldTo('')
-    setNeverPurchased(false); setNeverSold(false)
     setResults([])
     setHasSearched(false)
     setMessage('')
+    inputRef.current?.focus()
   }
 
   function sellItem(itemId: number) {
     router.push(`/sales?prefill_item_id=${itemId}`)
   }
 
-  const chips: { label: string; onClear: () => void }[] = []
-  if (brandId) {
-    const b = brands.find((x) => x.brand_id === brandId)
-    chips.push({ label: `Brand: ${b?.brand_name ?? '?'}`, onClear: () => setBrandId(null) })
-  }
-  if (partId) {
-    const p = parts.find((x) => x.part_id === partId)
-    chips.push({ label: `Part: ${p?.part_name ?? '?'}`, onClear: () => setPartId(null) })
-  }
-  if (quality) {
-    chips.push({ label: `Quality: ${quality}`, onClear: () => setQuality('') })
-  }
-
-  // ---------- Summary calculations ----------
   const summary = useMemo(() => {
     const totalItems = results.length
     const totalUnits = results.reduce((s, r) => s + (r.current_stock || 0), 0)
-    const stockValue = results.reduce(
-      (s, r) => s + (r.current_stock || 0) * Number(r.cost_price || 0),
-      0
-    )
     const retailValue = results.reduce(
       (s, r) => s + (r.current_stock || 0) * Number(r.selling_price || 0),
       0
     )
-    const margin = retailValue - stockValue
-    const capped = results.length >= 200
-    return { totalItems, totalUnits, stockValue, retailValue, margin, capped }
+    return { totalItems, totalUnits, retailValue, capped: results.length >= 200 }
   }, [results])
 
-  return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-7xl mx-auto">
+  const hasFilters = query.trim() !== '' || brandId !== null || !stockOnly
 
-        <div className="mb-6">
-          <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">Find Stock</h1>
+  function itemDescription(r: ResultRow): string {
+    const parts = [r.brand_name, r.model_name, r.part_code, r.quality]
+      .filter((p) => p && p !== 'Normal')
+      .map((p) => String(p))
+    return parts.join(' · ') || '—'
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      {/* Top progress bar */}
+      <div className="fixed top-0 left-0 right-0 h-0.5 z-50 pointer-events-none">
+        {loading && (
+          <div className="h-full bg-blue-500 animate-pulse" style={{ width: '100%' }} />
+        )}
+      </div>
+
+      <div className="max-w-5xl mx-auto p-4 sm:p-6 lg:p-8">
+
+        {/* Header */}
+        <div className="mb-5">
+          <h1 className="text-2xl sm:text-3xl font-bold text-slate-900 flex items-center gap-2">
+            <Search className="w-6 h-6 text-blue-600" />
+            Find Stock
+          </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Type anything — brand, model, part, SKU, color. Use filters below to narrow.
+            Type anything — SKU, brand, model, part, color.
           </p>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-6 mb-6 shadow-sm space-y-4">
-
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Search (type model name, part, SKU, color — multi-word)
-            </label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') runSearch() }}
-                placeholder="e.g. vivo y21 back panel"
-                className="flex-1 h-11 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <button
-                onClick={runSearch}
-                disabled={searching}
-                className="h-11 px-4 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
-              >
-                <Search className="size-4" />
-                {searching ? 'Searching…' : 'Search'}
-              </button>
-            </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Model names are searched here — no dropdown needed.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Brand</label>
-              <div className="relative">
-                <select
-                  value={brandId ?? ''}
-                  onChange={(e) => setBrandId(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full h-11 pl-2 pr-8 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none"
-                >
-                  <option value="">— Any —</option>
-                  {brands.map((b) => (
-                    <option key={b.brand_id} value={b.brand_id}>
-                      {b.brand_name} ({b.brand_code})
-                    </option>
-                  ))}
-                </select>
-                {brandId && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.preventDefault(); setBrandId(null) }}
-                    className="absolute right-7 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-600"
-                    aria-label="Clear brand"
-                  >
-                    <X className="size-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Part</label>
-              <div className="relative">
-                <select
-                  value={partId ?? ''}
-                  onChange={(e) => setPartId(e.target.value ? Number(e.target.value) : null)}
-                  className="w-full h-11 pl-2 pr-8 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none"
-                >
-                  <option value="">— Any —</option>
-                  {parts.map((p) => (
-                    <option key={p.part_id} value={p.part_id}>
-                      {p.part_name}
-                    </option>
-                  ))}
-                </select>
-                {partId && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.preventDefault(); setPartId(null) }}
-                    className="absolute right-7 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-600"
-                    aria-label="Clear part"
-                  >
-                    <X className="size-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Quality</label>
-              <div className="relative">
-                <select
-                  value={quality}
-                  onChange={(e) => setQuality(e.target.value)}
-                  className="w-full h-11 pl-2 pr-8 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white appearance-none"
-                >
-                  {QUALITY_OPTIONS.map((q) => (
-                    <option key={q.value} value={q.value}>{q.label}</option>
-                  ))}
-                </select>
-                {quality && (
-                  <button
-                    type="button"
-                    onClick={(e) => { e.preventDefault(); setQuality('') }}
-                    className="absolute right-7 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-600"
-                    aria-label="Clear quality"
-                  >
-                    <X className="size-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {chips.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {chips.map((c, i) => (
-                <span
-                  key={i}
-                  className="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium bg-blue-50 border border-blue-200 rounded-full text-blue-800"
-                >
-                  {c.label}
-                  <button
-                    type="button"
-                    onClick={c.onClear}
-                    className="text-blue-600 hover:text-red-600"
-                    aria-label="Remove filter"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center gap-2">
+        {/* Search box */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm p-3 sm:p-4 mb-4">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 pointer-events-none" />
             <input
-              id="stockOnly"
-              type="checkbox"
-              checked={stockOnly}
-              onChange={(e) => setStockOnly(e.target.checked)}
-              className="size-4 accent-blue-600"
+              ref={inputRef}
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  runSearch(query, brandId)
+                }
+              }}
+              placeholder="e.g. vivo y21 back panel"
+              className="w-full h-12 pl-10 pr-10 text-base border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
             />
-            <label htmlFor="stockOnly" className="text-sm text-slate-700">
-              In-stock only
-            </label>
+            {query && (
+              <button
+                type="button"
+                onClick={() => {
+                  setQuery('')
+                  inputRef.current?.focus()
+                }}
+                className="absolute right-3 top-1/2 -translate-y-1/2 w-6 h-6 flex items-center justify-center text-slate-400 hover:text-slate-700 rounded-full hover:bg-slate-100"
+                aria-label="Clear search"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
-          <button
-            onClick={() => setShowAdvanced((v) => !v)}
-            className="flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-800"
-          >
-            {showAdvanced ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-            Advanced filters (stock, price, dates)
-          </button>
+          {/* Quick filters */}
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <button
+              type="button"
+              onClick={() => setStockOnly((v) => !v)}
+              className={`h-9 px-3 text-xs font-medium rounded-lg border transition-colors ${
+                stockOnly
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                  : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              {stockOnly ? '✓ In stock only' : 'In stock only'}
+            </button>
 
-          {showAdvanced && (
-            <div className="border-t border-slate-200 pt-4 space-y-4">
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-2">Stock between</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="number"
-                    value={stockMin}
-                    onChange={(e) => setStockMin(e.target.value)}
-                    placeholder="Min"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="number"
-                    value={stockMax}
-                    onChange={(e) => setStockMax(e.target.value)}
-                    placeholder="Max"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
+            <div className="relative">
+              <select
+                value={brandId ?? ''}
+                onChange={(e) =>
+                  setBrandId(e.target.value ? Number(e.target.value) : null)
+                }
+                className={`h-9 pl-3 pr-8 text-xs font-medium rounded-lg border appearance-none focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                  brandId
+                    ? 'bg-blue-50 text-blue-800 border-blue-300'
+                    : 'bg-white text-slate-600 border-slate-300'
+                }`}
+              >
+                <option value="">All brands</option>
+                {brands.map((b) => (
+                  <option key={b.brand_id} value={b.brand_id}>
+                    {b.brand_name}
+                  </option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 text-xs">
+                ▾
+              </span>
+            </div>
 
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-2">Cost price between</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="number"
-                    value={costMin}
-                    onChange={(e) => setCostMin(e.target.value)}
-                    placeholder="Min ₹"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="number"
-                    value={costMax}
-                    onChange={(e) => setCostMax(e.target.value)}
-                    placeholder="Max ₹"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
+            {hasFilters && (
+              <button
+                type="button"
+                onClick={resetAll}
+                className="h-9 px-3 text-xs font-medium text-slate-600 hover:text-slate-900 rounded-lg hover:bg-slate-100"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
 
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-2">Selling price between</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="number"
-                    value={spMin}
-                    onChange={(e) => setSpMin(e.target.value)}
-                    placeholder="Min ₹"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="number"
-                    value={spMax}
-                    onChange={(e) => setSpMax(e.target.value)}
-                    placeholder="Max ₹"
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-2">Last purchased between</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={purchasedFrom}
-                    onChange={(e) => setPurchasedFrom(e.target.value)}
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="date"
-                    value={purchasedTo}
-                    onChange={(e) => setPurchasedTo(e.target.value)}
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-2">Last sold between</div>
-                <div className="grid grid-cols-2 gap-3">
-                  <input
-                    type="date"
-                    value={soldFrom}
-                    onChange={(e) => setSoldFrom(e.target.value)}
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <input
-                    type="date"
-                    value={soldTo}
-                    onChange={(e) => setSoldTo(e.target.value)}
-                    className="h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-4">
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={neverPurchased}
-                    onChange={(e) => setNeverPurchased(e.target.checked)}
-                    className="size-4 accent-blue-600"
-                  />
-                  Never purchased
-                </label>
-                <label className="flex items-center gap-2 text-sm text-slate-700">
-                  <input
-                    type="checkbox"
-                    checked={neverSold}
-                    onChange={(e) => setNeverSold(e.target.checked)}
-                    className="size-4 accent-blue-600"
-                  />
-                  Never sold
-                </label>
-              </div>
+          {message && (
+            <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+              {message}
             </div>
           )}
-
-          <div className="flex items-center gap-2 pt-2 border-t border-slate-200">
-            <button
-              onClick={resetAll}
-              className="h-9 px-3 text-sm text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center gap-2"
-            >
-              <RotateCcw className="size-3.5" />
-              Reset all
-            </button>
-            {message && <div className="text-sm text-red-600">{message}</div>}
-          </div>
         </div>
 
-        {hasSearched && (
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-
-            {/* Summary bar */}
-            <div className="px-4 py-3 bg-gradient-to-r from-slate-50 to-blue-50 border-b border-slate-200 space-y-1.5">
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                <span className="text-slate-700">
-                  <span className="font-bold text-slate-900 text-base">{summary.totalItems}</span>{' '}
-                  item{summary.totalItems === 1 ? '' : 's'}
-                  {summary.capped && (
-                    <span className="text-amber-700 font-normal ml-1">
-                      (capped at 200 — narrow filters to see all)
-                    </span>
-                  )}
-                </span>
-                <span className="text-slate-600">
-                  Total units:{' '}
-                  <span className="font-semibold text-slate-900">{summary.totalUnits}</span>
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-                <span className="text-slate-700">
-                  Stock value:{' '}
-                  <span className="font-bold text-blue-700">
-                    ₹{summary.stockValue.toFixed(2)}
-                  </span>
-                </span>
-                <span className="text-slate-700">
-                  Retail value:{' '}
-                  <span className="font-bold text-green-700">
-                    ₹{summary.retailValue.toFixed(2)}
-                  </span>
-                </span>
-                <span className="text-slate-700">
-                  Potential margin:{' '}
-                  <span className={`font-bold ${summary.margin >= 0 ? 'text-emerald-700' : 'text-red-700'}`}>
-                    ₹{summary.margin.toFixed(2)}
-                  </span>
-                </span>
-              </div>
-            </div>
-
-            {results.length === 0 ? (
-              <div className="px-4 py-8 text-center text-sm text-slate-400">
-                No matching items.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full border-collapse text-sm min-w-[900px]">
-                  <thead>
-                    <tr className="bg-slate-100">
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">SKU</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Brand</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Model</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Part</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Quality</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600">Stock</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600">Cost</th>
-                      <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600">SP</th>
-                      <th className="px-3 py-2 text-center text-xs font-semibold text-slate-600">Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.map((r) => (
-                      <tr key={r.item_id} className="hover:bg-slate-50 border-b border-slate-100">
-                        <td className="px-3 py-2 font-mono text-xs text-slate-800">{r.sku}</td>
-                        <td className="px-3 py-2 text-slate-700">{r.brand_name || '—'}</td>
-                        <td className="px-3 py-2 text-slate-700">{r.model_name || '—'}</td>
-                        <td className="px-3 py-2 text-slate-700">{r.part_code || '—'}</td>
-                        <td className="px-3 py-2 text-slate-600 text-xs">{r.quality || '—'}</td>
-                        <td className={`px-3 py-2 text-right font-medium ${r.current_stock > 0 ? 'text-green-700' : 'text-slate-400'}`}>
-                          {r.current_stock}
-                        </td>
-                        <td className="px-3 py-2 text-right text-slate-600">₹{Number(r.cost_price).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-right text-slate-800 font-medium">₹{Number(r.selling_price).toFixed(2)}</td>
-                        <td className="px-3 py-2 text-center">
-                          {r.current_stock > 0 && (
-                            <button
-                              onClick={() => sellItem(r.item_id)}
-                              className="text-xs font-medium text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50"
-                            >
-                              Sell
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+        {/* Results summary — one line */}
+        {hasSearched && results.length > 0 && (
+          <div className="text-xs text-slate-500 mb-3 px-1">
+            <span className="font-semibold text-slate-800">{summary.totalItems}</span> item
+            {summary.totalItems === 1 ? '' : 's'} ·{' '}
+            <span className="font-semibold text-slate-800">{summary.totalUnits}</span> unit
+            {summary.totalUnits === 1 ? '' : 's'} in stock ·{' '}
+            <span className="text-slate-600">₹{summary.retailValue.toFixed(0)} retail</span>
+            {summary.capped && (
+              <span className="text-amber-700 ml-2">
+                (showing first 200 — refine search)
+              </span>
             )}
           </div>
         )}
 
-        {!hasSearched && (
-          <div className="bg-white border border-dashed border-slate-300 rounded-xl p-8 text-center text-slate-500 text-sm">
-            Type in the search box or set filters — results appear automatically.
-          </div>
-        )}
+        {/* Results */}
+        {!hasSearched ? (
+          <EmptyState />
+        ) : results.length === 0 ? (
+          <NoResults query={query} />
+        ) : (
+          <>
+            {/* MOBILE — cards */}
+            <div className="md:hidden space-y-2">
+              {results.map((r) => (
+                <ResultCard key={r.item_id} row={r} onSell={sellItem} />
+              ))}
+            </div>
 
+            {/* DESKTOP — table */}
+            <div className="hidden md:block bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                      SKU
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                      Description
+                    </th>
+                    <th className="w-20 px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                      Stock
+                    </th>
+                    <th className="w-32 px-4 py-3 text-right text-xs font-semibold text-slate-600 uppercase tracking-wide">
+                      SP / CP
+                    </th>
+                    <th className="w-24 px-4 py-3"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {results.map((r) => (
+                    <tr
+                      key={r.item_id}
+                      className="border-b border-slate-100 last:border-b-0 hover:bg-slate-50"
+                    >
+                      <td className="px-4 py-3 font-mono text-xs text-slate-900 break-all max-w-[280px]">
+                        {r.sku}
+                      </td>
+                      <td className="px-4 py-3 text-slate-700">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span>{itemDescription(r)}</span>
+                          {r.current_stock > 0 && r.total_sold > 0 && (
+                            <span className="text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700">
+                              sold {r.total_sold}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <StockBadge stock={r.current_stock} />
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="font-bold text-slate-900">
+                          ₹{Number(r.selling_price).toFixed(0)}
+                        </div>
+                        <div className="text-xs text-slate-600">
+                          CP ₹{Number(r.cost_price).toFixed(2)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {r.current_stock > 0 && (
+                          <button
+                            onClick={() => sellItem(r.item_id)}
+                            className="h-8 px-3 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+                          >
+                            Sell
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StockBadge({ stock }: { stock: number }) {
+  if (stock <= 0) {
+    return (
+      <span className="inline-block px-2 py-0.5 text-xs font-semibold rounded-full bg-slate-100 text-slate-500">
+        0
+      </span>
+    )
+  }
+  if (stock <= 5) {
+    return (
+      <span className="inline-block px-2 py-0.5 text-xs font-bold rounded-full bg-amber-100 text-amber-800">
+        {stock}
+      </span>
+    )
+  }
+  return (
+    <span className="inline-block px-2 py-0.5 text-xs font-bold rounded-full bg-emerald-100 text-emerald-800">
+      {stock}
+    </span>
+  )
+}
+
+function ResultCard({
+  row,
+  onSell,
+}: {
+  row: ResultRow
+  onSell: (id: number) => void
+}) {
+  const description = [row.brand_name, row.model_name, row.part_code, row.quality]
+    .filter((p) => p && p !== 'Normal')
+    .map((p) => String(p))
+    .join(' · ')
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="font-mono text-xs sm:text-sm font-semibold text-slate-900 break-all flex-1">
+          {row.sku}
+        </div>
+        <StockBadge stock={row.current_stock} />
+      </div>
+      <div className="text-xs text-slate-600 mb-3">{description || '—'}</div>
+
+      <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+        <div className="flex items-center gap-4">
+          <div>
+            <div className="text-[10px] uppercase text-slate-500 font-medium">SP</div>
+            <div className="text-base font-bold text-slate-900">
+              ₹{Number(row.selling_price).toFixed(0)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase text-slate-500 font-medium">CP</div>
+            <div className="text-sm font-semibold text-slate-700">
+              ₹{Number(row.cost_price).toFixed(2)}
+            </div>
+          </div>
+        </div>
+        {row.current_stock > 0 && (
+          <button
+            onClick={() => onSell(row.item_id)}
+            className="h-9 px-4 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 active:bg-blue-800"
+          >
+            Sell
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState() {
+  return (
+    <div className="bg-white border border-dashed border-slate-300 rounded-2xl p-8 sm:p-12 text-center">
+      <Sparkles className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+      <div className="text-sm font-medium text-slate-600 mb-1">
+        Start typing to find stock
+      </div>
+      <div className="text-xs text-slate-400 max-w-md mx-auto">
+        Try &ldquo;vivo y21&rdquo;, &ldquo;iphone 11 back&rdquo;, &ldquo;redmi note 10 lcd&rdquo;, or any SKU fragment.
+      </div>
+    </div>
+  )
+}
+
+function NoResults({ query }: { query: string }) {
+  return (
+    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center">
+      <Package className="w-8 h-8 text-slate-300 mx-auto mb-3" />
+      <div className="text-sm font-medium text-slate-700 mb-1">
+        No items found
+      </div>
+      <div className="text-xs text-slate-400">
+        {query ? `Nothing matched "${query.trim()}".` : 'Try different keywords.'}
       </div>
     </div>
   )
