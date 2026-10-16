@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, createRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
+import { NewPartyDialog } from '../../components/ui/new-party-dialog'
 import { Plus, Trash2, Save, X } from 'lucide-react'
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
@@ -13,6 +14,7 @@ type Party = {
   party_name: string
   party_type: 'Customer' | 'Supplier'
   current_balance: number
+  phone: string | null
 }
 
 type Item = {
@@ -83,7 +85,6 @@ function SalesEntryPage() {
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
   const [isOwner, setIsOwner] = useState(false)
 
-  // ---- Sales report state ----
   const todayStr = new Date().toISOString().slice(0, 10)
   const [reportFrom, setReportFrom] = useState(todayStr)
   const [reportTo, setReportTo] = useState(todayStr)
@@ -113,6 +114,8 @@ function SalesEntryPage() {
     number | null
   >(null)
 
+  const [pendingNewParty, setPendingNewParty] = useState<string | null>(null)
+
   const itemRefs = useRef<
     Record<number, React.RefObject<HTMLInputElement | null>>
   >({})
@@ -136,7 +139,6 @@ function SalesEntryPage() {
     loadData()
   }, [])
 
-  // Reload report when date range changes
   useEffect(() => {
     loadReport()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -151,7 +153,6 @@ function SalesEntryPage() {
     }
   }, [pendingFocusRowId, rows])
 
-  // Focus the qty input after prefill / item select
   useEffect(() => {
     if (pendingFocusQtyRowId == null) return
     const candidates = Array.from(
@@ -171,7 +172,6 @@ function SalesEntryPage() {
     }
   }, [pendingFocusQtyRowId, rows])
 
-  // Prefill from URL — /sales?prefill_item_id=123
   useEffect(() => {
     if (!prefillItemId) return
     const itemId = Number(prefillItemId)
@@ -220,7 +220,7 @@ function SalesEntryPage() {
     const [s, t] = await Promise.all([
       supabase
         .from('parties')
-        .select('*')
+        .select('party_id, party_name, party_type, current_balance, phone')
         .eq('party_type', 'Customer')
         .order('party_name'),
       supabase
@@ -236,7 +236,8 @@ function SalesEntryPage() {
     const counter = parties.find((p) => p.party_name === COUNTER_SALE_NAME)
     if (counter) {
       setPickedShop((prev) => {
-        if (prev.id || prev.isNew) return prev
+        if (prev.isNew) return prev
+        if (prev.id && prev.id !== counter.party_id) return prev
         return { id: counter.party_id, label: counter.party_name, isNew: false }
       })
     }
@@ -279,12 +280,11 @@ function SalesEntryPage() {
     }
   }
 
-  const shopOptions = shops
-    .filter((s) => s.party_name !== COUNTER_SALE_NAME)
-    .map((s) => ({
-      value: s.party_id,
-      label: s.party_name,
-    }))
+  // Counter Sale included in dropdown
+  const shopOptions = shops.map((s) => ({
+    value: s.party_id,
+    label: s.party_name,
+  }))
 
   const prevBalance =
     shops.find((s) => s.party_id === pickedShop.id)?.current_balance || 0
@@ -431,32 +431,40 @@ function SalesEntryPage() {
   const subtotal = rows.reduce((s, r) => s + (r.amount || 0), 0)
 
   async function ensureShop(): Promise<number | null> {
-    if (pickedShop.isNew && pickedShop.label) {
-      const { data, error } = await supabase
-        .from('parties')
-        .insert({
-          party_name: pickedShop.label,
-          party_type: 'Customer',
-          current_balance: 0,
-        })
-        .select()
-        .single()
-      if (error) {
-        setMessage('Shop error: ' + error.message)
-        return null
-      }
-      return data.party_id
+    if (pickedShop.id) return pickedShop.id
+
+    // Fallback to Counter Sale
+    const counter = shops.find((s) => s.party_name === COUNTER_SALE_NAME)
+    if (counter) return counter.party_id
+
+    // Last resort: try to find or create Counter Sale
+    const { data: existing } = await supabase
+      .from('parties')
+      .select('party_id')
+      .eq('party_name', COUNTER_SALE_NAME)
+      .eq('party_type', 'Customer')
+      .maybeSingle()
+
+    if (existing?.party_id) return existing.party_id
+
+    const { data, error } = await supabase
+      .from('parties')
+      .insert({
+        party_name: COUNTER_SALE_NAME,
+        party_type: 'Customer',
+        current_balance: 0,
+      })
+      .select()
+      .single()
+
+    if (error) {
+      setMessage('Could not resolve shop: ' + error.message)
+      return null
     }
-    return pickedShop.id
+    return data.party_id
   }
-
-  async function saveSale() {
+    async function saveSale() {
     setMessage('')
-
-    if (!pickedShop.label && !pickedShop.id) {
-      setMessage('Please select or enter a Shop.')
-      return
-    }
 
     const validRows = rows.filter(
       (r) => r.item_id && r.quantity > 0 && r.rate > 0
@@ -603,7 +611,49 @@ function SalesEntryPage() {
       label: itemLabel(it),
     }))
   }
-    return (
+
+  function handleNewPartyCreated(party: {
+    party_id: number
+    party_name: string
+    party_type: 'Customer' | 'Supplier'
+    current_balance: number
+    phone: string | null
+    purchase_prefix: string | null
+  }) {
+    setShops((prev) =>
+      [...prev, party as Party].sort((a, b) =>
+        a.party_name.localeCompare(b.party_name)
+      )
+    )
+    setPickedShop({
+      id: party.party_id,
+      label: party.party_name,
+      isNew: false,
+    })
+    setPendingNewParty(null)
+
+    const attempts = [50, 150, 300, 500, 800]
+    attempts.forEach((delay) => {
+      setTimeout(() => {
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLInputElement>(
+            'input[data-row-item="row-1"]'
+          )
+        )
+        const el = candidates.find((c) => c.offsetParent !== null)
+        if (el && document.activeElement !== el) {
+          el.focus()
+          try {
+            el.select()
+          } catch {
+            // ignore
+          }
+        }
+      }, delay)
+    })
+  }
+
+  return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
@@ -632,13 +682,17 @@ function SalesEntryPage() {
                     ? `__new__${pickedShop.label}`
                     : null
                 }
-                onValueChange={(v: string, label: string, isNew: boolean) =>
+                onValueChange={(v: string, label: string, isNew: boolean) => {
+                  if (isNew) {
+                    setPendingNewParty(label)
+                    return
+                  }
                   setPickedShop({
-                    id: isNew ? null : Number(v),
+                    id: Number(v),
                     label,
-                    isNew,
+                    isNew: false,
                   })
-                }
+                }}
                 placeholder="Select or type shop..."
                 inputDataAttr="shop-input"
                 focusNextOnSelect={true}
@@ -703,6 +757,7 @@ function SalesEntryPage() {
                 <SmartCombobox
                   options={itemOptionsFor(row.rowId)}
                   value={row.item_id ? String(row.item_id) : null}
+                  fallbackLabel={row.item_id && row.sku ? row.sku : null}
                   onValueChange={(
                     v: string,
                     label: string,
@@ -731,12 +786,14 @@ function SalesEntryPage() {
                         qtyRefs.current[row.rowId] = el
                       }}
                       type="number"
+                      inputMode="numeric"
                       value={row.quantity || ''}
                       onChange={(e) =>
                         updateRow(row.rowId, {
                           quantity: parseFloat(e.target.value) || 0,
                         })
                       }
+                      onFocus={(e) => e.target.select()}
                       onKeyDown={(e) =>
                         handleQtyKeyDown(row.rowId, idx, e)
                       }
@@ -750,12 +807,14 @@ function SalesEntryPage() {
                     <input
                       data-rate-row={`rate-${row.rowId}`}
                       type="number"
+                      inputMode="numeric"
                       value={row.rate || ''}
                       onChange={(e) =>
                         updateRow(row.rowId, {
                           rate: parseFloat(e.target.value) || 0,
                         })
                       }
+                      onFocus={(e) => e.target.select()}
                       onKeyDown={(e) => handleRateTab(row.rowId, idx, e)}
                       className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                     />
@@ -944,17 +1003,17 @@ function SalesEntryPage() {
                       ? `__new__${pickedShop.label}`
                       : null
                   }
-                  onValueChange={(
-                    v: string,
-                    label: string,
-                    isNew: boolean
-                  ) =>
+                  onValueChange={(v: string, label: string, isNew: boolean) => {
+                    if (isNew) {
+                      setPendingNewParty(label)
+                      return
+                    }
                     setPickedShop({
-                      id: isNew ? null : Number(v),
+                      id: Number(v),
                       label,
-                      isNew,
+                      isNew: false,
                     })
-                  }
+                  }}
                   placeholder="Select or type shop..."
                   inputDataAttr="shop-input"
                   focusNextOnSelect={true}
@@ -1008,6 +1067,7 @@ function SalesEntryPage() {
                         <SmartCombobox
                           options={itemOptionsFor(row.rowId)}
                           value={row.item_id ? String(row.item_id) : null}
+                          fallbackLabel={row.item_id && row.sku ? row.sku : null}
                           onValueChange={(
                             v: string,
                             label: string,
@@ -1033,12 +1093,14 @@ function SalesEntryPage() {
                             qtyRefs.current[row.rowId] = el
                           }}
                           type="number"
+                          inputMode="numeric"
                           value={row.quantity || ''}
                           onChange={(e) =>
                             updateRow(row.rowId, {
                               quantity: parseFloat(e.target.value) || 0,
                             })
                           }
+                          onFocus={(e) => e.target.select()}
                           onKeyDown={(e) =>
                             handleQtyKeyDown(row.rowId, idx, e)
                           }
@@ -1049,12 +1111,14 @@ function SalesEntryPage() {
                         <input
                           data-rate-row={`rate-${row.rowId}`}
                           type="number"
+                          inputMode="numeric"
                           value={row.rate || ''}
                           onChange={(e) =>
                             updateRow(row.rowId, {
                               rate: parseFloat(e.target.value) || 0,
                             })
                           }
+                          onFocus={(e) => e.target.select()}
                           onKeyDown={(e) => handleRateTab(row.rowId, idx, e)}
                           className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                         />
@@ -1212,6 +1276,14 @@ function SalesEntryPage() {
           </div>
         </div>
       </div>
+
+      <NewPartyDialog
+        open={pendingNewParty !== null}
+        initialName={pendingNewParty || ''}
+        partyType="Customer"
+        onClose={() => setPendingNewParty(null)}
+        onCreated={handleNewPartyCreated}
+      />
     </div>
   )
 }

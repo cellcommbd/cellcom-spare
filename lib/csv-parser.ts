@@ -635,6 +635,7 @@ function extractBrandAndModel(
 
   noNet = noNet.replace(/\b1\+\s+/g, '\u0001PLUS1\u0001 ')
   noNet = noNet.replace(/(\d)\+/g, '$1 PLUS ')
+    noNet = noNet.replace(/([A-Z])\+/gi, '$1 PLUS ')
   noNet = noNet.replace(/\u0001PLUS1\u0001/g, '1+')
   noNet = noNet.replace(/\s+/g, ' ').trim()
 
@@ -755,7 +756,7 @@ function normalizeModelName(model: string | null): { model: string | null; strip
     cleaned = cleaned.replace(/\s+\d$/, '').trim()
   }
 
-  cleaned = cleaned.replace(/\s*\+\s*$/, '').replace(/^\+\s*/, '').trim()
+
   if (!cleaned) return { model: null, strippedPart: null }
 
   cleaned = cleaned.replace(TRAILING_QUALITY_REGEX, '').trim()
