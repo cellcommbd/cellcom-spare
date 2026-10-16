@@ -146,11 +146,50 @@ function SalesEntryPage() {
 
   useEffect(() => {
     if (pendingFocusRowId == null) return
-    const el = itemRefs.current[pendingFocusRowId]?.current
-    if (el) {
-      el.focus()
-      setPendingFocusRowId(null)
+
+    const focusVisible = (): boolean => {
+      const candidates = Array.from(
+        document.querySelectorAll<HTMLInputElement>(
+          `input[data-row-item="row-${pendingFocusRowId}"]`
+        )
+      )
+      const el = candidates.find((c) => c.offsetParent !== null)
+      if (el) {
+        el.focus()
+        try {
+          el.select()
+        } catch {
+          // ignore
+        }
+        return true
+      }
+      return false
     }
+
+    if (focusVisible()) {
+      setPendingFocusRowId(null)
+      return
+    }
+
+    // Retry a few times if the new row hasn't rendered yet
+    const timers: ReturnType<typeof setTimeout>[] = []
+    ;[50, 150, 300, 500].forEach((delay) => {
+      timers.push(
+        setTimeout(() => {
+          if (focusVisible()) {
+            setPendingFocusRowId(null)
+          }
+        }, delay)
+      )
+    })
+    // Final attempt: clear pending regardless
+    timers.push(
+      setTimeout(() => {
+        setPendingFocusRowId(null)
+      }, 600)
+    )
+
+    return () => timers.forEach((t) => clearTimeout(t))
   }, [pendingFocusRowId, rows])
 
   useEffect(() => {
