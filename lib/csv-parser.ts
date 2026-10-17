@@ -1,8 +1,8 @@
 // lib/csv-parser.ts
-// v25 — Makes extractPartFromDescription also scan DB aliases (part_type_aliases),
-//       so new phrases work without code changes.
-//
-// SKU = BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]
+// v27 — SKU rule enforced:
+//       BRAND - MODEL - [YEAR] - PART - [NETWORK] - [FLAG] - [VARIANT] - [COLOR] - [QUALITY]
+//       Year before part. Network and flag before variant.
+//       Also includes v26 fix: PRO+ → PRO PLUS.
 
 export type Quality =
   | 'Normal'
@@ -130,10 +130,10 @@ const PART_CODE_MAP: Record<string, string> = {
   'SENSOR CONNECTOR': 'SENSORCONN', 'ON OFF SENSOR CONN': 'SENSORCONN',
   SENSORSIDE: 'SENSORSIDE', 'SENSOR SIDE': 'SENSORSIDE', 'SENSOR [SIDE]': 'SENSORSIDE',
   SENSOR: 'SENSOR',
-  ONOFF: 'ONOFF', 'ON OFF FLEX': 'ONOFF',
+  ONOFF: 'ONOFF', 'ON OFF FLEX': 'ONOFF', 'ON/OFF FLEX': 'ONOFF',
   ONOFFSWITCH: 'ONOFFSWITCH', 'ON OFF SWITCH': 'ONOFFSWITCH', 'ONOFF SWITCH': 'ONOFFSWITCH',
   SWITCH: 'ONOFFSWITCH', TIKLI: 'ONOFFSWITCH',
-  VOL: 'VOL', 'VOL FLEX': 'VOL', 'VOLUME FLEX': 'VOL',
+  VOL: 'VOL', 'VOL FLEX': 'VOL', 'VOLUME FLEX': 'VOL', 'VOLLUME FLEX': 'VOL',
   CCFLEX: 'CCFLEX', 'CC FLEX': 'CCFLEX', 'CHARGING FLEX': 'CCFLEX',
   CHG: 'CHG',
   RB: 'RB', 'RINGER BOX': 'RB', RINGER: 'RB',
@@ -193,109 +193,32 @@ const TRAILING_QUALITY_REGEX = /\s+(100\s*%?(?:\s*(?:OG|ORIG|ORIGINAL))?|100OG|O
 
 const TRAILING_FLAG_REGEX = /\s+(W\s*\/\s*C(?:\s*\/\s*L)?|WC|WCL|W\s*\/\s*CL|WL)\b/i
 
-// Hardcoded phrase list — DB aliases are merged in extractPartFromDescription
 const PART_TYPE_PHRASES: string[] = [
-  'EAR SPEAKER',
-  'EAR SPK',
-  'BACK CAMERA',
-  'FRONT CAMERA',
-  'BACK CAM',
-  'FRONT CAM',
-  'FLASH FLEX',
-  'TYPE FLASH FLEX',
-  'TYPE FLASH',
-  'SENSOR [SIDE]',
-  'SENSOR SIDE',
-  'SENSOR CONNECTOR',
-  'SENSOR CONN.',
-  'SENSOR CONN',
-  'SENSOR',
-  'IN RUBBER',
-  'INRUBBER',
-  'NETWORK WIRE',
-  'NETWORKWIRE',
-  'MIDDLE FRAME WITH FLEX',
-  'ON OFF SENSOR CONN',
-  'ONLY EARPIECE FLEX',
-  'EARPIECE FLEX ONLY',
-  'ONLY SPEAKER FLEX',
-  'SPEAKER FLEX ONLY',
-  'SPK FLEX COPY',
-  'SPK FLEX ONLY',
-  'SPEAKER/RINGER JALI',
-  'SPEAKER / RINGER JALI',
-  'SPEAKER/ RINGER JALI',
-  'SPEAKER /RINGER JALI',
-  'RINGER JALI',
-  'CONVERTER HOUSING',
-  'CONVETOR HOUSING',
-  'CONVERT HOUSING',
-  'CONVERT HOUSIG',
-  'CONVERTER',
-  'CONVETOR',
-  'CONVERT',
-  'BATTERY CONNECTOR',
-  'BATTERY CONN.',
-  'BATTERY CONN',
-  'B/C CONN.',
-  'B/C CONN',
-  'BOARD CONN.',
-  'BOARD CONN',
-  'BORD CONN.',
-  'BORD CONN',
-  'LCD CONNECTOR',
-  'LCD CONN.',
-  'LCD CONN',
-  'LCD RING',
-  'GAS KIT FRONT',
-  'GAS KIT BACK',
-  'GAS KIT',
-  'ON OFF SWITCH',
-  'ONOFF SWITCH',
-  'TIKLI',
-  'ON OFF FLEX',
-  'ONLY FLEX',
-  'FLEX ONLY',
-  'OUT SIM TRAY',
-  'OUT SIM TRY',
-  'SIM TRAY',
-  'SIM TRY',
-  'SPEAKER JALI',
-  'SPEAKER FLEX',
-  'SPK FLEX',
-  'SPEAKER',
-  'CAMERA GLASS',
-  'CAMERA LENS',
-  'CAMERA FLEX',
-  'CHARGING FLEX',
-  'CC FLEX',
-  'MIDDLE FRAME',
-  'BACK GLASS',
-  'BACK PANEL',
-  'BACK PANLE',
-  'BACK PANAL',
-  'BACK PANNEL',
-  'BACKPANEL',
-  'BACK COVER',
-  'FULL HOUSING',
-  'LCD FLEX',
-  'RINGER BOX',
-  'RINGER',
-  'VOLUME FLEX',
-  'VOL FLEX',
-  'OUT KEY',
-  'VIBRATOR',
-  'ANTENNA',
-  'B/C',
-  'MIC',
-  'BP',
-  'FH',
-  'MF',
-  'MD',
-  'BK',
-  'LCD',
-  'RB',
-  'SPK',
+  'EAR SPEAKER', 'EAR SPK', 'BACK CAMERA', 'FRONT CAMERA', 'BACK CAM', 'FRONT CAM',
+  'FLASH FLEX', 'TYPE FLASH FLEX', 'TYPE FLASH', 'SENSOR [SIDE]', 'SENSOR SIDE',
+  'SENSOR CONNECTOR', 'SENSOR CONN.', 'SENSOR CONN', 'SENSOR',
+  'IN RUBBER', 'INRUBBER', 'NETWORK WIRE', 'NETWORKWIRE',
+  'MIDDLE FRAME WITH FLEX', 'ON OFF SENSOR CONN',
+  'ONLY EARPIECE FLEX', 'EARPIECE FLEX ONLY',
+  'ONLY SPEAKER FLEX', 'SPEAKER FLEX ONLY', 'SPK FLEX COPY', 'SPK FLEX ONLY',
+  'SPEAKER/RINGER JALI', 'SPEAKER / RINGER JALI', 'SPEAKER/ RINGER JALI', 'SPEAKER /RINGER JALI', 'RINGER JALI',
+  'CONVERTER HOUSING', 'CONVETOR HOUSING', 'CONVERT HOUSING', 'CONVERT HOUSIG',
+  'CONVERTER', 'CONVETOR', 'CONVERT',
+  'BATTERY CONNECTOR', 'BATTERY CONN.', 'BATTERY CONN',
+  'B/C CONN.', 'B/C CONN', 'BOARD CONN.', 'BOARD CONN', 'BORD CONN.', 'BORD CONN',
+  'LCD CONNECTOR', 'LCD CONN.', 'LCD CONN', 'LCD RING',
+  'GAS KIT FRONT', 'GAS KIT BACK', 'GAS KIT',
+  'ON OFF SWITCH', 'ONOFF SWITCH', 'TIKLI', 'ON OFF FLEX', 'ON/OFF FLEX',
+  'ONLY FLEX', 'FLEX ONLY',
+  'OUT SIM TRAY', 'OUT SIM TRY', 'SIM TRAY', 'SIM TRY',
+  'SPEAKER JALI', 'SPEAKER FLEX', 'SPK FLEX', 'SPEAKER',
+  'CAMERA GLASS', 'CAMERA LENS', 'CAMERA FLEX', 'CHARGING FLEX', 'CC FLEX',
+  'MIDDLE FRAME', 'BACK GLASS',
+  'BACK PANEL', 'BACK PANLE', 'BACK PANAL', 'BACK PANNEL', 'BACK PAANEL', 'BACKPANEL', 'BACK COVER',
+  'FULL HOUSING', 'LCD FLEX', 'RINGER BOX', 'RINGER',
+  'VOLUME FLEX', 'VOLLUME FLEX', 'VOL FLEX',
+  'OUT KEY', 'VIBRATOR', 'ANTENNA',
+  'B/C', 'MIC', 'BP', 'FH', 'MF', 'MD', 'BK', 'LCD', 'RB', 'SPK',
 ]
 
 export function splitCSVLines(text: string): string[][] {
@@ -337,6 +260,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bPANLE\b/gi, 'PANEL')
     .replace(/\bPANAL\b/gi, 'PANEL')
     .replace(/\bPANNEL\b/gi, 'PANEL')
+    .replace(/\bPAANEL\b/gi, 'PANEL')
     .replace(/\bBORD\b/gi, 'BOARD')
     .replace(/\bOUT\s+SIM\s+TRY\b/gi, 'OUT SIM TRAY')
     .replace(/\bSIM\s+TRY\b/gi, 'SIM TRAY')
@@ -346,6 +270,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bCONNVETOR\b/gi, 'CONVERTER')
     .replace(/\bCOVERT\b/gi, 'CONVERT')
     .replace(/\bSILVAR\b/gi, 'SILVER')
+    .replace(/\bVOLLUME\b/gi, 'VOLUME')
     .replace(/\bEXX\s*-\s*BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXX\s+BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXXBEE\b/gi, 'EXX-BEE')
@@ -429,6 +354,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
   const cleanedDesc = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
   return { colors, network, quality, flag, size, variant, year, cleanedDesc }
 }
+
 function extractQualityFromMarkers(markers: string[]): {
   quality: Quality
   remainingMarkers: string[]
@@ -478,6 +404,7 @@ function extractQualityFromMarkers(markers: string[]): {
 
   return { quality, remainingMarkers: remaining }
 }
+
 function classifyMarkers(
   markers: string[],
   colorAliases?: Record<string, string>
@@ -536,9 +463,6 @@ function classifyMarkers(
   return { variant, year, network, flag, size, color, modelAlias }
 }
 
-// ============================================================
-// v25: Part extraction now also scans DB aliases (part_type_aliases).
-// ============================================================
 function extractPartFromDescription(
   desc: string,
   aliases?: AliasMaps
@@ -635,7 +559,7 @@ function extractBrandAndModel(
 
   noNet = noNet.replace(/\b1\+\s+/g, '\u0001PLUS1\u0001 ')
   noNet = noNet.replace(/(\d)\+/g, '$1 PLUS ')
-    noNet = noNet.replace(/([A-Z])\+/gi, '$1 PLUS ')
+  noNet = noNet.replace(/([A-Z])\+/gi, '$1 PLUS ')
   noNet = noNet.replace(/\u0001PLUS1\u0001/g, '1+')
   noNet = noNet.replace(/\s+/g, ' ').trim()
 
@@ -756,7 +680,6 @@ function normalizeModelName(model: string | null): { model: string | null; strip
     cleaned = cleaned.replace(/\s+\d$/, '').trim()
   }
 
-
   if (!cleaned) return { model: null, strippedPart: null }
 
   cleaned = cleaned.replace(TRAILING_QUALITY_REGEX, '').trim()
@@ -786,7 +709,6 @@ function normalizeModelName(model: string | null): { model: string | null; strip
 
   return { model: cleaned, strippedPart }
 }
-
 export function generateSku(fields: {
   brandCode: string | null
   modelName: string | null
@@ -815,14 +737,16 @@ export function generateSku(fields: {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
 
+  // Canonical SKU rule:
+  // BRAND - MODEL - [YEAR] - PART - [NETWORK] - [FLAG] - [VARIANT] - [COLOR] - [QUALITY]
   const seg: string[] = []
   seg.push(brandCode)
   if (modelName) seg.push(dash(modelName))
-  seg.push(partCode)
   if (year) seg.push(year)
-  if (variant) seg.push(dash(variant))
+  seg.push(partCode)
   if (network) seg.push(network)
   if (flag) seg.push(dash(flag))
+  if (variant) seg.push(dash(variant))
   if (color) seg.push(dash(color))
   if (quality === 'OG') seg.push('OG')
   else if (quality === '100 OG') seg.push('100OG')
@@ -1112,8 +1036,7 @@ export function parseCSV(
 
         working = working.replace(/\s+/g, ' ').trim()
 
-        // v25-fix: re-run trailing color check AFTER part extraction,
-        // so a color word sitting before a part word (e.g. "GR TIKLI") is caught.
+        // v25-fix: re-run trailing color check AFTER part extraction
         if (!color) {
           const trailingColorMatch2 = working.toUpperCase().match(/(?:^|\s+)(SILVAR|SILVER|GR|GRAY|GREY|BLACK|WHITE|BLU|GRN|GOLD)\s*$/i)
           if (trailingColorMatch2) {
