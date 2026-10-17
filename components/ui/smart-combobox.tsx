@@ -23,15 +23,8 @@ type SmartComboboxProps = {
   inputRef?: React.RefObject<HTMLInputElement | null>
   onSearch?: (query: string) => void
   searchDebounceMs?: number
-  /** Show "Browse all codes" link in dropdown when there are no matches */
   showReferenceLink?: boolean
-  /** If provided, shows "+ Create new item" option when no matches */
   onCreateNew?: (typedText: string) => void
-  /**
-   * Text to display in the input when `value` is set but no matching option
-   * exists in `options`. Useful when a value was set externally (e.g. from a
-   * CSV import) without populating the options list.
-   */
   fallbackLabel?: string | null
 }
 
@@ -111,8 +104,6 @@ export function SmartCombobox({
 
   const selectedOption = stringOptions.find((o) => o.value === value)
 
-  // What to display when value is set but no option matches.
-  // Prefer the fallbackLabel (SKU passed from parent), else nothing.
   const externalLabel = React.useMemo(() => {
     if (selectedOption) return null
     if (!value) return null
@@ -130,7 +121,6 @@ export function SmartCombobox({
         const { primary } = splitLabel(externalLabel)
         setInputText(primary)
       }
-      // else: leave inputText as-is (value set but no label info at all)
     }
   }, [value, selectedOption, typing, externalLabel])
 
@@ -343,7 +333,7 @@ export function SmartCombobox({
       </div>
 
       {open && (
-        <div className="absolute z-50 mt-1 w-full max-h-[60vh] md:max-h-64 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-lg">
+        <div className="absolute z-50 mt-1 w-full max-h-[45dvh] md:max-h-64 overflow-y-auto bg-white border border-slate-300 rounded-lg shadow-lg">
 
           {noMatches && (
             <div className="px-3 py-3 text-sm text-slate-500">
