@@ -512,7 +512,27 @@ function SalesEntryPage() {
       setMessage('Add at least one item with quantity and rate.')
       return
     }
+    // Warn about out-of-stock items
+    const stockIssues = validRows
+      .map((r) => {
+        const opts = rowItemOptions[r.rowId] || []
+        const item = opts.find((i) => i.item_id === r.item_id)
+        return { row: r, item }
+      })
+      .filter(({ row, item }) => item && row.quantity > item.current_stock)
 
+    if (stockIssues.length > 0) {
+      const msg = stockIssues
+        .map(
+          ({ row, item }) =>
+            `• ${item!.sku}: stock ${item!.current_stock}, selling ${row.quantity}`
+        )
+        .join('\n')
+      const proceed = window.confirm(
+        `⚠ Out of stock items:\n\n${msg}\n\nStock will go negative. Continue anyway?`
+      )
+      if (!proceed) return
+    }
     setSaving(true)
 
     const shopId = await ensureShop()
