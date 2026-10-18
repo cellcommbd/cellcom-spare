@@ -31,6 +31,10 @@ export type ParsedRow = {
   matchedItemSku: string | null
   status: 'matched' | 'new' | 'error'
   errorMessage?: string
+  /** True if this row came from the general-items parser */
+  is_general_item?: boolean
+  /** Category code for general items (TOOL, CLEANING, OTHER, SPRAY) */
+  category_code?: string | null
 }
 
 export type AliasMaps = {
@@ -672,7 +676,12 @@ function normalizeModelName(model: string | null): { model: string | null; strip
     .replace(/[^A-Z0-9+\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-
+  // Collapse 1-2 letter prefix + space + digit → no space
+  // NORD CE 2 → NORD CE2, A 15 → A15, Y 21 → Y21
+  // Does NOT affect NOTE 12, REDMI 12 (multi-letter words keep their space)
+  cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, '$1$2')
+  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2')
+  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
   if (!cleaned) return { model: null, strippedPart: null }
 
   const MARKER_BEFORE_DIGIT = /\b(FLEX|SET|WITH|OG|ORI|ORIG|ORIGINAL|ORG|CARE|CHINA|100|%|BP|BK|FH|MF|MFF|LCD|SPK|SPKF|SPKJ|RB|CAM|CG|CL|ST|MIC|VIB|ANT)\s+\d$/i

@@ -12,6 +12,10 @@ import {
   Quality,
 } from '@/lib/csv-parser'
 import {
+  detectGeneralItemCSV,
+  parseGeneralCSV,
+} from '@/lib/general-item-parser'
+import {
   detectColumns,
   applyMapping,
   validateMapping,
@@ -155,7 +159,20 @@ export function ImportCSVDialog({
       return
     }
     try {
-      const rows = parseCSV(csvText, aliases, items)
+      // Auto-detect: is this a general-items CSV (TOOL/CLEANING/OTHER/SPRAY in Type column)?
+      const isGeneral = detectGeneralItemCSV(csvText)
+
+      let rows: ParsedRow[]
+      if (isGeneral) {
+        // Parse as general items
+        const generalRows = parseGeneralCSV(csvText, items)
+        // Cast to ParsedRow[] — compatible (extra fields ignored downstream)
+        rows = generalRows as unknown as ParsedRow[]
+      } else {
+        // Existing phone-part parser
+        rows = parseCSV(csvText, aliases, items)
+      }
+
       if (rows.length === 0) {
         setError('No valid rows found in auto mode. Try Manual mapping.')
         return

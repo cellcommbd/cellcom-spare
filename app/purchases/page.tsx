@@ -54,6 +54,8 @@ type PurchaseRow = {
   quantity: number
   rate: number
   amount: number
+  is_general_item?: boolean
+  category_code?: string | null
 }
 
 type PurchaseHeader = {
@@ -92,6 +94,8 @@ function emptyRow(rowId: number): PurchaseRow {
     quantity: 0,
     rate: 0,
     amount: 0,
+    is_general_item: false,
+    category_code: null,
   }
 }
 
@@ -404,10 +408,28 @@ export default function PurchaseEntryPage() {
           quantity: r.qty,
           rate: r.rate,
           amount: Number((r.qty * r.rate).toFixed(2)),
+          is_general_item: r.is_general_item || false,
+          category_code: r.category_code || null,
         })
       }
 
       for (const r of newItems) {
+        if (r.is_general_item) {
+          if (!r.generatedSku) continue
+          finalRows.push({
+            ...emptyRow(nextId++),
+            item_id: null,
+            sku: r.generatedSku,
+            quality: 'Normal',
+            quantity: r.qty,
+            rate: r.rate,
+            amount: Number((r.qty * r.rate).toFixed(2)),
+            is_general_item: true,
+            category_code: r.category_code || null,
+          })
+          continue
+        }
+
         if (!r.generatedSku || !r.brandCode || !r.partCode)
           continue
 
@@ -438,6 +460,8 @@ export default function PurchaseEntryPage() {
           quantity: r.qty,
           rate: r.rate,
           amount: Number((r.qty * r.rate).toFixed(2)),
+          is_general_item: false,
+          category_code: null,
         })
       }
 
@@ -649,6 +673,8 @@ export default function PurchaseEntryPage() {
       rate: number
       invoice_rate: number
       amount: number
+      is_general_item: boolean
+      category_code: string | null
     }
 
     const payloadLines: PayloadLine[] = []
@@ -662,6 +688,8 @@ export default function PurchaseEntryPage() {
       let variant: string | null = r.variant || null
       let color: string | null = r.color || null
       let sku: string = r.sku || ''
+      const is_gen = !!r.is_general_item
+      const cat_code = r.category_code || null
 
       if (r.item_id) {
         const it = itemDetail[r.item_id]
@@ -680,6 +708,12 @@ export default function PurchaseEntryPage() {
         quality = it.quality || quality
         variant = it.variant ?? variant
         color = it.color ?? color
+      } else if (is_gen) {
+        if (!r.sku) {
+          setMessage(`Row ${r.rowId}: missing SKU for general item.`)
+          setSaving(false)
+          return
+        }
       } else {
         if (!r.sku || !r.brand_code || !r.part_code) {
           setMessage(
@@ -712,6 +746,8 @@ export default function PurchaseEntryPage() {
         rate: Number(effectiveRate.toFixed(4)),
         invoice_rate: Number(r.rate.toFixed(4)),
         amount: lineAmount,
+        is_general_item: is_gen,
+        category_code: cat_code,
       })
     }
 
