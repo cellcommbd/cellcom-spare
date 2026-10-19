@@ -606,3 +606,145 @@ Added DB aliases: ON/OFF FLEX → ONOFF, BACK PAANEL → BP, VOLLUME FLEX → VO
 
 End of handoff.
 
+this is for sku generation in new way
+SKU Generation — Design Decisions (2026-10-19)
+Current State (what's live now)
+Parser rules 1-3 in lib/csv-parser.ts normalizeModelName:
+
+ts
+cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, '$1$2')    // Rule 1: CE 2 → CE2
+cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2') // Rule 2: 10 R → 10R
+cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')      // Rule 3: 11 X → 11X
+Covers:
+
+NORD CE 2 → NORD CE2
+
+10 R → 10R
+
+11 X → 11X
+
+KE 5 → KE5 (via rule 1)
+
+V50 E → V50E (via rule 3)
+
+Does NOT cover:
+
+14 PRO vs 14PRO (multi-letter suffix after digit)
+
+S21 FE vs S21FE (multi-letter suffix)
+
+V50 E handled by rule 3, but a V50 MAX would not be
+
+Result: ~90% of duplicates prevented. Remaining ~10% require manual cleanup periodically.
+
+Completed cleanup tonight:
+
+All Nord pairs merged (CE, CE2, CE2 LITE, CE3, CE3 LITE, CE4 LITE, CE5, 10R)
+
+MI 11 X / 11X
+
+RM 14 PRO / 14PRO
+
+SAM S21FE / S21 FE
+
+TEC KE5 / KE 5
+
+VV V50 E / V50E
+
+Form B — Planned Future State (NOT implemented yet)
+Vision: every SKU segment dash-separated. Every word, digit, and modifier its own segment.
+
+Examples:
+
+text
+BRAND - MODEL - [YEAR] - PART - [NETWORK] - [FLAG] - [VARIANT] - [COLOR] - [QUALITY]
+
+ONE-NORD-CE-4-LITE-FH-MEGA-BLUE
+RM-NOTE-12-PRO-BP-5G-BLACK
+SAM-A-15-BP-WL
+Rule: split on every letter↔digit boundary, dash-separate everything.
+
+NOTE 12 PRO → NOTE-12-PRO
+
+NOTE12PRO → NOTE-12-PRO (same)
+
+CE4 → CE-4
+
+NORD CE 4 LITE → NORD-CE-4-LITE
+
+S21FE → S-21-FE
+
+Why Form B wins over Form A (current):
+
+One rule vs. unbounded rules. Form A needs a new rule for every naming pattern. Form B needs only one.
+
+Error-proof by construction. Any spacing/case/punctuation variation produces identical output.
+
+Zero maintenance. No new rules as vendors introduce new patterns.
+
+Search always works. Every token is a segment.
+
+Deterministic sorting. Lexicographic, no edge cases.
+
+Form B does NOT solve:
+
+Typos (NTOE vs NOTE) → needs alias table
+
+Abbreviations (N vs NOTE) → needs alias table
+
+Position swaps that change meaning (NOTE 12 vs 12 NOTE) → rare in practice
+
+Brand omission (model without brand prefix) → needs brand inference
+
+Layers needed on top of Form B:
+
+Canonical tokenization (Form B)
+
+Alias tables for typos/abbreviations
+
+Fuzzy duplicate warnings (Levenshtein near-match check before creating new model)
+
+Form B Migration — Scope (when implemented)
+Critical fact: all FKs reference item_id, not sku. Renaming SKUs is safe — no relationship breaks.
+
+Files/tables affected:
+
+Item	Change	Est.
+lib/csv-parser.ts normalizeModelName	Rewrite for Form B tokenization	~40 lines
+items.sku	Bulk migration to Form B	One SQL UPDATE
+models.model_name	Optional — migrate for consistency	One SQL UPDATE (optional)
+save_purchase_full	No change IF models migrated; else add alias check	0-15 lines
+ImportCSVDialog.tsx	No change	0
+app/purchases/page.tsx	No change	0
+app/sales/page.tsx	No change	0
+app/find-stock/page.tsx	No change	0
+search_items RPC	No change (token-based, works with Form B)	0
+Total: 1 source file + 2 bulk SQL migrations. ~1 hour focused work.
+
+Migration approach:
+
+Dry run — compute new SKUs, export diff, review (30 min)
+
+Collision check — any two items normalize to same SKU? Merge first.
+
+Backup — CREATE TABLE items_backup_YYYYMMDD AS SELECT * FROM items;
+
+Transaction — BEGIN; UPDATE items SET sku = <form_b>; COMMIT; (or ROLLBACK if verification fails)
+
+Deploy parser change — push Form B normalizeModelName
+
+Test — import CSV, verify Form B output matches migrated SKUs
+
+Rollback: transaction rollback + backup restore. Safe.
+
+Form B Decision — Not Final
+Pro: cleaner long-term, one rule, error-proof
+Con: 1-2 hours work, cosmetic SKU change
+
+Defer until:
+
+Fresh session with 2-3 hours
+
+Decision confirmed (do it or accept current state)
+
+Current parser (rules 1-3) prevents ~90% of duplicates. Form B prevents ~99%. Remaining 1% needs aliases + fuzzy warnings

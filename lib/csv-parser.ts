@@ -1,8 +1,7 @@
 // lib/csv-parser.ts
-// v27 — SKU rule enforced:
-//       BRAND - MODEL - [YEAR] - PART - [NETWORK] - [FLAG] - [VARIANT] - [COLOR] - [QUALITY]
-//       Year before part. Network and flag before variant.
-//       Also includes v26 fix: PRO+ → PRO PLUS.
+// v28 — Move part-code stripping BEFORE spacing-collapse rules to prevent
+//       part codes (CG, BP, etc.) being fused into model names.
+//       Includes v27 spacing rules and v26 PRO+ fix.
 
 export type Quality =
   | 'Normal'
@@ -31,9 +30,7 @@ export type ParsedRow = {
   matchedItemSku: string | null
   status: 'matched' | 'new' | 'error'
   errorMessage?: string
-  /** True if this row came from the general-items parser */
   is_general_item?: boolean
-  /** Category code for general items (TOOL, CLEANING, OTHER, SPRAY) */
   category_code?: string | null
 }
 
@@ -666,6 +663,11 @@ function extractBrandAndModel(
   return { brandCode, modelName: modelWords.join(' ') || null, network }
 }
 
+// ============================================================
+// v28: Part-code stripping moved BEFORE spacing-collapse rules.
+// Previously, "NOTE 10 CG" would collapse to "NOTE 10CG" (rule 2)
+// before part-strip could remove "CG", leaving CG stuck in model name.
+// ============================================================
 function normalizeModelName(model: string | null): { model: string | null; strippedPart: string | null } {
   if (!model) return { model: null, strippedPart: null }
 
@@ -676,37 +678,44 @@ function normalizeModelName(model: string | null): { model: string | null; strip
     .replace(/[^A-Z0-9+\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  // Collapse 1-2 letter prefix + space + digit → no space
-  // NORD CE 2 → NORD CE2, A 15 → A15, Y 21 → Y21
-  // Does NOT affect NOTE 12, REDMI 12 (multi-letter words keep their space)
-  cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, '$1$2')
-  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2')
-  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
+
   if (!cleaned) return { model: null, strippedPart: null }
+
+  // v28: strip trailing part code FIRST, before spacing rules can fuse it
+  let strippedPart: string | null = null
+  const wordsBeforeRules = cleaned.split(/\s+/)
+  if (wordsBeforeRules.length > 1) {
+    const lastWord = wordsBeforeRules[wordsBeforeRules.length - 1]
+    if (PART_CODE_TOKENS.has(lastWord)) {
+      strippedPart = lastWord
+      wordsBeforeRules.pop()
+      cleaned = wordsBeforeRules.join(' ')
+    }
+  }
+
+  if (!cleaned) return { model: null, strippedPart }
 
   const MARKER_BEFORE_DIGIT = /\b(FLEX|SET|WITH|OG|ORI|ORIG|ORIGINAL|ORG|CARE|CHINA|100|%|BP|BK|FH|MF|MFF|LCD|SPK|SPKF|SPKJ|RB|CAM|CG|CL|ST|MIC|VIB|ANT)\s+\d$/i
   if (MARKER_BEFORE_DIGIT.test(cleaned)) {
     cleaned = cleaned.replace(/\s+\d$/, '').trim()
   }
 
-  if (!cleaned) return { model: null, strippedPart: null }
+  if (!cleaned) return { model: null, strippedPart }
+
+  // Spacing collapse rules (v27)
+  cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, '$1$2')
+  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2')
+  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
+
+  if (!cleaned) return { model: null, strippedPart }
 
   cleaned = cleaned.replace(TRAILING_QUALITY_REGEX, '').trim()
-  if (!cleaned) return { model: null, strippedPart: null }
+  if (!cleaned) return { model: null, strippedPart }
 
   cleaned = cleaned.replace(/\s+(SMALL|BIG|MEDIUM|BIGSIZE|SMALLSIZE|MEDIUMSIZE|\d{1,3}\s*MM|\d{1,2}\s*PIN)\s*$/i, '').trim()
-  if (!cleaned) return { model: null, strippedPart: null }
+  if (!cleaned) return { model: null, strippedPart }
 
-  const words = cleaned.split(/\s+/)
-  let strippedPart: string | null = null
-  if (words.length > 1) {
-    const lastWord = words[words.length - 1]
-    if (PART_CODE_TOKENS.has(lastWord)) {
-      strippedPart = lastWord
-      words.pop()
-      cleaned = words.join(' ')
-    }
-  }
+  // v28: no second part-strip — already done above
 
   if (!cleaned) return { model: null, strippedPart }
   const finalWords = cleaned.split(/\s+/)
@@ -913,7 +922,6 @@ export function parseCSV(
       if (rawDescription) {
         const normalized = normalizeTypos(rawDescription)
 
-        // v24: leading N PIN detection
         const leadingPinMatch = normalized.toUpperCase().match(/^(\d{1,2})\s*PIN\b/)
         if (leadingPinMatch) {
           sizeFromDesc = `${leadingPinMatch[1]}PIN`
@@ -942,7 +950,6 @@ export function parseCSV(
         if (cRes.size) variant = cRes.size
         else if (par.size) variant = par.size
 
-        // v24: combine leading N PIN + size word into one variant
         const sizeWordMatch = working.toUpperCase().match(/\b(SMALL|BIG|MEDIUM)\b/)
         if (sizeFromDesc && sizeWordMatch) {
           variant = `${sizeFromDesc}-${sizeWordMatch[1]}`
@@ -967,7 +974,6 @@ export function parseCSV(
           }
         }
 
-        // v24: catch unbracketed trailing color words (with alias)
         if (!color) {
           const trailingColorMatch = working.toUpperCase().match(/\s+(SILVAR|SILVER|GR|GRAY|GREY|BLACK|WHITE|BLU|GRN|GOLD)\s*$/i)
           if (trailingColorMatch) {
@@ -1045,7 +1051,6 @@ export function parseCSV(
 
         working = working.replace(/\s+/g, ' ').trim()
 
-        // v25-fix: re-run trailing color check AFTER part extraction
         if (!color) {
           const trailingColorMatch2 = working.toUpperCase().match(/(?:^|\s+)(SILVAR|SILVER|GR|GRAY|GREY|BLACK|WHITE|BLU|GRN|GOLD)\s*$/i)
           if (trailingColorMatch2) {
