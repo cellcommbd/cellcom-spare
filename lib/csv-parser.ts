@@ -263,6 +263,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bPANNEL\b/gi, 'PANEL')
     .replace(/\bPAANEL\b/gi, 'PANEL')
     .replace(/\bBORD\b/gi, 'BOARD')
+    .replace(/\bC\s*\/\s*C\b/gi, 'CC')
     .replace(/\bOUT\s+SIM\s+TRY\b/gi, 'OUT SIM TRAY')
     .replace(/\bSIM\s+TRY\b/gi, 'SIM TRAY')
     .replace(/\bHOUSIG\b/gi, 'HOUSING')
@@ -703,7 +704,10 @@ function normalizeModelName(model: string | null): { model: string | null; strip
   if (!cleaned) return { model: null, strippedPart }
 
   // Spacing collapse rules (v27)
-  cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, '$1$2')
+  cleaned = cleaned.replace(/\b([A-Z]{1,2})\s+(\d)/g, (match, letters, digits) => {
+    if (letters.toUpperCase() === 'TO') return match
+    return letters + digits
+  })
   cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2')
   cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
 
