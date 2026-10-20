@@ -1,48 +1,53 @@
 'use client'
 
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { supabase } from '../lib/supabase'
 import { getRole, Role } from '../lib/auth'
 import {
-  Wallet,
   ShoppingCart,
+  Search,
+  Wallet,
   Package,
   RotateCcw,
-  AlertTriangle,
-  Users,
   BarChart3,
-  ArrowRight,
+  Users,
+  ChevronRight,
+  Store,
   Receipt,
-  TrendingUp,
-  Calendar,
-  Search,
   Banknote,
+  X,
 } from 'lucide-react'
 
-type Range = { from: string; to: string }
+// ---------- Types ----------
+type Party = {
+  party_id: number
+  party_name: string
+  phone: string | null
+  party_type: 'Customer' | 'Supplier'
+  current_balance: number
+}
 
+type RecentSale = {
+  sale_id: number
+  party_id: number
+  bill_date: string
+  total_amount: number
+  status: string
+  party_name: string
+}
+
+type DebtorRow = {
+  party_id: number
+  party_name: string
+  phone: string | null
+  current_balance: number
+}
+
+// ---------- Helpers ----------
 function todayStr() {
   return new Date().toISOString().slice(0, 10)
-}
-
-function firstOfMonth() {
-  const d = new Date()
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`
-}
-
-function lastOfMonth() {
-  const d = new Date()
-  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0)
-  return last.toISOString().slice(0, 10)
-}
-
-function startOfWeek() {
-  const d = new Date()
-  const day = d.getDay()
-  const diff = d.getDate() - day
-  const start = new Date(d.setDate(diff))
-  return start.toISOString().slice(0, 10)
 }
 
 function greeting() {
@@ -52,799 +57,549 @@ function greeting() {
   return 'Good evening'
 }
 
+function money(n: number) {
+  return `₹ ${Number(n).toLocaleString('en-IN', {
+    maximumFractionDigits: 2,
+  })}`
+}
+
+// ---------- Component ----------
 export default function Home() {
+  const router = useRouter()
+
   const [role, setRole] = useState<Role>(null)
+  const [roleChecked, setRoleChecked] = useState(false)
+
+  // Today snapshot
+  const [todaySales, setTodaySales] = useState(0)
+  const [todayCashIn, setTodayCashIn] = useState(0)
+  const [todayPurchases, setTodayPurchases] = useState(0)
+  const [pendingKhata, setPendingKhata] = useState(0)
+
+  // Lists
+  const [recentSales, setRecentSales] = useState<RecentSale[]>([])
+  const [topDebtors, setTopDebtors] = useState<DebtorRow[]>([])
+
   const [loading, setLoading] = useState(true)
 
-  const [range, setRange] = useState<Range>({
-    from: firstOfMonth(),
-    to: lastOfMonth(),
-  })
-
-  const [sales, setSales] = useState(0)
-  const [salesCount, setSalesCount] = useState(0)
-  const [cogs, setCogs] = useState(0)
-  const [payments, setPayments] = useState(0)
-  const [returns, setReturns] = useState(0)
-  const [purchases, setPurchases] = useState(0)
-  const [losses, setLosses] = useState(0)
-  const [pendingKhata, setPendingKhata] = useState(0)
-  const [payablesTotal, setPayablesTotal] = useState(0)
-  const [lowStockCount, setLowStockCount] = useState(0)
-
-  // Today's snapshot
-  const [todaySales, setTodaySales] = useState(0)
-  const [todayPayments, setTodayPayments] = useState(0)
-  const [todayPurchases, setTodayPurchases] = useState(0)
-
-  const [topShops, setTopShops] = useState<any[]>([])
-  const [recentSales, setRecentSales] = useState<any[]>([])
-  const [recentPurchases, setRecentPurchases] = useState<any[]>([])
+  // Customer search
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState<Party[]>([])
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searching, setSearching] = useState(false)
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const searchWrapRef = useRef<HTMLDivElement>(null)
+  const searchInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     setRole(getRole())
+    setRoleChecked(true)
   }, [])
 
   useEffect(() => {
     loadAll()
-  }, [range.from, range.to])
+  }, [])
+
+  // Close search dropdown on outside click
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (
+        searchWrapRef.current &&
+        !searchWrapRef.current.contains(e.target as Node)
+      ) {
+        setSearchOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  // Debounced customer search
+  useEffect(() => {
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+
+    const q = searchQuery.trim()
+    if (q.length < 2) {
+      setSearchResults([])
+      setSearching(false)
+      return
+    }
+
+    setSearching(true)
+    searchDebounceRef.current = setTimeout(async () => {
+      const { data } = await supabase
+        .from('parties')
+        .select('party_id, party_name, phone, party_type, current_balance')
+        .eq('party_type', 'Customer')
+        .ilike('party_name', `%${q}%`)
+        .order('party_name')
+        .limit(8)
+
+      setSearchResults((data as Party[]) || [])
+      setSearching(false)
+      setSearchOpen(true)
+    }, 250)
+
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
+    }
+  }, [searchQuery])
 
   async function loadAll() {
     setLoading(true)
-    await Promise.all([loadStats(), loadToday(), loadLists()])
+    await Promise.all([loadToday(), loadRecentSales(), loadTopDebtors()])
     setLoading(false)
-  }
-
-  async function loadStats() {
-    const { from, to } = range
-
-    const [
-      salesRes,
-      saleItemsRes,
-      paymentsRes,
-      returnsRes,
-      purchasesRes,
-      lossesRes,
-      partiesRes,
-      suppliersRes,
-      itemsRes,
-    ] = await Promise.all([
-      supabase
-        .from('sales')
-        .select('total_amount')
-        .gte('bill_date', from)
-        .lte('bill_date', to),
-      supabase
-        .from('sale_items')
-        .select('quantity, cost_at_sale, sale_id, sales!inner(bill_date)')
-        .gte('sales.bill_date', from)
-        .lte('sales.bill_date', to),
-      supabase
-        .from('payments')
-        .select('amount')
-        .gte('payment_date', from)
-        .lte('payment_date', to),
-      supabase
-        .from('returns')
-        .select('total_amount, return_type')
-        .gte('return_date', from)
-        .lte('return_date', to)
-        .eq('return_type', 'Sales'),
-      supabase
-        .from('purchases')
-        .select('total_amount')
-        .gte('purchase_date', from)
-        .lte('purchase_date', to),
-      supabase
-        .from('losses')
-        .select('total_amount')
-        .gte('loss_date', from)
-        .lte('loss_date', to),
-      supabase
-        .from('parties')
-        .select('current_balance')
-        .eq('party_type', 'Customer'),
-      supabase
-        .from('parties')
-        .select('current_balance')
-        .eq('party_type', 'Supplier'),
-      supabase
-        .from('items')
-        .select('current_stock, reorder_point')
-        .gt('reorder_point', 0),
-    ])
-
-    const s = (salesRes.data || []).reduce(
-      (a, r) => a + Number(r.total_amount),
-      0
-    )
-    setSales(s)
-    setSalesCount((salesRes.data || []).length)
-
-    const c = (saleItemsRes.data || []).reduce(
-      (a: number, r: any) =>
-        a + Number(r.quantity) * Number(r.cost_at_sale || 0),
-      0
-    )
-    setCogs(c)
-
-    setPayments(
-      (paymentsRes.data || []).reduce((a, r) => a + Number(r.amount), 0)
-    )
-    setReturns(
-      (returnsRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
-    )
-    setPurchases(
-      (purchasesRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
-    )
-    setLosses(
-      (lossesRes.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
-    )
-    setPendingKhata(
-      (partiesRes.data || []).reduce(
-        (a, r) => a + Number(r.current_balance),
-        0
-      )
-    )
-    setPayablesTotal(
-      (suppliersRes.data || []).reduce(
-        (a, r) => a + Number(r.current_balance),
-        0
-      )
-    )
-    setLowStockCount(
-      (itemsRes.data || []).filter(
-        (it) => it.current_stock <= it.reorder_point
-      ).length
-    )
   }
 
   async function loadToday() {
     const t = todayStr()
     const [s, p, pu] = await Promise.all([
-      supabase
-        .from('sales')
-        .select('total_amount')
-        .eq('bill_date', t),
-      supabase
-        .from('payments')
-        .select('amount')
-        .eq('payment_date', t),
-      supabase
-        .from('purchases')
-        .select('total_amount')
-        .eq('purchase_date', t),
+      supabase.from('sales').select('total_amount').eq('bill_date', t),
+      supabase.from('payments').select('amount').eq('payment_date', t),
+      supabase.from('purchases').select('total_amount').eq('purchase_date', t),
     ])
+
     setTodaySales(
       (s.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
-    setTodayPayments(
+    setTodayCashIn(
       (p.data || []).reduce((a, r) => a + Number(r.amount), 0)
     )
     setTodayPurchases(
       (pu.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
+
+    // Pending khata: sum of all customer balances
+    const { data: customers } = await supabase
+      .from('parties')
+      .select('current_balance')
+      .eq('party_type', 'Customer')
+
+    setPendingKhata(
+      (customers || []).reduce(
+        (a, r) => a + Number(r.current_balance || 0),
+        0
+      )
+    )
   }
 
-  async function loadLists() {
-    const { from, to } = range
+  async function loadRecentSales() {
+    const { data: salesData } = await supabase
+      .from('sales')
+      .select('sale_id, party_id, bill_date, total_amount, status')
+      .order('sale_id', { ascending: false })
+      .limit(5)
 
-    const [shopsRes, salesRes, purchasesRes] = await Promise.all([
-      supabase
-        .from('parties')
-        .select('party_id, party_name, current_balance')
-        .eq('party_type', 'Customer')
-        .order('current_balance', { ascending: false })
-        .limit(5),
-      supabase
-        .from('sales')
-        .select('sale_id, party_id, total_amount, status, bill_date')
-        .gte('bill_date', from)
-        .lte('bill_date', to)
-        .order('sale_id', { ascending: false })
-        .limit(6),
-      supabase
-        .from('purchases')
-        .select('purchase_id, party_id, invoice_no, total_amount, purchase_date')
-        .gte('purchase_date', from)
-        .lte('purchase_date', to)
-        .order('purchase_id', { ascending: false })
-        .limit(6),
-    ])
-
-    setTopShops(shopsRes.data || [])
-
-    const salesRows = salesRes.data || []
-    const purchaseRows = purchasesRes.data || []
+    const rows = (salesData || []) as any[]
     const partyIds = Array.from(
-      new Set([
-        ...salesRows.map((r) => r.party_id),
-        ...purchaseRows.map((r) => r.party_id),
-      ])
-    ).filter(Boolean)
+      new Set(rows.map((r) => r.party_id).filter(Boolean))
+    )
 
     let partyMap: Record<number, string> = {}
     if (partyIds.length > 0) {
-      const { data: pdata } = await supabase
+      const { data: partyRows } = await supabase
         .from('parties')
         .select('party_id, party_name')
         .in('party_id', partyIds as number[])
-      for (const p of pdata || []) partyMap[p.party_id] = p.party_name
+      for (const p of partyRows || []) partyMap[p.party_id] = p.party_name
     }
 
     setRecentSales(
-      salesRows.map((b) => ({
-        ...b,
-        party_name: partyMap[b.party_id] || '—',
-      }))
-    )
-    setRecentPurchases(
-      purchaseRows.map((p) => ({
-        ...p,
-        party_name: partyMap[p.party_id] || '—',
+      rows.map((r) => ({
+        sale_id: r.sale_id,
+        party_id: r.party_id,
+        bill_date: r.bill_date,
+        total_amount: Number(r.total_amount),
+        status: r.status,
+        party_name: partyMap[r.party_id] || '—',
       }))
     )
   }
 
-  const money = (n: number) =>
-    `₹ ${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`
+  async function loadTopDebtors() {
+    const { data } = await supabase
+      .from('parties')
+      .select('party_id, party_name, phone, current_balance')
+      .eq('party_type', 'Customer')
+      .gt('current_balance', 0)
+      .order('current_balance', { ascending: false })
+      .limit(10)
 
-  const grossProfit = sales - cogs
-  const profitMargin = sales > 0 ? (grossProfit / sales) * 100 : 0
+    setTopDebtors((data as DebtorRow[]) || [])
+  }
 
-  const setRangeTo = (mode: 'today' | 'week' | 'month') => {
-    if (mode === 'today') {
-      const t = todayStr()
-      setRange({ from: t, to: t })
-    } else if (mode === 'week') {
-      setRange({ from: startOfWeek(), to: todayStr() })
-    } else {
-      setRange({ from: firstOfMonth(), to: lastOfMonth() })
-    }
+  function goToParty(partyId: number) {
+    router.push(`/parties/${partyId}`)
+  }
+
+  function clearSearch() {
+    setSearchQuery('')
+    setSearchResults([])
+    setSearchOpen(false)
+    searchInputRef.current?.focus()
   }
 
   const isOwner = role === 'owner'
 
-  const rangeLabel = useMemo(() => {
-    if (range.from === range.to) {
-      return new Date(range.from).toLocaleDateString('en-IN', {
-        day: 'numeric',
-        month: 'short',
-      })
-    }
-    const f = new Date(range.from).toLocaleDateString('en-IN', {
+  const dateLabel = useMemo(() => {
+    return new Date().toLocaleDateString('en-IN', {
+      weekday: 'long',
       day: 'numeric',
-      month: 'short',
+      month: 'long',
+      year: 'numeric',
     })
-    const t = new Date(range.to).toLocaleDateString('en-IN', {
-      day: 'numeric',
-      month: 'short',
-    })
-    return `${f} – ${t}`
-  }, [range.from, range.to])
-
-  if (loading && role === null) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="text-slate-400 text-sm">Loading dashboard...</div>
-      </div>
-    )
-  }
-
+  }, [])
+    // ============ RENDER ============
   return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-7xl mx-auto">
+    <div className="min-h-screen bg-slate-50 p-3 sm:p-6 lg:p-8">
+      <div className="max-w-4xl mx-auto">
 
-        {/* HEADER */}
-        <div className="mb-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-slate-800">
-              {greeting()}
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-500 mt-1">
-              {new Date().toLocaleDateString('en-IN', {
-                weekday: 'long',
-                day: 'numeric',
-                month: 'long',
-                year: 'numeric',
-              })}
-            </p>
-          </div>
-          <div className="sm:text-right">
-            <div className="text-xs text-slate-500 mb-0.5">Signed in as</div>
-            <div className="text-sm font-semibold text-slate-800">
-              {isOwner ? 'Owner' : 'Staff'}
-            </div>
-          </div>
+        {/* Header */}
+        <div className="mb-4 sm:mb-6">
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900">
+            {greeting()}
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
+            {dateLabel}
+          </p>
         </div>
 
-        {/* TODAY AT A GLANCE — Owner only */}
-        {isOwner && (
-          <div className="mb-6 bg-gradient-to-r from-indigo-600 to-indigo-500 rounded-xl p-4 sm:p-5 shadow-sm">
-            <div className="flex items-center gap-2 text-white/80 text-xs font-medium uppercase tracking-wide mb-3">
-              <Banknote className="w-4 h-4" />
-              Today at a glance
-            </div>
-            <div className="grid grid-cols-3 gap-3 sm:gap-6">
-              <div>
-                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
-                  Sales
-                </div>
-                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
-                  {money(todaySales)}
-                </div>
-              </div>
-              <div className="border-l border-white/20 pl-3 sm:pl-6">
-                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
-                  Cash In
-                </div>
-                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
-                  {money(todayPayments)}
-                </div>
-              </div>
-              <div className="border-l border-white/20 pl-3 sm:pl-6">
-                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
-                  Purchases
-                </div>
-                <div className="text-base sm:text-2xl font-bold text-white mt-0.5">
-                  {money(todayPurchases)}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* DATE RANGE BAR */}
-        <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-            <div className="flex items-center gap-2 text-slate-700 shrink-0">
-              <Calendar className="w-4 h-4 text-slate-500" />
-              <span className="text-sm font-medium">Date range</span>
-            </div>
-
-            <div className="flex items-center gap-2 flex-1">
-              <input
-                type="date"
-                value={range.from}
-                onChange={(e) =>
-                  setRange((r) => ({ ...r, from: e.target.value }))
-                }
-                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <span className="text-slate-400 text-sm">to</span>
-              <input
-                type="date"
-                value={range.to}
-                onChange={(e) =>
-                  setRange((r) => ({ ...r, to: e.target.value }))
-                }
-                className="h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div className="flex items-center gap-1.5">
+        {/* CUSTOMER SEARCH */}
+        <div className="mb-4 sm:mb-5 relative" ref={searchWrapRef}>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onFocus={() => {
+                if (searchResults.length > 0) setSearchOpen(true)
+              }}
+              placeholder="Search customer by name or phone…"
+              className="w-full h-12 pl-10 pr-10 text-base border border-slate-300 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm"
+              autoComplete="off"
+            />
+            {searchQuery && (
               <button
-                onClick={() => setRangeTo('today')}
-                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
+                onClick={clearSearch}
+                className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 flex items-center justify-center text-slate-400 hover:text-slate-700 rounded"
+                aria-label="Clear search"
               >
-                Today
+                <X className="w-4 h-4" />
               </button>
-              <button
-                onClick={() => setRangeTo('week')}
-                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
-              >
-                Week
-              </button>
-              <button
-                onClick={() => setRangeTo('month')}
-                className="h-9 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
-              >
-                Month
-              </button>
-            </div>
+            )}
           </div>
-          <div className="text-xs text-slate-500 mt-2">
-            Showing <strong className="text-slate-700">{rangeLabel}</strong>
-          </div>
-        </div>
 
-        {/* MAIN STAT CARDS */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 mb-6">
-          <StatCard
-            label="Sales"
-            value={money(sales)}
-            sub={`${salesCount} bill${salesCount === 1 ? '' : 's'}`}
-            icon={<ShoppingCart className="w-5 h-5" />}
-            color="indigo"
-          />
-          <StatCard
-            label="Payments Collected"
-            value={money(payments)}
-            sub="Cash + UPI received"
-            icon={<Wallet className="w-5 h-5" />}
-            color="emerald"
-          />
-          {isOwner ? (
-            <>
-              <StatCard
-                label="Purchases"
-                value={money(purchases)}
-                sub="Stock bought"
-                icon={<Package className="w-5 h-5" />}
-                color="rose"
-              />
-              <StatCard
-                label="Gross Profit"
-                value={money(grossProfit)}
-                sub={
-                  sales > 0
-                    ? `${profitMargin.toFixed(1)}% margin`
-                    : 'No sales in range'
-                }
-                icon={<TrendingUp className="w-5 h-5" />}
-                color={grossProfit >= 0 ? 'emerald' : 'rose'}
-              />
-            </>
-          ) : (
-            <>
-              <StatCard
-                label="Returns"
-                value={money(returns)}
-                sub="Items returned"
-                icon={<RotateCcw className="w-5 h-5" />}
-                color="amber"
-              />
-              <StatCard
-                label="Pending Khata"
-                value={money(pendingKhata)}
-                sub="Total outstanding"
-                icon={<Users className="w-5 h-5" />}
-                color="rose"
-              />
-            </>
+          {/* Search results dropdown */}
+          {searchOpen && searchQuery.trim().length >= 2 && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 max-h-80 overflow-y-auto">
+              {searching ? (
+                <div className="px-4 py-3 text-sm text-slate-400">
+                  Searching…
+                </div>
+              ) : searchResults.length === 0 ? (
+                <div className="px-4 py-3 text-sm text-slate-400">
+                  No customers match "{searchQuery}".
+                </div>
+              ) : (
+                searchResults.map((p) => {
+                  const bal = Number(p.current_balance || 0)
+                  return (
+                    <button
+                      key={p.party_id}
+                      onClick={() => {
+                        clearSearch()
+                        goToParty(p.party_id)
+                      }}
+                      className="w-full px-4 py-3 text-left flex items-center gap-3 hover:bg-slate-50 border-b border-slate-100 last:border-b-0"
+                    >
+                      <div className="w-9 h-9 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center shrink-0">
+                        <Store className="w-4 h-4" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-900 truncate">
+                          {p.party_name}
+                        </div>
+                        <div className="text-xs text-slate-500 truncate">
+                          {p.phone || 'No phone'}
+                        </div>
+                      </div>
+                      <div
+                        className={`text-sm font-bold shrink-0 ${
+                          bal > 0
+                            ? 'text-rose-600'
+                            : bal < 0
+                            ? 'text-emerald-600'
+                            : 'text-slate-400'
+                        }`}
+                      >
+                        {bal > 0 ? money(bal) : bal < 0 ? money(bal) : '₹0'}
+                      </div>
+                      <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                    </button>
+                  )
+                })
+              )}
+            </div>
           )}
         </div>
 
-        {/* MINI STATS (Owner only) */}
-        {isOwner && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-            <MiniStat
-              label="Customer Khata"
-              value={money(pendingKhata)}
-              icon={<Users className="w-4 h-4" />}
-              tone="rose"
-            />
-            <MiniStat
-              label="Supplier Payable"
-              value={money(payablesTotal)}
-              icon={<Banknote className="w-4 h-4" />}
-              tone="rose"
-            />
-            <MiniStat
-              label="Losses"
-              value={money(losses)}
-              icon={<AlertTriangle className="w-4 h-4" />}
-              tone={losses > 0 ? 'amber' : 'slate'}
-            />
-            <MiniStat
-              label="Low Stock Items"
-              value={lowStockCount.toString()}
-              icon={<AlertTriangle className="w-4 h-4" />}
-              tone={lowStockCount > 0 ? 'amber' : 'slate'}
-            />
+        {/* TODAY AT A GLANCE */}
+        <div className="bg-gradient-to-r from-indigo-600 to-indigo-500 rounded-2xl p-4 sm:p-5 shadow-sm mb-5 text-white">
+          <div className="flex items-center gap-2 text-white/80 text-xs font-medium uppercase tracking-wide mb-3">
+            <Banknote className="w-4 h-4" />
+            Today at a glance
           </div>
-        )}
-
-        {/* LISTS */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-6">
-          <SectionCard
-            title="Top Shops by Balance"
-            icon={<Users className="w-4 h-4" />}
-            action={{ label: 'View all', href: '/parties' }}
+          <div
+            className={`grid ${
+              isOwner ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+            } gap-3 sm:gap-4`}
           >
-            {topShops.length === 0 ? (
-              <EmptyState text="No shops yet." />
-            ) : (
-              <div>
-                {topShops.map((s, i) => (
-                  <div
-                    key={s.party_id}
-                    className={`flex items-center justify-between py-3 gap-2 ${
-                      i !== topShops.length - 1
-                        ? 'border-b border-slate-100'
-                        : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-xs font-semibold text-slate-600 shrink-0">
-                        {i + 1}
-                      </div>
-                      <div className="text-sm font-medium text-slate-800 truncate">
-                        {s.party_name}
-                      </div>
-                    </div>
-                    <div className="text-sm font-semibold text-rose-600 shrink-0">
-                      {money(s.current_balance)}
-                    </div>
-                  </div>
-                ))}
+            <div>
+              <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                Sales
+              </div>
+              <div className="text-base sm:text-xl font-bold mt-0.5">
+                {money(todaySales)}
+              </div>
+            </div>
+            <div className="sm:border-l border-white/20 sm:pl-4">
+              <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                Cash In
+              </div>
+              <div className="text-base sm:text-xl font-bold mt-0.5">
+                {money(todayCashIn)}
+              </div>
+            </div>
+            <div className="sm:border-l border-white/20 sm:pl-4">
+              <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                Pending Khata
+              </div>
+              <div className="text-base sm:text-xl font-bold mt-0.5">
+                {money(pendingKhata)}
+              </div>
+            </div>
+            {isOwner && (
+              <div className="border-l border-white/20 pl-4">
+                <div className="text-[10px] sm:text-xs text-white/70 uppercase tracking-wide">
+                  Purchases
+                </div>
+                <div className="text-base sm:text-xl font-bold mt-0.5">
+                  {money(todayPurchases)}
+                </div>
               </div>
             )}
-          </SectionCard>
-
-          <SectionCard
-            title="Recent Sales"
-            icon={<Receipt className="w-4 h-4" />}
-            action={{ label: 'Go to Sales', href: '/sales' }}
-          >
-            {recentSales.length === 0 ? (
-              <EmptyState text="No sales in this range." />
-            ) : (
-              <div>
-                {recentSales.map((b, i) => (
-                  <div
-                    key={b.sale_id}
-                    className={`flex items-center justify-between py-3 gap-2 ${
-                      i !== recentSales.length - 1
-                        ? 'border-b border-slate-100'
-                        : ''
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                      <div className="text-xs text-slate-400 w-10 shrink-0">
-                        #{b.sale_id}
-                      </div>
-                      <div className="text-sm font-medium text-slate-800 truncate">
-                        {b.party_name}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <StatusPill status={b.status} />
-                      <div className="text-sm font-semibold text-slate-800">
-                        {money(b.total_amount)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </SectionCard>
+          </div>
         </div>
 
-        {/* RECENT PURCHASES — Owner only */}
-        {isOwner && (
-          <div className="mb-6">
-            <SectionCard
-              title="Recent Purchases"
-              icon={<Package className="w-4 h-4" />}
-              action={{ label: 'Go to Purchases', href: '/purchases' }}
-            >
-              {recentPurchases.length === 0 ? (
-                <EmptyState text="No purchases in this range." />
-              ) : (
-                <div>
-                  {recentPurchases.map((p, i) => (
-                    <div
-                      key={p.purchase_id}
-                      className={`flex items-center justify-between py-3 gap-2 ${
-                        i !== recentPurchases.length - 1
-                          ? 'border-b border-slate-100'
-                          : ''
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                        <div className="text-xs text-slate-400 w-10 shrink-0">
-                          #{p.purchase_id}
-                        </div>
-                        <div className="text-sm font-medium text-slate-800 truncate">
-                          {p.party_name}
-                        </div>
-                        <div className="text-xs text-slate-400 hidden sm:block">
-                          {p.invoice_no}
-                        </div>
-                      </div>
-                      <div className="text-sm font-semibold text-slate-800 shrink-0">
-                        {money(p.total_amount)}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </SectionCard>
-          </div>
-        )}
-
         {/* QUICK ACTIONS */}
-        <div>
-          <h2 className="text-xs sm:text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">
+        <div className="mb-5">
+          <h2 className="text-xs sm:text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
             Quick Actions
           </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
             <ActionTile
               href="/sales"
               label="Sales"
-              icon={<ShoppingCart />}
-              color="indigo"
-            />
-            <ActionTile
-              href="/find-stock"
-              label="Find Stock"
-              icon={<Search />}
-              color="indigo"
-            />
-            <ActionTile
-              href="/purchases"
-              label="Purchases"
-              icon={<Package />}
+              Icon={ShoppingCart}
               color="indigo"
             />
             <ActionTile
               href="/payments"
               label="Payments"
-              icon={<Wallet />}
+              Icon={Wallet}
               color="emerald"
             />
             <ActionTile
+              href="/find-stock"
+              label="Find Stock"
+              Icon={Search}
+              color="blue"
+            />
+            <ActionTile
+              href="/purchases"
+              label="Purchases"
+              Icon={Package}
+              color="slate"
+            />
+            <ActionTile
               href="/returns"
-              label="Sales Returns"
-              icon={<RotateCcw />}
+              label="Returns"
+              Icon={RotateCcw}
               color="amber"
             />
             <ActionTile
               href="/reports"
               label="Reports"
-              icon={<BarChart3 />}
-              color="slate"
+              Icon={BarChart3}
+              color="purple"
             />
           </div>
         </div>
 
+        {/* RECENT SALES */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mb-5">
+          <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-slate-500" />
+              <span className="text-sm font-semibold text-slate-700">
+                Recent Sales
+              </span>
+            </div>
+            <Link
+              href="/sales"
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+            >
+              View all
+              <ChevronRight className="w-3 h-3" />
+            </Link>
+          </div>
+
+          {loading ? (
+            <div className="px-4 py-6 text-center text-sm text-slate-400">
+              Loading…
+            </div>
+          ) : recentSales.length === 0 ? (
+            <div className="px-4 py-8 text-center text-sm text-slate-400">
+              No sales yet.
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {recentSales.map((s) => (
+                <button
+                  key={s.sale_id}
+                  onClick={() => goToParty(s.party_id)}
+                  className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-slate-50"
+                >
+                  <div className="text-xs text-slate-400 w-12 shrink-0">
+                    #{s.sale_id}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900 truncate">
+                      {s.party_name}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
+                      <span>{s.bill_date}</span>
+                      <StatusPill status={s.status} />
+                    </div>
+                  </div>
+                  <div className="text-sm font-semibold text-slate-900 shrink-0">
+                    {money(s.total_amount)}
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* TOP DEBTORS */}
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="w-4 h-4 text-slate-500" />
+              <span className="text-sm font-semibold text-slate-700">
+                Top Debtors
+              </span>
+            </div>
+            <Link
+              href="/parties"
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+            >
+              All parties
+              <ChevronRight className="w-3 h-3" />
+            </Link>
+          </div>
+
+          {loading ? (
+            <div className="px-4 py-6 text-center text-sm text-slate-400">
+              Loading…
+            </div>
+          ) : topDebtors.length === 0 ? (
+            <div className="px-4 py-8 text-center">
+              <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+              <div className="text-sm font-medium text-slate-600">
+                No pending khata.
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Everyone's settled up.
+              </div>
+            </div>
+          ) : (
+            <div className="divide-y divide-slate-100">
+              {topDebtors.map((d) => (
+                <div
+                  key={d.party_id}
+                  className="px-4 py-3 flex items-center gap-3"
+                >
+                  <div className="w-9 h-9 rounded-lg bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                    <Store className="w-4 h-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-slate-900 truncate">
+                      {d.party_name}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      {d.phone || 'No phone'}
+                    </div>
+                  </div>
+                  <div className="text-sm font-bold text-rose-700 shrink-0">
+                    {money(d.current_balance)}
+                  </div>
+                  <button
+                    onClick={() => goToParty(d.party_id)}
+                    className="h-9 px-3 text-xs font-semibold text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 flex items-center gap-1 shrink-0"
+                  >
+                    Open
+                    <ChevronRight className="w-3 h-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
       </div>
     </div>
   )
 }
 
-// ============================================================
-// SUB-COMPONENTS
-// ============================================================
-
-type Tone =
-  | 'indigo'
-  | 'emerald'
-  | 'rose'
-  | 'amber'
-  | 'purple'
-  | 'slate'
-
-function StatCard({
+// ---------- Sub-components ----------
+function ActionTile({
+  href,
   label,
-  value,
-  sub,
-  icon,
+  Icon,
   color,
 }: {
+  href: string
   label: string
-  value: string
-  sub?: string
-  icon: React.ReactNode
-  color: Tone
+  Icon: any
+  color: 'indigo' | 'emerald' | 'blue' | 'slate' | 'amber' | 'purple'
 }) {
-  const themes: Record<Tone, { bg: string; text: string; iconBg: string }> = {
-    indigo: {
-      bg: 'from-indigo-50 to-white border-indigo-100',
-      text: 'text-indigo-700',
-      iconBg: 'bg-indigo-100 text-indigo-600',
-    },
-    emerald: {
-      bg: 'from-emerald-50 to-white border-emerald-100',
-      text: 'text-emerald-700',
-      iconBg: 'bg-emerald-100 text-emerald-600',
-    },
-    rose: {
-      bg: 'from-rose-50 to-white border-rose-100',
-      text: 'text-rose-700',
-      iconBg: 'bg-rose-100 text-rose-600',
-    },
-    amber: {
-      bg: 'from-amber-50 to-white border-amber-100',
-      text: 'text-amber-700',
-      iconBg: 'bg-amber-100 text-amber-600',
-    },
-    purple: {
-      bg: 'from-purple-50 to-white border-purple-100',
-      text: 'text-purple-700',
-      iconBg: 'bg-purple-100 text-purple-600',
-    },
-    slate: {
-      bg: 'from-slate-50 to-white border-slate-200',
-      text: 'text-slate-700',
-      iconBg: 'bg-slate-100 text-slate-600',
-    },
+  const themes: Record<typeof color, { bg: string; text: string }> = {
+    indigo: { bg: 'bg-indigo-50 hover:bg-indigo-100', text: 'text-indigo-600' },
+    emerald: { bg: 'bg-emerald-50 hover:bg-emerald-100', text: 'text-emerald-600' },
+    blue: { bg: 'bg-blue-50 hover:bg-blue-100', text: 'text-blue-600' },
+    slate: { bg: 'bg-slate-100 hover:bg-slate-200', text: 'text-slate-600' },
+    amber: { bg: 'bg-amber-50 hover:bg-amber-100', text: 'text-amber-600' },
+    purple: { bg: 'bg-purple-50 hover:bg-purple-100', text: 'text-purple-600' },
   }
   const t = themes[color]
   return (
-    <div
-      className={`bg-gradient-to-br ${t.bg} border rounded-xl p-4 sm:p-5 shadow-sm hover:shadow-md transition-shadow`}
+    <Link
+      href={href}
+      className="group bg-white rounded-xl border border-slate-200 p-3 sm:p-4 flex flex-col items-center gap-2 hover:border-slate-300 hover:shadow-md transition-all min-h-[88px]"
     >
-      <div className="flex items-center justify-between mb-2 sm:mb-3">
-        <div className="text-[10px] sm:text-xs font-medium text-slate-500 uppercase tracking-wide">
-          {label}
-        </div>
-        <div className={`p-1.5 rounded-lg ${t.iconBg}`}>{icon}</div>
+      <div
+        className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${t.bg} ${t.text}`}
+      >
+        <Icon className="w-5 h-5" />
       </div>
-      <div className={`text-xl sm:text-2xl font-bold ${t.text}`}>{value}</div>
-      {sub && (
-        <div className="text-[10px] sm:text-xs text-slate-400 mt-1">{sub}</div>
-      )}
-    </div>
-  )
-}
-
-function MiniStat({
-  label,
-  value,
-  icon,
-  tone,
-}: {
-  label: string
-  value: string
-  icon: React.ReactNode
-  tone: Tone
-}) {
-  const tones: Record<Tone, { bg: string; text: string }> = {
-    indigo: { bg: 'bg-indigo-100', text: 'text-indigo-600' },
-    emerald: { bg: 'bg-emerald-100', text: 'text-emerald-600' },
-    rose: { bg: 'bg-rose-100', text: 'text-rose-600' },
-    amber: { bg: 'bg-amber-100', text: 'text-amber-600' },
-    purple: { bg: 'bg-purple-100', text: 'text-purple-600' },
-    slate: { bg: 'bg-slate-100', text: 'text-slate-600' },
-  }
-  const t = tones[tone]
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-      <div className={`p-2 rounded-lg ${t.bg} ${t.text}`}>{icon}</div>
-      <div className="flex-1 min-w-0">
-        <div className="text-xs text-slate-500">{label}</div>
-        <div className="text-base sm:text-lg font-bold text-slate-800">
-          {value}
-        </div>
+      <div className="text-xs font-medium text-slate-700 text-center leading-tight">
+        {label}
       </div>
-    </div>
-  )
-}
-
-function SectionCard({
-  title,
-  icon,
-  action,
-  children,
-}: {
-  title: string
-  icon: React.ReactNode
-  action?: { label: string; href: string }
-  children: React.ReactNode
-}) {
-  return (
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-      <div className="px-4 sm:px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="text-slate-500 shrink-0">{icon}</div>
-          <h2 className="text-xs sm:text-sm font-semibold text-slate-700 uppercase tracking-wide truncate">
-            {title}
-          </h2>
-        </div>
-        {action && (
-          <Link
-            href={action.href}
-            className="text-xs font-medium text-indigo-600 hover:text-indigo-800 flex items-center gap-1 shrink-0"
-          >
-            <span className="hidden sm:inline">{action.label}</span>
-            <ArrowRight className="w-3 h-3" />
-          </Link>
-        )}
-      </div>
-      <div className="px-4 sm:px-5 py-2">{children}</div>
-    </div>
+    </Link>
   )
 }
 
@@ -857,54 +612,9 @@ function StatusPill({ status }: { status: string }) {
       : 'bg-rose-100 text-rose-700'
   return (
     <span
-      className={`text-[10px] font-semibold px-1.5 sm:px-2 py-0.5 rounded-full uppercase tracking-wide whitespace-nowrap ${styles}`}
+      className={`inline-block text-[9px] font-semibold px-1.5 py-0.5 rounded-full uppercase tracking-wide ${styles}`}
     >
       {status}
     </span>
-  )
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="px-4 py-6 sm:py-8 text-center text-xs sm:text-sm text-slate-400">
-      {text}
-    </div>
-  )
-}
-
-function ActionTile({
-  href,
-  label,
-  icon,
-  color,
-}: {
-  href: string
-  label: string
-  icon: React.ReactNode
-  color: Tone
-}) {
-  const themes: Record<Tone, { bg: string; text: string }> = {
-    indigo: { bg: 'bg-indigo-50 group-hover:bg-indigo-100', text: 'text-indigo-600' },
-    emerald: { bg: 'bg-emerald-50 group-hover:bg-emerald-100', text: 'text-emerald-600' },
-    rose: { bg: 'bg-rose-50 group-hover:bg-rose-100', text: 'text-rose-600' },
-    amber: { bg: 'bg-amber-50 group-hover:bg-amber-100', text: 'text-amber-600' },
-    purple: { bg: 'bg-purple-50 group-hover:bg-purple-100', text: 'text-purple-600' },
-    slate: { bg: 'bg-slate-100 group-hover:bg-slate-200', text: 'text-slate-600' },
-  }
-  const t = themes[color]
-  return (
-    <Link
-      href={href}
-      className="group bg-white rounded-xl border border-slate-200 p-3 sm:p-4 flex flex-col items-center gap-2 hover:border-slate-300 hover:shadow-md transition-all"
-    >
-      <div
-        className={`w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${t.bg} ${t.text}`}
-      >
-        {icon}
-      </div>
-      <div className="text-xs font-medium text-slate-700 text-center leading-tight">
-        {label}
-      </div>
-    </Link>
   )
 }

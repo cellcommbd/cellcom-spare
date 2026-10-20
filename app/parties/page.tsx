@@ -39,7 +39,7 @@ export default function PartyEntry() {
   const nameRef = useRef<HTMLInputElement>(null)
 
   const [parties, setParties] = useState<Party[]>([])
-  const [filter, setFilter] = useState<Filter>('All')
+    const [filter, setFilter] = useState<Filter>('Customer')
   const [search, setSearch] = useState('')
 
   const [editingId, setEditingId] = useState<number | null>(null)

@@ -15,6 +15,7 @@ import {
   AlertTriangle,
   Package,
   CalendarClock,
+  Wallet,
 } from 'lucide-react'
 
 type ReportCard = {
@@ -68,7 +69,6 @@ const REPORTS: ReportCard[] = [
     Icon: DollarSign,
     color: 'green',
     ownerOnly: true,
-   
   },
   {
     href: '/reports/khata-aging',
@@ -78,17 +78,24 @@ const REPORTS: ReportCard[] = [
     Icon: Users,
     color: 'red',
     ownerOnly: true,
-   
   },
   {
-    href: '/reports/monthly-pnl',
-    title: 'Monthly P&L',
+    href: '/reports/expenses',
+    title: 'Expenses by Type',
     description:
-      'Sales − COGS − Expenses − Losses. The bottom line, per month.',
+      'Rent, staff wages, kitty, and bills — grouped by category with per-entry detail.',
+    Icon: Wallet,
+    color: 'amber',
+    ownerOnly: true,
+  },
+  {
+    href: '/reports/profit',
+    title: 'Profit Report',
+    description:
+      'Sales − COGS − Losses − Expenses. Gross and net profit for any date range.',
     Icon: BarChart3,
     color: 'indigo',
     ownerOnly: true,
-    
   },
   {
     href: '/reports/low-stock',
@@ -106,7 +113,6 @@ const REPORTS: ReportCard[] = [
     Icon: Package,
     color: 'slate',
     ownerOnly: true,
-    
   },
   {
     href: '/reports/recent-activity',
@@ -115,11 +121,9 @@ const REPORTS: ReportCard[] = [
       'Latest sales, purchases, payments, and returns in one list.',
     Icon: CalendarClock,
     color: 'blue',
-    
   },
 ]
 
-// Titles use 800 (darkened) shades for readability on white
 const COLOR_THEMES: Record<
   string,
   { bg: string; iconBg: string; iconText: string; titleText: string }
@@ -222,9 +226,7 @@ export default function ReportsIndex() {
                     <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-slate-600 transition-colors" />
                   )}
                 </div>
-                <h2
-                  className={`text-base font-bold mb-1 ${t.titleText}`}
-                >
+                <h2 className={`text-base font-bold mb-1 ${t.titleText}`}>
                   {r.title}
                 </h2>
                 <p className="text-xs text-slate-500 leading-relaxed">
