@@ -69,7 +69,10 @@ const DEFAULT_REASON = 'Wrong Item'
 // ---------- Component ----------
 export default function SalesReturnPage() {
   const [shops, setShops] = useState<Party[]>([])
-  const [items, setItems] = useState<Item[]>([])
+  // Item info for the CURRENT bill only — not the full items table.
+  // Loading all items hits PostgREST's 1000-row cap and truncates,
+  // which is why SKUs used to render as '—' for newer items.
+  const [itemsForBill, setItemsForBill] = useState<Item[]>([])
   const [shopSales, setShopSales] = useState<SaleHeader[]>([])
   const [selectedSaleItems, setSelectedSaleItems] = useState<SaleItem[]>([])
   const [todayReturns, setTodayReturns] = useState<any[]>([])
@@ -84,7 +87,9 @@ export default function SalesReturnPage() {
     new Date().toISOString().slice(0, 10)
   )
 
-  const [checkedItemIds, setCheckedItemIds] = useState<number[]>([])
+  // Keyed on detail_id — the unique sale line. item_id repeats across
+  // bills and across lines, so keying on it merged lines incorrectly.
+  const [checkedDetailIds, setCheckedDetailIds] = useState<number[]>([])
   const [rows, setRows] = useState<ReturnRow[]>([])
   const [nextRowId, setNextRowId] = useState(1)
 
@@ -98,13 +103,12 @@ export default function SalesReturnPage() {
 
   async function loadBase() {
     const today = new Date().toISOString().slice(0, 10)
-    const [s, i, r] = await Promise.all([
+    const [s, r] = await Promise.all([
       supabase
         .from('parties')
         .select('*')
         .eq('party_type', 'Customer')
         .order('party_name'),
-      supabase.from('items').select('item_id, sku, current_stock'),
       supabase
         .from('returns')
         .select('*')
@@ -113,8 +117,8 @@ export default function SalesReturnPage() {
         .order('return_id', { ascending: false }),
     ])
     setShops(s.data || [])
-    setItems(i.data || [])
     setTodayReturns(r.data || [])
+    // NOTE: deliberately NOT loading the full items table. See loadSaleItems.
   }
 
   // ---------- Load shop sales, auto-select latest ----------
@@ -124,8 +128,9 @@ export default function SalesReturnPage() {
       setShopSales([])
       setPickedSaleId(null)
       setSelectedSaleItems([])
-      setCheckedItemIds([])
+      setCheckedDetailIds([])
       setRows([])
+      setItemsForBill([])
     }
   }, [pickedShop.id])
 
@@ -136,7 +141,7 @@ export default function SalesReturnPage() {
       .eq('party_id', shopId)
       .order('bill_date', { ascending: false })
       .order('sale_id', { ascending: false })
-      .limit(30)
+      .limit(50)
     setShopSales(data || [])
     if (data && data.length > 0) {
       setPickedSaleId(data[0].sale_id)
@@ -150,8 +155,9 @@ export default function SalesReturnPage() {
     if (pickedSaleId) loadSaleItems(pickedSaleId)
     else {
       setSelectedSaleItems([])
-      setCheckedItemIds([])
+      setCheckedDetailIds([])
       setRows([])
+      setItemsForBill([])
     }
   }, [pickedSaleId])
 
@@ -160,25 +166,42 @@ export default function SalesReturnPage() {
       .from('sale_items')
       .select('*')
       .eq('sale_id', saleId)
-    setSelectedSaleItems(data || [])
-    setCheckedItemIds([])
+
+    const saleItems = (data || []) as SaleItem[]
+    setSelectedSaleItems(saleItems)
+    setCheckedDetailIds([])
     setRows([])
+
+    // Fetch SKUs only for items on this bill — avoids the 1000-row cap
+    // and keeps this query small regardless of catalog size.
+    const itemIds = Array.from(new Set(saleItems.map((si) => si.item_id)))
+    if (itemIds.length === 0) {
+      setItemsForBill([])
+      return
+    }
+
+    const { data: itemData } = await supabase
+      .from('items')
+      .select('item_id, sku, current_stock')
+      .in('item_id', itemIds)
+
+    setItemsForBill((itemData || []) as Item[])
   }
 
-  // ---------- Checkbox toggle ----------
+  // ---------- Checkbox toggle (keyed on detail_id) ----------
   function toggleChecked(si: SaleItem) {
     const alreadyReturned = si.returned_qty || 0
     const remaining = si.quantity - alreadyReturned
     if (remaining <= 0) return
 
-    const isChecked = checkedItemIds.includes(si.item_id)
-    const item = items.find((i) => i.item_id === si.item_id)
+    const isChecked = checkedDetailIds.includes(si.detail_id)
+    const item = itemsForBill.find((i) => i.item_id === si.item_id)
 
     if (isChecked) {
-      setCheckedItemIds((prev) => prev.filter((id) => id !== si.item_id))
-      setRows((prev) => prev.filter((r) => r.item_id !== si.item_id))
+      setCheckedDetailIds((prev) => prev.filter((d) => d !== si.detail_id))
+      setRows((prev) => prev.filter((r) => r.detail_id !== si.detail_id))
     } else {
-      setCheckedItemIds((prev) => [...prev, si.item_id])
+      setCheckedDetailIds((prev) => [...prev, si.detail_id])
       setRows((prev) => [
         ...prev,
         {
@@ -256,7 +279,7 @@ export default function SalesReturnPage() {
       return
     }
 
-    // 2. Update sale_items.returned_qty
+    // 2. Update sale_items.returned_qty (keyed on detail_id)
     for (const r of validRows) {
       const matchingSaleItem = selectedSaleItems.find(
         (si) => si.detail_id === r.detail_id
@@ -289,15 +312,11 @@ export default function SalesReturnPage() {
       `Saved return of ₹${totalReturnValue.toFixed(2)}. Shop balance reduced.`
     )
 
-    // Reset return rows but keep shop + bill selected
-    setCheckedItemIds([])
+    setCheckedDetailIds([])
     setRows([])
 
-    // Reload base data
     await loadBase()
 
-    // Reload bills AND the currently selected bill's items
-    // (this is the fix — so returned_qty shows updated value)
     if (pickedShop.id) {
       await loadShopSales(pickedShop.id)
     }
@@ -313,8 +332,9 @@ export default function SalesReturnPage() {
     setPickedSaleId(null)
     setSelectedSaleItems([])
     setShopSales([])
-    setCheckedItemIds([])
+    setCheckedDetailIds([])
     setRows([])
+    setItemsForBill([])
     setReturnDate(new Date().toISOString().slice(0, 10))
     setMessage('')
   }
@@ -324,35 +344,35 @@ export default function SalesReturnPage() {
 
   // ============ RENDER ============
   return (
-    <div className="min-h-screen bg-gray-100 p-8">
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
-        <div className="mb-6 flex items-end justify-between">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Sales Return</h1>
-            <p className="text-sm text-gray-500">
+            <h1 className="text-2xl font-bold text-slate-800">Sales Return</h1>
+            <p className="text-xs sm:text-sm text-slate-500 mt-1">
               Pick a shop, check items to return, set reason and qty. Sellable → back to stock. Faulty → faulty list.
             </p>
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
+            <label className="block text-xs font-medium text-slate-600 mb-1">
               Return Date
             </label>
             <input
               type="date"
               value={returnDate}
               onChange={(e) => setReturnDate(e.target.value)}
-              className="h-9 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="h-11 sm:h-9 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             />
           </div>
         </div>
 
-        <div className="bg-white border border-gray-300 rounded p-6 mb-6 shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 mb-6 shadow-sm">
 
           {/* HEADER */}
-          <div className="grid grid-cols-2 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">
                 Shop
               </label>
               <SmartCombobox
@@ -380,7 +400,7 @@ export default function SalesReturnPage() {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-slate-700 mb-1">
                 Original Bill (defaults to latest)
               </label>
               <select
@@ -389,7 +409,7 @@ export default function SalesReturnPage() {
                   setPickedSaleId(e.target.value ? Number(e.target.value) : null)
                 }
                 disabled={!pickedShop.id || shopSales.length === 0}
-                className="w-full h-9 px-3 text-sm border border-gray-400 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100"
+                className="w-full h-11 sm:h-9 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 bg-white"
               >
                 <option value="">
                   {!pickedShop.id
@@ -411,30 +431,32 @@ export default function SalesReturnPage() {
           {pickedSaleId && (
             <>
               {selectedSaleItems.length === 0 ? (
-                <div className="px-3 py-4 text-center text-sm text-gray-400 border border-gray-200 rounded mb-6">
+                <div className="px-3 py-4 text-center text-sm text-slate-400 border border-slate-200 rounded-lg mb-6">
                   No items in this bill.
                 </div>
               ) : (
                 <div className="mb-6">
-                  <div className="text-xs font-medium text-gray-600 mb-2">
+                  <div className="text-xs font-medium text-slate-600 mb-2">
                     Items in this bill — check the ones you want to return:
                   </div>
-                  <div className="border border-gray-300 rounded divide-y divide-gray-200">
+                  <div className="border border-slate-300 rounded-lg divide-y divide-slate-200">
                     {selectedSaleItems.map((si) => {
-                      const item = items.find((i) => i.item_id === si.item_id)
+                      const item = itemsForBill.find(
+                        (i) => i.item_id === si.item_id
+                      )
                       const returned = si.returned_qty || 0
                       const remaining = si.quantity - returned
                       const fullyReturned = remaining <= 0
-                      const checked = checkedItemIds.includes(si.item_id)
+                      const checked = checkedDetailIds.includes(si.detail_id)
                       return (
                         <label
                           key={si.detail_id}
-                          className={`flex items-center gap-3 px-3 py-2 ${
+                          className={`flex items-center gap-3 px-3 py-2.5 min-h-[44px] ${
                             fullyReturned
-                              ? 'bg-gray-100 opacity-70 cursor-not-allowed'
+                              ? 'bg-slate-100 opacity-70 cursor-not-allowed'
                               : checked
                               ? 'bg-blue-50 cursor-pointer'
-                              : 'hover:bg-gray-50 cursor-pointer'
+                              : 'hover:bg-slate-50 cursor-pointer'
                           }`}
                         >
                           <input
@@ -444,10 +466,10 @@ export default function SalesReturnPage() {
                             onChange={() => toggleChecked(si)}
                             className="size-4 accent-blue-600"
                           />
-                          <span className="flex-1 font-mono text-sm text-gray-800">
+                          <span className="flex-1 font-mono text-sm text-slate-800 truncate">
                             {item?.sku || '—'}
                           </span>
-                          <span className="text-xs text-gray-500">
+                          <span className="text-xs text-slate-500">
                             Qty: {si.quantity}
                             {returned > 0 && (
                               <span className="ml-2 text-orange-700">
@@ -455,7 +477,7 @@ export default function SalesReturnPage() {
                               </span>
                             )}
                           </span>
-                          <span className="text-sm text-gray-600 w-24 text-right">
+                          <span className="text-sm text-slate-600 w-24 text-right">
                             ₹ {Number(si.rate).toFixed(2)}
                           </span>
                           {fullyReturned && (
@@ -475,22 +497,22 @@ export default function SalesReturnPage() {
           {/* SELECTED ITEMS — DETAIL GRID */}
           {rows.length > 0 && (
             <div className="mb-6">
-              <div className="text-xs font-medium text-gray-600 mb-2">
+              <div className="text-xs font-medium text-slate-600 mb-2">
                 Items to return ({rows.length}):
               </div>
-              <div className="border border-gray-300 rounded overflow-visible">
-                <table className="w-full border-collapse text-sm">
+              <div className="border border-slate-300 rounded-lg overflow-x-auto">
+                <table className="w-full border-collapse text-sm min-w-[720px]">
                   <thead>
-                    <tr className="bg-gray-100">
-                      <th className="w-10 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">#</th>
-                      <th className="border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Item</th>
-                      <th className="w-20 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Bill Qty</th>
-                      <th className="w-20 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Already Ret.</th>
-                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Rate</th>
-                      <th className="w-24 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Return Qty</th>
-                      <th className="w-40 border-b border-gray-300 px-2 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
-                      <th className="w-20 border-b border-gray-300 px-2 py-2 text-center text-xs font-semibold text-gray-600">Sellable?</th>
-                      <th className="w-28 border-b border-gray-300 px-2 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
+                    <tr className="bg-slate-100">
+                      <th className="w-10 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">#</th>
+                      <th className="border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">Item</th>
+                      <th className="w-20 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Bill Qty</th>
+                      <th className="w-20 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Already Ret.</th>
+                      <th className="w-24 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Rate</th>
+                      <th className="w-24 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Return Qty</th>
+                      <th className="w-40 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">Reason</th>
+                      <th className="w-20 border-b border-slate-300 px-2 py-2 text-center text-xs font-semibold text-slate-600">Sellable?</th>
+                      <th className="w-28 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -498,14 +520,14 @@ export default function SalesReturnPage() {
                       const amount = row.return_qty * row.rate
                       const maxQty = row.original_qty - row.already_returned
                       return (
-                        <tr key={row.rowId} className="border-b border-gray-200">
-                          <td className="px-2 py-1 text-center text-gray-500 text-xs">{idx + 1}</td>
-                          <td className="px-2 py-1 text-gray-800 font-mono text-xs">{row.sku}</td>
-                          <td className="px-2 py-1 text-right text-gray-600">{row.original_qty}</td>
+                        <tr key={row.rowId} className="border-b border-slate-200">
+                          <td className="px-2 py-1 text-center text-slate-500 text-xs">{idx + 1}</td>
+                          <td className="px-2 py-1 text-slate-800 font-mono text-xs">{row.sku}</td>
+                          <td className="px-2 py-1 text-right text-slate-600">{row.original_qty}</td>
                           <td className="px-2 py-1 text-right text-orange-700">
                             {row.already_returned > 0 ? row.already_returned : '—'}
                           </td>
-                          <td className="px-2 py-1 text-right text-gray-800">₹ {row.rate.toFixed(2)}</td>
+                          <td className="px-2 py-1 text-right text-slate-800">₹ {row.rate.toFixed(2)}</td>
                           <td className="px-2 py-1">
                             <input
                               type="number"
@@ -520,7 +542,7 @@ export default function SalesReturnPage() {
                               }
                               max={maxQty}
                               min={1}
-                              className="w-full h-8 px-2 text-sm text-right border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
                           </td>
                           <td className="px-2 py-1">
@@ -529,7 +551,7 @@ export default function SalesReturnPage() {
                               onChange={(e) =>
                                 updateRow(row.rowId, { reason: e.target.value })
                               }
-                              className="w-full h-8 px-2 text-sm border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                             >
                               {REASONS.map((r) => (
                                 <option key={r.label} value={r.label}>
@@ -549,7 +571,7 @@ export default function SalesReturnPage() {
                               {row.is_sellable ? 'Yes' : 'No'}
                             </span>
                           </td>
-                          <td className="px-2 py-1 text-right font-medium text-gray-800">
+                          <td className="px-2 py-1 text-right font-medium text-slate-800">
                             ₹ {amount.toFixed(2)}
                           </td>
                         </tr>
@@ -560,8 +582,8 @@ export default function SalesReturnPage() {
               </div>
 
               <div className="mt-4 flex justify-end">
-                <div className="bg-blue-50 border border-blue-200 rounded px-4 py-2 text-sm">
-                  <span className="text-gray-700">Total Return Value: </span>
+                <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm">
+                  <span className="text-slate-700">Total Return Value: </span>
                   <span className="font-bold text-blue-800">
                     ₹ {totalReturnValue.toFixed(2)}
                   </span>
@@ -571,75 +593,77 @@ export default function SalesReturnPage() {
           )}
 
           {/* ACTIONS */}
-          <div className="flex items-center gap-3 pt-4 border-t border-gray-200">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-4 border-t border-slate-200">
             <button
               onClick={saveReturn}
               disabled={saving || rows.length === 0 || totalReturnValue === 0}
-              className="h-10 px-6 text-sm font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-2"
+              className="h-11 px-6 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
               <Save className="size-4" />
               {saving ? 'Saving...' : 'Save Return'}
             </button>
             <button
               onClick={resetForm}
-              className="h-10 px-4 text-sm text-gray-700 border border-gray-300 rounded hover:bg-gray-50 flex items-center gap-2"
+              className="h-11 px-4 text-sm text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center justify-center gap-2"
             >
               <X className="size-4" />
               Clear
             </button>
-            {message && <div className="text-sm text-gray-700">{message}</div>}
+            {message && <div className="text-sm text-slate-700">{message}</div>}
           </div>
         </div>
 
         {/* TODAY'S RETURNS */}
-        <div className="bg-white border border-gray-300 rounded shadow-sm">
-          <div className="px-4 py-2 bg-gray-50 border-b border-gray-300">
-            <span className="text-sm font-semibold text-gray-700">
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <span className="text-sm font-semibold text-slate-700">
               Today's Returns ({todayReturns.length})
             </span>
           </div>
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-gray-100">
-                <th className="w-16 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">ID</th>
-                <th className="border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">Shop</th>
-                <th className="w-40 border-b border-gray-300 px-3 py-2 text-left text-xs font-semibold text-gray-600">Reason</th>
-                <th className="w-20 border-b border-gray-300 px-3 py-2 text-center text-xs font-semibold text-gray-600">Sellable</th>
-                <th className="w-28 border-b border-gray-300 px-3 py-2 text-right text-xs font-semibold text-gray-600">Amount</th>
-              </tr>
-            </thead>
-            <tbody>
-              {todayReturns.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-sm text-gray-400">
-                    No returns today yet.
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="w-16 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">ID</th>
+                  <th className="border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">Shop</th>
+                  <th className="w-40 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">Reason</th>
+                  <th className="w-20 border-b border-slate-300 px-3 py-2 text-center text-xs font-semibold text-slate-600">Sellable</th>
+                  <th className="w-28 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
                 </tr>
-              ) : (
-                todayReturns.map((r: any) => (
-                  <tr key={r.return_id} className="hover:bg-gray-50">
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-600">{r.return_id}</td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">{shopName(r.party_id)}</td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-gray-800">{r.reason || '—'}</td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-center">
-                      <span
-                        className={`text-xs font-medium px-2 py-0.5 rounded ${
-                          r.is_sellable
-                            ? 'bg-green-100 text-green-800'
-                            : 'bg-red-100 text-red-800'
-                        }`}
-                      >
-                        {r.is_sellable ? 'Yes' : 'No'}
-                      </span>
-                    </td>
-                    <td className="border-b border-gray-200 px-3 py-2 text-right font-medium text-gray-800">
-                      ₹ {Number(r.total_amount).toFixed(2)}
+              </thead>
+              <tbody>
+                {todayReturns.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-4 text-center text-sm text-slate-400">
+                      No returns today yet.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  todayReturns.map((r: any) => (
+                    <tr key={r.return_id} className="hover:bg-slate-50">
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-600">{r.return_id}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800">{shopName(r.party_id)}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800">{r.reason || '—'}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-center">
+                        <span
+                          className={`text-xs font-medium px-2 py-0.5 rounded ${
+                            r.is_sellable
+                              ? 'bg-green-100 text-green-800'
+                              : 'bg-red-100 text-red-800'
+                          }`}
+                        >
+                          {r.is_sellable ? 'Yes' : 'No'}
+                        </span>
+                      </td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-slate-800">
+                        ₹ {Number(r.total_amount).toFixed(2)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
 
       </div>
