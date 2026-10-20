@@ -81,6 +81,7 @@ export default function SalesEntryPageWrapper() {
 function SalesEntryPage() {
   const searchParams = useSearchParams()
   const prefillItemId = searchParams.get('prefill_item_id')
+  const prefillPartyId = searchParams.get('party_id')
 
   const [shops, setShops] = useState<Party[]>([])
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
@@ -139,6 +140,39 @@ function SalesEntryPage() {
     setIsOwner(getRole() === 'owner')
     loadData()
   }, [])
+
+  // Prefill shop from ?party_id= and focus the first item field
+  useEffect(() => {
+    if (!prefillPartyId) return
+    const id = Number(prefillPartyId)
+    if (!id || isNaN(id)) return
+    if (shops.length === 0) return
+    const shop = shops.find((s) => s.party_id === id)
+    if (!shop) return
+
+    setPickedShop({ id: shop.party_id, label: shop.party_name, isNew: false })
+
+    const timers = [50, 150, 300].map((delay) =>
+      setTimeout(() => {
+        const candidates = Array.from(
+          document.querySelectorAll<HTMLInputElement>(
+            'input[data-row-item="row-1"]'
+          )
+        )
+        const el = candidates.find((c) => c.offsetParent !== null)
+        if (el && document.activeElement !== el) {
+          el.focus()
+          try {
+            el.select()
+          } catch {
+            // ignore
+          }
+        }
+      }, delay)
+    )
+    return () => timers.forEach((t) => clearTimeout(t))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shops, prefillPartyId])
 
   useEffect(() => {
     loadReport()
@@ -272,7 +306,7 @@ function SalesEntryPage() {
     setTodaySales(t.data || [])
 
     const counter = parties.find((p) => p.party_name === COUNTER_SALE_NAME)
-    if (counter) {
+    if (counter && !prefillPartyId) {
       setPickedShop((prev) => {
         if (prev.isNew) return prev
         if (prev.id && prev.id !== counter.party_id) return prev
@@ -707,8 +741,7 @@ function SalesEntryPage() {
       }, delay)
     })
   }
-
-  return (
+    return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
@@ -1013,7 +1046,8 @@ function SalesEntryPage() {
             </div>
           </div>
         </div>
-                {/* ============ DESKTOP VIEW ============ */}
+
+        {/* ============ DESKTOP VIEW ============ */}
         <div className="hidden md:block">
           <div className="flex items-end justify-between mb-6">
             <h2 className="text-xl font-semibold text-slate-700">

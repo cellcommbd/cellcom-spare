@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../components/ui/new-party-dialog'
@@ -72,6 +73,16 @@ type PickedShop = {
 
 type PayMode = 'Cash' | 'Online'
 
+type ReceiptSnapshot = {
+  previousBalance: number
+  amountPaid: number
+  cashPaid: number
+  upiPaid: number
+  newBalance: number
+  touchedSaleIds: number[]
+  paymentDate: string
+}
+
 // ---------- Helpers ----------
 function todayStr() {
   return new Date().toISOString().slice(0, 10)
@@ -97,8 +108,10 @@ function daysAgo(d: string) {
   return Math.max(0, Math.floor((now - then) / (1000 * 60 * 60 * 24)))
 }
 
-// ---------- Component ----------
-export default function PaymentsPage() {
+// ---------- Component (inner) ----------
+function PaymentsPageInner() {
+  const searchParams = useSearchParams()
+
   const [shops, setShops] = useState<Party[]>([])
   const [todayPayments, setTodayPayments] = useState<Payment[]>([])
   const [outstandingBills, setOutstandingBills] = useState<SaleRow[]>([])
@@ -107,6 +120,10 @@ export default function PaymentsPage() {
     amount: number
     payment_date: string
   } | null>(null)
+
+  // Receipt state — set after a successful save, cleared on shop change / reset
+  const [receipt, setReceipt] = useState<ReceiptSnapshot | null>(null)
+  const [receiptLines, setReceiptLines] = useState<StatementLine[]>([])
 
   const [pickedShop, setPickedShop] = useState<PickedShop>({
     id: null,
@@ -133,10 +150,29 @@ export default function PaymentsPage() {
   const amountRef = useRef<HTMLInputElement>(null)
   const upiRef = useRef<HTMLInputElement>(null)
 
-  // ---------- Load ----------
   useEffect(() => {
     loadData()
   }, [])
+
+  // Prefill shop from ?party_id= (from party account page buttons)
+  useEffect(() => {
+    const prefill = searchParams.get('party_id')
+    if (!prefill) return
+    const id = Number(prefill)
+    if (!id || isNaN(id)) return
+    if (shops.length === 0) return
+    if (pickedShop.id) return
+    const shop = shops.find((s) => s.party_id === id)
+    if (shop) {
+      setPickedShop({
+        id: shop.party_id,
+        label: shop.party_name,
+        isNew: false,
+      })
+      setTimeout(() => amountRef.current?.focus(), 150)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shops, searchParams])
 
   useEffect(() => {
     if (pickedShop.id) {
@@ -145,6 +181,8 @@ export default function PaymentsPage() {
       setOutstandingBills([])
       setStatementLines([])
       setLastPaymentForShop(null)
+      setReceipt(null)
+      setReceiptLines([])
     }
   }, [pickedShop.id])
 
@@ -178,7 +216,6 @@ export default function PaymentsPage() {
   }
 
   async function loadShopOutstanding(shopId: number) {
-    // All bills with paid_amount < total_amount, oldest first.
     const { data: bills } = await supabase
       .from('sales')
       .select(
@@ -193,7 +230,6 @@ export default function PaymentsPage() {
     )
     setOutstandingBills(rows)
 
-    // Last payment for this shop
     const { data: lastPay } = await supabase
       .from('payments')
       .select('amount, payment_date')
@@ -212,13 +248,21 @@ export default function PaymentsPage() {
         : null
     )
 
-    // Statement lines: all items on outstanding bills, today's bills first.
     if (rows.length === 0) {
       setStatementLines([])
       return
     }
 
-    const saleIds = rows.map((r) => r.sale_id)
+    const lines = await fetchLinesForSales(rows.map((r) => r.sale_id), rows)
+    setStatementLines(lines)
+  }
+
+  async function fetchLinesForSales(
+    saleIds: number[],
+    billsForOrder?: SaleRow[]
+  ): Promise<StatementLine[]> {
+    if (saleIds.length === 0) return []
+
     const { data: itemsData } = await supabase
       .from('sale_items')
       .select('detail_id, sale_id, item_id, quantity, rate, amount')
@@ -236,9 +280,17 @@ export default function PaymentsPage() {
       for (const it of itemRows || []) itemMap[it.item_id] = it.sku
     }
 
-    // Sort: today's bill items first, then older bills by bill_date.
     const billDateById: Record<number, string> = {}
-    for (const r of rows) billDateById[r.sale_id] = r.bill_date
+    if (billsForOrder) {
+      for (const r of billsForOrder) billDateById[r.sale_id] = r.bill_date
+    } else {
+      const { data: billRows } = await supabase
+        .from('sales')
+        .select('sale_id, bill_date')
+        .in('sale_id', saleIds)
+      for (const b of billRows || []) billDateById[b.sale_id] = b.bill_date
+    }
+
     const today = todayStr()
 
     const sortedItems = [...itemList].sort((a, b) => {
@@ -250,15 +302,13 @@ export default function PaymentsPage() {
       return aDate < bDate ? -1 : aDate > bDate ? 1 : a.sale_id - b.sale_id
     })
 
-    setStatementLines(
-      sortedItems.map((it) => ({
-        detail_id: it.detail_id,
-        sku: itemMap[it.item_id] || '(unknown)',
-        quantity: Number(it.quantity),
-        rate: Number(it.rate),
-        amount: Number(it.amount),
-      }))
-    )
+    return sortedItems.map((it) => ({
+      detail_id: it.detail_id,
+      sku: itemMap[it.item_id] || '(unknown)',
+      quantity: Number(it.quantity),
+      rate: Number(it.rate),
+      amount: Number(it.amount),
+    }))
   }
 
   // ---------- Options ----------
@@ -360,6 +410,8 @@ export default function PaymentsPage() {
       return
     }
 
+    const previousBalance = currentBalance
+
     const { error: balErr } = await supabase
       .from('parties')
       .update({ current_balance: newBalance })
@@ -371,7 +423,7 @@ export default function PaymentsPage() {
       return
     }
 
-    await applyFIFO(pickedShop.id, paymentAmt)
+    const touchedSaleIds = await applyFIFO(pickedShop.id, paymentAmt)
 
     const { data: verify } = await supabase
       .from('parties')
@@ -389,6 +441,25 @@ export default function PaymentsPage() {
       )
     }
 
+    // Snapshot receipt BEFORE clearing amount fields
+    setReceipt({
+      previousBalance,
+      amountPaid: paymentAmt,
+      cashPaid: payMode === 'Online' ? splitCash : paymentAmt,
+      upiPaid: payMode === 'Online' ? splitUpi : 0,
+      newBalance,
+      touchedSaleIds,
+      paymentDate,
+    })
+
+    // Fetch items for the bills just touched (for the receipt itemization)
+    if (touchedSaleIds.length > 0) {
+      const lines = await fetchLinesForSales(touchedSaleIds)
+      setReceiptLines(lines)
+    } else {
+      setReceiptLines([])
+    }
+
     setSuccess(true)
     setAmount('')
     setUpiAmount('')
@@ -400,9 +471,13 @@ export default function PaymentsPage() {
     setSaving(false)
   }
 
-  // ---------- FIFO (writes paid_amount, derives status) ----------
-  async function applyFIFO(shopId: number, paymentAmount: number) {
+  // ---------- FIFO (writes paid_amount, derives status, returns touched IDs) ----------
+  async function applyFIFO(
+    shopId: number,
+    paymentAmount: number
+  ): Promise<number[]> {
     let remaining = paymentAmount
+    const touched: number[] = []
 
     const { data: pendingSales } = await supabase
       .from('sales')
@@ -412,7 +487,7 @@ export default function PaymentsPage() {
       .order('bill_date', { ascending: true })
       .order('sale_id', { ascending: true })
 
-    if (!pendingSales || pendingSales.length === 0) return
+    if (!pendingSales || pendingSales.length === 0) return touched
 
     for (const sale of pendingSales) {
       if (remaining <= 0) break
@@ -432,8 +507,11 @@ export default function PaymentsPage() {
         .update({ paid_amount: newPaid, status: newStatus })
         .eq('sale_id', sale.sale_id)
 
+      touched.push(sale.sale_id)
       remaining -= applied
     }
+
+    return touched
   }
 
   function resetForm() {
@@ -444,6 +522,8 @@ export default function PaymentsPage() {
     setPaymentDate(todayStr())
     setMessage('')
     setSuccess(false)
+    setReceipt(null)
+    setReceiptLines([])
   }
 
   async function deletePayment(id: number) {
@@ -478,13 +558,42 @@ export default function PaymentsPage() {
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'
 
-  // ---------- Statement text (outstanding bills, today first) ----------
+  // ---------- Statement text (receipt after payment, outstanding otherwise) ----------
   const statementText = useMemo(() => {
     if (!selectedShop) return ''
 
     const today = todayStr()
 
-    // Date range = earliest outstanding bill -> today
+    if (success && receipt) {
+      // RECEIPT MODE — what was just paid + remaining due
+      const billDates = outstandingBills.map((b) => b.bill_date).filter(Boolean)
+      const fromDate =
+        billDates.length > 0
+          ? billDates.reduce((a, b) => (a < b ? a : b))
+          : today
+
+      return buildStatementText({
+        customerName: selectedShop.party_name,
+        fromDate,
+        toDate: receipt.paymentDate,
+        items: receiptLines.map((l) => ({
+          sku: l.sku,
+          quantity: l.quantity,
+          rate: l.rate,
+          amount: l.amount,
+        })),
+        purchasesTotal: receiptLines.reduce(
+          (s, l) => s + Number(l.amount || 0),
+          0
+        ),
+        previousBalance: receipt.previousBalance,
+        cashPaid: receipt.cashPaid,
+        upiPaid: receipt.upiPaid,
+        netDue: receipt.newBalance,
+      })
+    }
+
+    // OUTSTANDING MODE — what is still owed
     const billDates = outstandingBills.map((b) => b.bill_date).filter(Boolean)
     const fromDate =
       billDates.length > 0
@@ -507,7 +616,15 @@ export default function PaymentsPage() {
       upiPaid: 0,
       netDue: outstandingTotal,
     })
-  }, [selectedShop, outstandingBills, outstandingTotal, statementLines])
+  }, [
+    selectedShop,
+    success,
+    receipt,
+    receiptLines,
+    outstandingBills,
+    outstandingTotal,
+    statementLines,
+  ])
 
   async function copyToClipboard() {
     if (!statementText) return
@@ -616,7 +733,6 @@ export default function PaymentsPage() {
     setPendingNewParty(null)
     setTimeout(() => amountRef.current?.focus(), 200)
   }
-  
     // ============ RENDER ============
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
@@ -648,7 +764,6 @@ export default function PaymentsPage() {
         {/* Entry card */}
         <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 shadow-sm mb-5 space-y-4">
 
-          {/* Shop picker */}
           <div>
             <label className="block text-xs font-medium text-slate-700 mb-1 flex items-center gap-1">
               <User className="w-3.5 h-3.5" />
@@ -671,6 +786,8 @@ export default function PaymentsPage() {
                 setPickedShop({ id: Number(v), label, isNew: false })
                 setMessage('')
                 setSuccess(false)
+                setReceipt(null)
+                setReceiptLines([])
                 setTimeout(() => amountRef.current?.focus(), 100)
               }}
               placeholder="Select or type shop..."
@@ -679,7 +796,6 @@ export default function PaymentsPage() {
             />
           </div>
 
-          {/* Balance display */}
           {pickedShop.id && (
             <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center justify-between">
               <span className="text-xs text-slate-600">Current Balance</span>
@@ -693,7 +809,6 @@ export default function PaymentsPage() {
             </div>
           )}
 
-          {/* Outstanding summary */}
           {pickedShop.id && outstandingBills.length > 0 && (
             <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 flex items-center justify-between">
               <span className="text-xs text-rose-800">
@@ -706,7 +821,6 @@ export default function PaymentsPage() {
             </div>
           )}
 
-          {/* Amount */}
           {pickedShop.id && (
             <>
               <div>
@@ -727,7 +841,6 @@ export default function PaymentsPage() {
                 />
               </div>
 
-              {/* Mode toggle */}
               <div>
                 <label className="block text-xs font-medium text-slate-700 mb-1">
                   Mode
@@ -761,7 +874,6 @@ export default function PaymentsPage() {
                 </div>
               </div>
 
-              {/* UPI field */}
               {payMode === 'Online' && (
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -793,7 +905,6 @@ export default function PaymentsPage() {
                 </div>
               )}
 
-              {/* Preview */}
               {paymentAmt > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm">
                   <div className="flex justify-between mb-1">
@@ -821,7 +932,6 @@ export default function PaymentsPage() {
             </>
           )}
 
-          {/* Save */}
           <div className="flex gap-2 pt-2 border-t border-slate-200">
             <button
               onClick={savePayment}
@@ -839,7 +949,6 @@ export default function PaymentsPage() {
             </button>
           </div>
 
-          {/* Message */}
           {message && (
             <div
               className={`text-sm rounded-lg p-3 ${
@@ -933,8 +1042,8 @@ export default function PaymentsPage() {
           </div>
         )}
 
-        {/* All-clear state */}
-        {pickedShop.id && outstandingBills.length === 0 && (
+        {/* All-clear state — only when NOT showing a receipt */}
+        {pickedShop.id && outstandingBills.length === 0 && !success && (
           <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 mb-5 flex items-center justify-between">
             <span className="text-sm font-medium text-emerald-800">
               All clear — no outstanding bills for {pickedShop.label}.
@@ -943,99 +1052,101 @@ export default function PaymentsPage() {
           </div>
         )}
 
-        {/* Statement (available whenever there's something outstanding) */}
-        {pickedShop.id && outstandingBills.length > 0 && statementText && (
-          <div className="bg-white border border-slate-200 rounded-2xl shadow-sm mb-5 overflow-hidden">
-            <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-sm font-semibold text-slate-700">
-                Statement for {pickedShop.label}
-              </span>
-              {selectedShop?.phone ? (
-                <span className="text-xs text-slate-500 flex items-center gap-1">
-                  <Phone className="w-3 h-3" />
-                  {selectedShop.phone}
+        {/* Statement card — outstanding OR receipt, available any time there's content */}
+        {pickedShop.id &&
+          (outstandingBills.length > 0 || success) &&
+          statementText && (
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-sm mb-5 overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                <span className="text-sm font-semibold text-slate-700">
+                  {success ? 'Receipt' : 'Statement'} for {pickedShop.label}
                 </span>
-              ) : (
-                <button
-                  onClick={() => {
-                    setEditingPhone(true)
-                    setPhoneDraft('')
-                  }}
-                  className="text-xs text-amber-700 hover:text-amber-900 flex items-center gap-1 underline"
-                >
-                  <Phone className="w-3 h-3" />
-                  Add phone
-                </button>
-              )}
-            </div>
-
-            {editingPhone && (
-              <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 space-y-2">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="tel"
-                    value={phoneDraft}
-                    onChange={(e) => setPhoneDraft(e.target.value)}
-                    placeholder="10-digit mobile"
-                    className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') savePhone()
-                    }}
-                  />
-                  <button
-                    onClick={savePhone}
-                    disabled={savingPhone}
-                    className="h-9 px-3 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 rounded"
-                  >
-                    {savingPhone ? 'Saving…' : 'Save'}
-                  </button>
+                {selectedShop?.phone ? (
+                  <span className="text-xs text-slate-500 flex items-center gap-1">
+                    <Phone className="w-3 h-3" />
+                    {selectedShop.phone}
+                  </span>
+                ) : (
                   <button
                     onClick={() => {
-                      setEditingPhone(false)
-                      setPhoneMessage('')
+                      setEditingPhone(true)
+                      setPhoneDraft('')
                     }}
-                    className="h-9 px-3 text-xs font-medium bg-slate-200 hover:bg-slate-300 rounded"
+                    className="text-xs text-amber-700 hover:text-amber-900 flex items-center gap-1 underline"
                   >
-                    Cancel
+                    <Phone className="w-3 h-3" />
+                    Add phone
                   </button>
-                </div>
-                {phoneMessage && (
-                  <div className="text-xs text-amber-800">{phoneMessage}</div>
                 )}
               </div>
-            )}
 
-            <div className="grid grid-cols-2 gap-2 p-4">
-              <button
-                onClick={copyToClipboard}
-                className="h-12 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-2"
-              >
-                {copied ? (
-                  <>
-                    <Check className="w-4 h-4 text-emerald-600" />
-                    Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy className="w-4 h-4" />
-                    Copy
-                  </>
-                )}
-              </button>
-              <button
-                onClick={openWhatsApp}
-                className="h-12 text-sm font-semibold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 flex items-center justify-center gap-2"
-              >
-                <MessageCircle className="w-4 h-4" />
-                WhatsApp
-              </button>
+              {editingPhone && (
+                <div className="px-4 py-2 bg-amber-50 border-b border-amber-200 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="tel"
+                      value={phoneDraft}
+                      onChange={(e) => setPhoneDraft(e.target.value)}
+                      placeholder="10-digit mobile"
+                      className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') savePhone()
+                      }}
+                    />
+                    <button
+                      onClick={savePhone}
+                      disabled={savingPhone}
+                      className="h-9 px-3 text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 rounded"
+                    >
+                      {savingPhone ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingPhone(false)
+                        setPhoneMessage('')
+                      }}
+                      className="h-9 px-3 text-xs font-medium bg-slate-200 hover:bg-slate-300 rounded"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  {phoneMessage && (
+                    <div className="text-xs text-amber-800">{phoneMessage}</div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2 p-4">
+                <button
+                  onClick={copyToClipboard}
+                  className="h-12 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-xl hover:bg-slate-50 flex items-center justify-center gap-2"
+                >
+                  {copied ? (
+                    <>
+                      <Check className="w-4 h-4 text-emerald-600" />
+                      Copied
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-4 h-4" />
+                      Copy
+                    </>
+                  )}
+                </button>
+                <button
+                  onClick={openWhatsApp}
+                  className="h-12 text-sm font-semibold text-white bg-emerald-600 rounded-xl hover:bg-emerald-700 flex items-center justify-center gap-2"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  WhatsApp
+                </button>
+              </div>
+
+              <pre className="px-4 pb-4 text-xs whitespace-pre-wrap font-mono text-slate-700 max-h-64 overflow-y-auto bg-slate-50 border-t border-slate-200 pt-3">
+                {statementText}
+              </pre>
             </div>
-
-            <pre className="px-4 pb-4 text-xs whitespace-pre-wrap font-mono text-slate-700 max-h-64 overflow-y-auto bg-slate-50 border-t border-slate-200 pt-3">
-              {statementText}
-            </pre>
-          </div>
-        )}
+          )}
 
         {/* Shop balances (when no shop picked) */}
         {!pickedShop.id && (
@@ -1202,5 +1313,20 @@ export default function PaymentsPage() {
         onCreated={handleNewPartyCreated}
       />
     </div>
+  )
+}
+
+// ---------- Export with Suspense (required for useSearchParams) ----------
+export default function PaymentsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center text-slate-500">
+          Loading…
+        </div>
+      }
+    >
+      <PaymentsPageInner />
+    </Suspense>
   )
 }
