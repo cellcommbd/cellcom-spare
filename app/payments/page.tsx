@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../components/ui/new-party-dialog'
+import { DateGroupedList } from '../../components/ui/date-grouped-list'
 import {
   Save,
   X,
@@ -42,6 +43,7 @@ type SaleRow = {
   party_id: number
   bill_date: string
   total_amount: number
+  paid_amount: number | null
   status: string
 }
 
@@ -84,12 +86,27 @@ function formatDateLong(d: string) {
   })
 }
 
+function formatDateShort(d: string) {
+  const dt = new Date(d + 'T00:00:00')
+  return dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })
+}
+
+function daysAgo(d: string) {
+  const then = new Date(d + 'T00:00:00').getTime()
+  const now = new Date(todayStr() + 'T00:00:00').getTime()
+  return Math.max(0, Math.floor((now - then) / (1000 * 60 * 60 * 24)))
+}
+
 // ---------- Component ----------
 export default function PaymentsPage() {
   const [shops, setShops] = useState<Party[]>([])
   const [todayPayments, setTodayPayments] = useState<Payment[]>([])
-  const [selectedShopSales, setSelectedShopSales] = useState<SaleRow[]>([])
+  const [outstandingBills, setOutstandingBills] = useState<SaleRow[]>([])
   const [statementLines, setStatementLines] = useState<StatementLine[]>([])
+  const [lastPaymentForShop, setLastPaymentForShop] = useState<{
+    amount: number
+    payment_date: string
+  } | null>(null)
 
   const [pickedShop, setPickedShop] = useState<PickedShop>({
     id: null,
@@ -123,18 +140,16 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     if (pickedShop.id) {
-      loadShopSales(pickedShop.id)
-      loadStatementLines(pickedShop.id)
+      loadShopOutstanding(pickedShop.id)
     } else {
-      setSelectedShopSales([])
+      setOutstandingBills([])
       setStatementLines([])
+      setLastPaymentForShop(null)
     }
   }, [pickedShop.id])
 
-  // Mirror amount → upi when in Online mode, unless user has edited upi
   useEffect(() => {
     if (payMode === 'Online' && pickedShop.id) {
-      // Only set upiAmount if the user hasn't typed a different value
       const amt = parseFloat(amount) || 0
       const upi = parseFloat(upiAmount) || 0
       if (upi === 0 || upi > amt) {
@@ -162,31 +177,48 @@ export default function PaymentsPage() {
     setTodayPayments((p.data as Payment[]) || [])
   }
 
-  async function loadShopSales(shopId: number) {
-    const today = todayStr()
-    const { data } = await supabase
+  async function loadShopOutstanding(shopId: number) {
+    // All bills with paid_amount < total_amount, oldest first.
+    const { data: bills } = await supabase
       .from('sales')
-      .select('*')
+      .select(
+        'sale_id, party_id, bill_date, total_amount, paid_amount, status'
+      )
       .eq('party_id', shopId)
-      .eq('bill_date', today)
+      .order('bill_date', { ascending: true })
       .order('sale_id', { ascending: true })
-    setSelectedShopSales((data as SaleRow[]) || [])
-  }
 
-  async function loadStatementLines(shopId: number) {
-    const today = todayStr()
-    const { data: salesData } = await supabase
-      .from('sales')
-      .select('sale_id')
+    const rows = ((bills || []) as SaleRow[]).filter(
+      (s) => Number(s.paid_amount || 0) < Number(s.total_amount)
+    )
+    setOutstandingBills(rows)
+
+    // Last payment for this shop
+    const { data: lastPay } = await supabase
+      .from('payments')
+      .select('amount, payment_date')
       .eq('party_id', shopId)
-      .eq('bill_date', today)
+      .order('payment_date', { ascending: false })
+      .order('payment_id', { ascending: false })
+      .limit(1)
+      .maybeSingle()
 
-    const saleIds = ((salesData as any[]) || []).map((s) => s.sale_id)
-    if (saleIds.length === 0) {
+    setLastPaymentForShop(
+      lastPay
+        ? {
+            amount: Number(lastPay.amount),
+            payment_date: lastPay.payment_date,
+          }
+        : null
+    )
+
+    // Statement lines: all items on outstanding bills, today's bills first.
+    if (rows.length === 0) {
       setStatementLines([])
       return
     }
 
+    const saleIds = rows.map((r) => r.sale_id)
     const { data: itemsData } = await supabase
       .from('sale_items')
       .select('detail_id, sale_id, item_id, quantity, rate, amount')
@@ -201,13 +233,25 @@ export default function PaymentsPage() {
         .from('items')
         .select('item_id, sku')
         .in('item_id', itemIds)
-      for (const it of itemRows || []) {
-        itemMap[it.item_id] = it.sku
-      }
+      for (const it of itemRows || []) itemMap[it.item_id] = it.sku
     }
 
+    // Sort: today's bill items first, then older bills by bill_date.
+    const billDateById: Record<number, string> = {}
+    for (const r of rows) billDateById[r.sale_id] = r.bill_date
+    const today = todayStr()
+
+    const sortedItems = [...itemList].sort((a, b) => {
+      const aDate = billDateById[a.sale_id] || ''
+      const bDate = billDateById[b.sale_id] || ''
+      const aToday = aDate === today ? 1 : 0
+      const bToday = bDate === today ? 1 : 0
+      if (aToday !== bToday) return bToday - aToday
+      return aDate < bDate ? -1 : aDate > bDate ? 1 : a.sale_id - b.sale_id
+    })
+
     setStatementLines(
-      itemList.map((it) => ({
+      sortedItems.map((it) => ({
         detail_id: it.detail_id,
         sku: itemMap[it.item_id] || '(unknown)',
         quantity: Number(it.quantity),
@@ -226,12 +270,12 @@ export default function PaymentsPage() {
   const selectedShop = shops.find((s) => s.party_id === pickedShop.id)
   const currentBalance = Number(selectedShop?.current_balance || 0)
 
-  const todaySalesTotal = selectedShopSales.reduce(
-    (s, x) => s + Number(x.total_amount),
+  const outstandingTotal = outstandingBills.reduce(
+    (s, b) =>
+      s + Math.max(0, Number(b.total_amount) - Number(b.paid_amount || 0)),
     0
   )
 
-  // ---------- Shops sorted ----------
   const shopsByBalance = useMemo(
     () =>
       [...shops].sort(
@@ -239,12 +283,12 @@ export default function PaymentsPage() {
       ),
     [shops]
   )
-  const totalOutstanding = useMemo(
+  const totalOutstandingAllShops = useMemo(
     () => shops.reduce((s, x) => s + Number(x.current_balance), 0),
     [shops]
   )
 
-  // ---------- Payment split computation ----------
+  // ---------- Payment split ----------
   const paymentAmt = parseFloat(amount) || 0
   const upiAmt = parseFloat(upiAmount) || 0
 
@@ -270,7 +314,6 @@ export default function PaymentsPage() {
 
     setSaving(true)
 
-    // Build rows to insert
     const rows: {
       party_id: number
       payment_date: string
@@ -279,7 +322,6 @@ export default function PaymentsPage() {
     }[] = []
 
     if (payMode === 'Cash' || splitUpi === 0) {
-      // All cash
       rows.push({
         party_id: pickedShop.id,
         payment_date: paymentDate,
@@ -287,7 +329,6 @@ export default function PaymentsPage() {
         payment_mode: 'Cash',
       })
     } else if (splitUpi === paymentAmt) {
-      // All UPI
       rows.push({
         party_id: pickedShop.id,
         payment_date: paymentDate,
@@ -295,7 +336,6 @@ export default function PaymentsPage() {
         payment_mode: 'UPI',
       })
     } else {
-      // Split
       rows.push({
         party_id: pickedShop.id,
         payment_date: paymentDate,
@@ -320,7 +360,6 @@ export default function PaymentsPage() {
       return
     }
 
-    // Update balance
     const { error: balErr } = await supabase
       .from('parties')
       .update({ current_balance: newBalance })
@@ -332,10 +371,8 @@ export default function PaymentsPage() {
       return
     }
 
-    // FIFO
     await applyFIFO(pickedShop.id, paymentAmt)
 
-    // Verify
     const { data: verify } = await supabase
       .from('parties')
       .select('current_balance')
@@ -343,7 +380,9 @@ export default function PaymentsPage() {
       .single()
 
     if (Number(verify?.current_balance) !== newBalance) {
-      setMessage('Warning: balance verification mismatch. Check customer record.')
+      setMessage(
+        'Warning: balance verification mismatch. Check customer record.'
+      )
     } else {
       setMessage(
         `Saved ₹${paymentAmt.toFixed(2)} from ${pickedShop.label}. New balance: ₹${newBalance.toFixed(2)}.`
@@ -356,19 +395,18 @@ export default function PaymentsPage() {
     setPayMode('Cash')
 
     await loadData()
-    await loadShopSales(pickedShop.id)
-    await loadStatementLines(pickedShop.id)
+    await loadShopOutstanding(pickedShop.id)
 
     setSaving(false)
   }
 
-  // ---------- FIFO ----------
+  // ---------- FIFO (writes paid_amount, derives status) ----------
   async function applyFIFO(shopId: number, paymentAmount: number) {
     let remaining = paymentAmount
 
     const { data: pendingSales } = await supabase
       .from('sales')
-      .select('*')
+      .select('sale_id, total_amount, paid_amount, status')
       .eq('party_id', shopId)
       .in('status', ['Pending', 'Partially Paid'])
       .order('bill_date', { ascending: true })
@@ -379,19 +417,22 @@ export default function PaymentsPage() {
     for (const sale of pendingSales) {
       if (remaining <= 0) break
 
-      if (remaining >= sale.total_amount) {
-        remaining -= sale.total_amount
-        await supabase
-          .from('sales')
-          .update({ status: 'Paid' })
-          .eq('sale_id', sale.sale_id)
-      } else {
-        await supabase
-          .from('sales')
-          .update({ status: 'Partially Paid' })
-          .eq('sale_id', sale.sale_id)
-        remaining = 0
-      }
+      const total = Number(sale.total_amount || 0)
+      const alreadyPaid = Number(sale.paid_amount || 0)
+      const due = Math.max(0, total - alreadyPaid)
+      if (due <= 0) continue
+
+      const applied = Math.min(remaining, due)
+      const newPaid = alreadyPaid + applied
+      const newStatus =
+        newPaid >= total ? 'Paid' : newPaid > 0 ? 'Partially Paid' : 'Pending'
+
+      await supabase
+        .from('sales')
+        .update({ paid_amount: newPaid, status: newStatus })
+        .eq('sale_id', sale.sale_id)
+
+      remaining -= applied
     }
   }
 
@@ -437,32 +478,22 @@ export default function PaymentsPage() {
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'
 
-  // ---------- Statement text ----------
+  // ---------- Statement text (outstanding bills, today first) ----------
   const statementText = useMemo(() => {
     if (!selectedShop) return ''
+
     const today = todayStr()
 
-    // previous balance = current_balance + today's payments - today's sales
-    // (we're showing today as the range, and statement uses current balance as net due)
-    // payments shown include the ones in the payments table for today
-    const todayPaymentsForShop = todayPayments.filter(
-      (p) => p.party_id === pickedShop.id
-    )
-    const cashPaidToday = todayPaymentsForShop
-      .filter((p) => p.payment_mode === 'Cash')
-      .reduce((s, p) => s + Number(p.amount), 0)
-    const upiPaidToday = todayPaymentsForShop
-      .filter((p) => p.payment_mode === 'UPI')
-      .reduce((s, p) => s + Number(p.amount), 0)
-    const totalPaid = cashPaidToday + upiPaidToday
-
-    // Previous balance = current + paid - purchases (since current = prev + purchases - paid)
-    const purchasesTotal = todaySalesTotal
-    const previousBalance = currentBalance - purchasesTotal + totalPaid
+    // Date range = earliest outstanding bill -> today
+    const billDates = outstandingBills.map((b) => b.bill_date).filter(Boolean)
+    const fromDate =
+      billDates.length > 0
+        ? billDates.reduce((a, b) => (a < b ? a : b))
+        : today
 
     return buildStatementText({
       customerName: selectedShop.party_name,
-      fromDate: today,
+      fromDate,
       toDate: today,
       items: statementLines.map((l) => ({
         sku: l.sku,
@@ -470,20 +501,13 @@ export default function PaymentsPage() {
         rate: l.rate,
         amount: l.amount,
       })),
-      purchasesTotal,
-      previousBalance,
-      cashPaid: cashPaidToday,
-      upiPaid: upiPaidToday,
-      netDue: currentBalance,
+      purchasesTotal: outstandingTotal,
+      previousBalance: 0,
+      cashPaid: 0,
+      upiPaid: 0,
+      netDue: outstandingTotal,
     })
-  }, [
-    selectedShop,
-    todayPayments,
-    pickedShop.id,
-    todaySalesTotal,
-    currentBalance,
-    statementLines,
-  ])
+  }, [selectedShop, outstandingBills, outstandingTotal, statementLines])
 
   async function copyToClipboard() {
     if (!statementText) return
@@ -592,8 +616,8 @@ export default function PaymentsPage() {
     setPendingNewParty(null)
     setTimeout(() => amountRef.current?.focus(), 200)
   }
-
-  // ============ RENDER ============
+  
+    // ============ RENDER ============
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
@@ -669,6 +693,19 @@ export default function PaymentsPage() {
             </div>
           )}
 
+          {/* Outstanding summary */}
+          {pickedShop.id && outstandingBills.length > 0 && (
+            <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 flex items-center justify-between">
+              <span className="text-xs text-rose-800">
+                {outstandingBills.length} outstanding bill
+                {outstandingBills.length === 1 ? '' : 's'}
+              </span>
+              <span className="text-sm font-bold text-rose-800">
+                ₹ {outstandingTotal.toFixed(2)} due
+              </span>
+            </div>
+          )}
+
           {/* Amount */}
           {pickedShop.id && (
             <>
@@ -724,7 +761,7 @@ export default function PaymentsPage() {
                 </div>
               </div>
 
-              {/* UPI field (only Online mode) */}
+              {/* UPI field */}
               {payMode === 'Online' && (
                 <div>
                   <label className="block text-xs font-medium text-slate-700 mb-1">
@@ -756,7 +793,7 @@ export default function PaymentsPage() {
                 </div>
               )}
 
-              {/* Preview new balance */}
+              {/* Preview */}
               {paymentAmt > 0 && (
                 <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 text-sm">
                   <div className="flex justify-between mb-1">
@@ -784,7 +821,7 @@ export default function PaymentsPage() {
             </>
           )}
 
-          {/* Save button */}
+          {/* Save */}
           <div className="flex gap-2 pt-2 border-t border-slate-200">
             <button
               onClick={savePayment}
@@ -816,53 +853,98 @@ export default function PaymentsPage() {
           )}
         </div>
 
-        {/* Today's sales for selected shop */}
-        {pickedShop.id && selectedShopSales.length > 0 && (
+        {/* Outstanding bills for selected shop */}
+        {pickedShop.id && outstandingBills.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mb-5">
-            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-700">
-                Today's Bills — {pickedShop.label}
+                Outstanding Bills — {pickedShop.label}
+              </span>
+              <span className="text-xs text-rose-700 font-semibold">
+                ₹ {outstandingTotal.toFixed(2)} due
               </span>
             </div>
-            <table className="w-full border-collapse text-sm">
-              <thead>
-                <tr className="bg-slate-50">
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Bill #</th>
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Date</th>
-                  <th className="px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {selectedShopSales.map((s) => (
-                  <tr key={s.sale_id} className="border-b border-slate-100 last:border-b-0">
-                    <td className="px-3 py-2 text-slate-600">{s.sale_id}</td>
-                    <td className="px-3 py-2 text-slate-800">{s.bill_date}</td>
-                    <td className="px-3 py-2 text-right font-medium text-slate-800">
-                      ₹ {Number(s.total_amount).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-2">
+
+            {lastPaymentForShop && (
+              <div className="px-4 py-2 bg-blue-50 border-b border-blue-200 text-xs text-slate-700 flex items-center justify-between">
+                <span>
+                  Last payment:{' '}
+                  <span className="font-semibold text-slate-900">
+                    ₹ {Number(lastPaymentForShop.amount).toFixed(2)}
+                  </span>{' '}
+                  on {formatDateLong(lastPaymentForShop.payment_date)}
+                </span>
+                <span className="text-slate-500">
+                  {daysAgo(lastPaymentForShop.payment_date)} days ago
+                </span>
+              </div>
+            )}
+
+            <DateGroupedList
+              rows={outstandingBills}
+              getDate={(s) => s.bill_date}
+              getAmount={(s) =>
+                Number(s.total_amount) - Number(s.paid_amount || 0)
+              }
+              dayTotalLabel="due"
+              getKey={(s) => s.sale_id}
+              emptyState={
+                <div className="px-3 py-4 text-center text-sm text-slate-400">
+                  No outstanding bills.
+                </div>
+              }
+              renderRow={(s) => {
+                const total = Number(s.total_amount)
+                const paid = Number(s.paid_amount || 0)
+                const due = Math.max(0, total - paid)
+                const age = daysAgo(s.bill_date)
+                const ageColor =
+                  age < 7
+                    ? 'text-slate-500'
+                    : age <= 30
+                    ? 'text-amber-700'
+                    : 'text-rose-700'
+                return (
+                  <div className="grid grid-cols-12 gap-2 px-3 py-2 border-b border-slate-100 last:border-b-0 text-sm items-center">
+                    <div className="col-span-2 text-slate-500 text-xs">
+                      #{s.sale_id}
+                    </div>
+                    <div className="col-span-3 text-slate-800">
+                      {formatDateShort(s.bill_date)}
+                    </div>
+                    <div className="col-span-2 text-right text-slate-600 text-xs">
+                      ₹ {total.toFixed(0)}
+                    </div>
+                    <div className="col-span-2 text-right text-emerald-700 text-xs">
+                      ₹ {paid.toFixed(0)}
+                    </div>
+                    <div className="col-span-3 text-right font-semibold text-rose-700">
+                      ₹ {due.toFixed(2)}
                       <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${
-                          s.status === 'Paid'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : s.status === 'Partially Paid'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-red-100 text-red-800'
-                        }`}
+                        className={`ml-1 text-[10px] font-normal ${ageColor}`}
                       >
-                        {s.status}
+                        · {age}d
                       </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                    </div>
+                  </div>
+                )
+              }}
+            />
           </div>
         )}
 
-        {/* Statement after save (or when shop picked) */}
-        {pickedShop.id && success && (
+        {/* All-clear state */}
+        {pickedShop.id && outstandingBills.length === 0 && (
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 mb-5 flex items-center justify-between">
+            <span className="text-sm font-medium text-emerald-800">
+              All clear — no outstanding bills for {pickedShop.label}.
+            </span>
+            <Check className="w-5 h-5 text-emerald-600" />
+          </div>
+        )}
+
+        {/* Statement (available whenever there's something outstanding) */}
+        {pickedShop.id && outstandingBills.length > 0 && statementText && (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm mb-5 overflow-hidden">
             <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-700">
@@ -969,14 +1051,21 @@ export default function PaymentsPage() {
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-50">
-                  <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Shop</th>
-                  <th className="w-32 px-3 py-2 text-right text-xs font-semibold text-slate-600">Balance</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                    Shop
+                  </th>
+                  <th className="w-32 px-3 py-2 text-right text-xs font-semibold text-slate-600">
+                    Balance
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {shopsByBalance.length === 0 ? (
                   <tr>
-                    <td colSpan={2} className="px-3 py-4 text-center text-sm text-slate-400">
+                    <td
+                      colSpan={2}
+                      className="px-3 py-4 text-center text-sm text-slate-400"
+                    >
                       No shops added yet.
                     </td>
                   </tr>
@@ -1018,7 +1107,7 @@ export default function PaymentsPage() {
                       Total Outstanding
                     </td>
                     <td className="px-3 py-2 text-right font-bold text-slate-900">
-                      ₹ {totalOutstanding.toFixed(2)}
+                      ₹ {totalOutstandingAllShops.toFixed(2)}
                     </td>
                   </tr>
                 </tfoot>
@@ -1037,25 +1126,43 @@ export default function PaymentsPage() {
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="bg-slate-50">
-                <th className="w-16 px-3 py-2 text-left text-xs font-semibold text-slate-600">ID</th>
-                <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">Shop</th>
-                <th className="w-20 px-3 py-2 text-left text-xs font-semibold text-slate-600">Mode</th>
-                <th className="w-28 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
+                <th className="w-16 px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                  ID
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                  Shop
+                </th>
+                <th className="w-20 px-3 py-2 text-left text-xs font-semibold text-slate-600">
+                  Mode
+                </th>
+                <th className="w-28 px-3 py-2 text-right text-xs font-semibold text-slate-600">
+                  Amount
+                </th>
                 <th className="w-16 px-3 py-2"></th>
               </tr>
             </thead>
             <tbody>
               {todayPayments.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-3 py-4 text-center text-sm text-slate-400">
+                  <td
+                    colSpan={5}
+                    className="px-3 py-4 text-center text-sm text-slate-400"
+                  >
                     No payments today yet.
                   </td>
                 </tr>
               ) : (
                 todayPayments.map((p) => (
-                  <tr key={p.payment_id} className="border-b border-slate-100 last:border-b-0">
-                    <td className="px-3 py-2 text-slate-500 text-xs">{p.payment_id}</td>
-                    <td className="px-3 py-2 text-slate-800">{shopName(p.party_id)}</td>
+                  <tr
+                    key={p.payment_id}
+                    className="border-b border-slate-100 last:border-b-0"
+                  >
+                    <td className="px-3 py-2 text-slate-500 text-xs">
+                      {p.payment_id}
+                    </td>
+                    <td className="px-3 py-2 text-slate-800">
+                      {shopName(p.party_id)}
+                    </td>
                     <td className="px-3 py-2">
                       <span
                         className={`text-xs font-medium px-1.5 py-0.5 rounded ${

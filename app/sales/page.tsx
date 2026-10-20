@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../components/ui/new-party-dialog'
+import { DateGroupedList } from '../../components/ui/date-grouped-list'
 import { Plus, Trash2, Save, X } from 'lucide-react'
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
@@ -171,7 +172,6 @@ function SalesEntryPage() {
       return
     }
 
-    // Retry a few times if the new row hasn't rendered yet
     const timers: ReturnType<typeof setTimeout>[] = []
     ;[50, 150, 300, 500].forEach((delay) => {
       timers.push(
@@ -182,7 +182,6 @@ function SalesEntryPage() {
         }, delay)
       )
     })
-    // Final attempt: clear pending regardless
     timers.push(
       setTimeout(() => {
         setPendingFocusRowId(null)
@@ -319,7 +318,6 @@ function SalesEntryPage() {
     }
   }
 
-  // Counter Sale included in dropdown
   const shopOptions = shops.map((s) => ({
     value: s.party_id,
     label: s.party_name,
@@ -472,11 +470,9 @@ function SalesEntryPage() {
   async function ensureShop(): Promise<number | null> {
     if (pickedShop.id) return pickedShop.id
 
-    // Fallback to Counter Sale
     const counter = shops.find((s) => s.party_name === COUNTER_SALE_NAME)
     if (counter) return counter.party_id
 
-    // Last resort: try to find or create Counter Sale
     const { data: existing } = await supabase
       .from('parties')
       .select('party_id')
@@ -502,7 +498,8 @@ function SalesEntryPage() {
     }
     return data.party_id
   }
-    async function saveSale() {
+
+  async function saveSale() {
     setMessage('')
 
     const validRows = rows.filter(
@@ -512,7 +509,6 @@ function SalesEntryPage() {
       setMessage('Add at least one item with quantity and rate.')
       return
     }
-    // Warn about out-of-stock items
     const stockIssues = validRows
       .map((r) => {
         const opts = rowItemOptions[r.rowId] || []
@@ -970,65 +966,54 @@ function SalesEntryPage() {
               </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="border-b border-slate-200 px-2 py-2 text-left text-[10px] font-semibold text-slate-600">Date</th>
-                    <th className="border-b border-slate-200 px-2 py-2 text-left text-[10px] font-semibold text-slate-600">SKU</th>
-                    <th className="w-12 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Qty</th>
-                    <th className="w-16 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Rate</th>
-                    <th className="w-20 border-b border-slate-200 px-2 py-2 text-right text-[10px] font-semibold text-slate-600">Amt</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reportLoading ? (
-                    <tr>
-                      <td colSpan={5} className="px-2 py-6 text-center text-xs text-slate-400">
-                        Loading...
-                      </td>
-                    </tr>
-                  ) : reportLines.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-2 py-6 text-center text-xs text-slate-400">
-                        No sales in this range.
-                      </td>
-                    </tr>
-                  ) : (
-                    reportLines.map((l, i) => (
-                      <tr key={i} className="border-b border-slate-100">
-                        <td className="px-2 py-1.5 text-slate-600 whitespace-nowrap">
-                          {l.bill_date ? l.bill_date.slice(5) : '—'}
-                        </td>
-                        <td className="px-2 py-1.5 font-mono text-slate-800 break-all">
-                          {l.sku || '—'}
-                        </td>
-                        <td className="px-2 py-1.5 text-right text-slate-800">{l.quantity}</td>
-                        <td className="px-2 py-1.5 text-right text-slate-800">
-                          {Number(l.rate).toFixed(0)}
-                        </td>
-                        <td className="px-2 py-1.5 text-right font-medium text-slate-800">
-                          {Number(l.amount).toFixed(0)}
-                        </td>
-                      </tr>
-                    ))
+              {reportLoading ? (
+                <div className="px-2 py-6 text-center text-xs text-slate-400">
+                  Loading...
+                </div>
+              ) : (
+                <DateGroupedList
+                  rows={reportLines}
+                  getDate={(l) => l.bill_date || ''}
+                  getAmount={(l) => Number(l.amount || 0)}
+                  getKey={(l, i) => `${l.bill_date}-${l.sku}-${i}`}
+                  emptyState={
+                    <div className="px-2 py-6 text-center text-xs text-slate-400">
+                      No sales in this range.
+                    </div>
+                  }
+                  renderRow={(l) => (
+                    <div className="grid grid-cols-12 gap-1 px-2 py-1.5 border-b border-slate-100 text-xs">
+                      <div className="col-span-6 font-mono text-slate-800 break-all">
+                        {l.sku || '—'}
+                      </div>
+                      <div className="col-span-2 text-right text-slate-800">
+                        {l.quantity}
+                      </div>
+                      <div className="col-span-2 text-right text-slate-800">
+                        {Number(l.rate).toFixed(0)}
+                      </div>
+                      <div className="col-span-2 text-right font-medium text-slate-800">
+                        {Number(l.amount).toFixed(0)}
+                      </div>
+                    </div>
                   )}
-                </tbody>
-                {reportLines.length > 0 && (
-                  <tfoot>
-                    <tr className="bg-slate-50 border-t border-slate-200">
-                      <td colSpan={4} className="px-2 py-2 text-right text-xs font-semibold text-slate-700">Total</td>
-                      <td className="px-2 py-2 text-right text-sm font-bold text-slate-900">
-                        ₹ {reportLines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
+                />
+              )}
+              {reportLines.length > 0 && !reportLoading && (
+                <div className="bg-slate-50 border-t-2 border-slate-200 px-2 py-2 flex justify-between text-xs">
+                  <span className="font-semibold text-slate-700">Total</span>
+                  <span className="font-bold text-slate-900">
+                    ₹{' '}
+                    {reportLines
+                      .reduce((s, l) => s + Number(l.amount || 0), 0)
+                      .toFixed(2)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
-
-        {/* ============ DESKTOP VIEW ============ */}
+                {/* ============ DESKTOP VIEW ============ */}
         <div className="hidden md:block">
           <div className="flex items-end justify-between mb-6">
             <h2 className="text-xl font-semibold text-slate-700">
@@ -1277,60 +1262,50 @@ function SalesEntryPage() {
               </div>
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
-                <thead>
-                  <tr className="bg-slate-100">
-                    <th className="w-24 border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">Date</th>
-                    <th className="border-b border-slate-200 px-3 py-2 text-left text-xs font-semibold text-slate-600">SKU</th>
-                    <th className="w-20 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Qty</th>
-                    <th className="w-24 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Rate</th>
-                    <th className="w-28 border-b border-slate-200 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {reportLoading ? (
-                    <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
-                        Loading...
-                      </td>
-                    </tr>
-                  ) : reportLines.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-3 py-6 text-center text-sm text-slate-400">
-                        No sales in this date range.
-                      </td>
-                    </tr>
-                  ) : (
-                    reportLines.map((l, i) => (
-                      <tr key={i} className="hover:bg-slate-50">
-                        <td className="border-b border-slate-100 px-3 py-2 text-slate-600 whitespace-nowrap">
-                          {l.bill_date || '—'}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 font-mono text-slate-800">
-                          {l.sku || '—'}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">{l.quantity}</td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right text-slate-800">
-                          ₹ {Number(l.rate).toFixed(2)}
-                        </td>
-                        <td className="border-b border-slate-100 px-3 py-2 text-right font-medium text-slate-800">
-                          ₹ {Number(l.amount).toFixed(2)}
-                        </td>
-                      </tr>
-                    ))
+              {reportLoading ? (
+                <div className="px-3 py-6 text-center text-sm text-slate-400">
+                  Loading...
+                </div>
+              ) : (
+                <DateGroupedList
+                  rows={reportLines}
+                  getDate={(l) => l.bill_date || ''}
+                  getAmount={(l) => Number(l.amount || 0)}
+                  getKey={(l, i) => `${l.bill_date}-${l.sku}-${i}`}
+                  emptyState={
+                    <div className="px-3 py-6 text-center text-sm text-slate-400">
+                      No sales in this date range.
+                    </div>
+                  }
+                  renderRow={(l) => (
+                    <div className="grid grid-cols-12 gap-2 px-3 py-2 border-b border-slate-100 text-sm hover:bg-slate-50">
+                      <div className="col-span-6 font-mono text-slate-800">
+                        {l.sku || '—'}
+                      </div>
+                      <div className="col-span-2 text-right text-slate-800">
+                        {l.quantity}
+                      </div>
+                      <div className="col-span-2 text-right text-slate-800">
+                        ₹ {Number(l.rate).toFixed(2)}
+                      </div>
+                      <div className="col-span-2 text-right font-medium text-slate-800">
+                        ₹ {Number(l.amount).toFixed(2)}
+                      </div>
+                    </div>
                   )}
-                </tbody>
-                {reportLines.length > 0 && (
-                  <tfoot>
-                    <tr className="bg-slate-50 border-t border-slate-200">
-                      <td colSpan={4} className="px-3 py-2 text-right text-sm font-semibold text-slate-700">Total</td>
-                      <td className="px-3 py-2 text-right text-base font-bold text-slate-900">
-                        ₹ {reportLines.reduce((s, l) => s + Number(l.amount || 0), 0).toFixed(2)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
+                />
+              )}
+              {reportLines.length > 0 && !reportLoading && (
+                <div className="bg-slate-50 border-t-2 border-slate-200 px-3 py-2 flex justify-between text-sm">
+                  <span className="font-semibold text-slate-700">Total</span>
+                  <span className="font-bold text-slate-900">
+                    ₹{' '}
+                    {reportLines
+                      .reduce((s, l) => s + Number(l.amount || 0), 0)
+                      .toFixed(2)}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
