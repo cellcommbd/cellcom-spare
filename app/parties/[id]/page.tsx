@@ -17,13 +17,14 @@ import {
   BookOpen,
   TrendingUp,
   MessageCircle,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import {
   buildStatementText,
   buildWhatsAppUrl,
   normalizePhoneForWhatsApp,
 } from '../../../lib/statement-format'
-import { DateGroupedList } from '../../../components/ui/date-grouped-list'
 
 // ---------- Types ----------
 type Party = {
@@ -38,16 +39,18 @@ type Sale = {
   sale_id: number
   bill_date: string
   total_amount: number
+  paid_amount: number | null
   status: string
 }
 
 type SaleItem = {
   detail_id: number
   sale_id: number
-  sku: string
+  item_id: number
   quantity: number
   rate: number
   amount: number
+  sku: string
 }
 
 type Payment = {
@@ -65,6 +68,19 @@ type LedgerRow = {
   ref_id: number
   amount: number
   balance: number
+}
+
+type PurchaseDay = {
+  date: string
+  bills: Sale[]
+  total: number
+  itemCount: number
+  items: SaleItem[]
+}
+
+type OutstandingDay = PurchaseDay & {
+  paid: number
+  due: number
 }
 
 // ---------- Helpers ----------
@@ -92,6 +108,12 @@ function formatDate(d: string) {
   })
 }
 
+function daysAgo(d: string) {
+  const then = new Date(d + 'T00:00:00').getTime()
+  const now = new Date(todayStr() + 'T00:00:00').getTime()
+  return Math.max(0, Math.floor((now - then) / (1000 * 60 * 60 * 24)))
+}
+
 // ---------- Component ----------
 export default function PartyAccountPage() {
   const params = useParams()
@@ -112,14 +134,12 @@ export default function PartyAccountPage() {
   const [rangeLoading, setRangeLoading] = useState(false)
 
   const [rangeSales, setRangeSales] = useState<Sale[]>([])
-  const [rangeSaleItems, setRangeSaleItems] = useState<
-    Record<number, SaleItem[]>
-  >({})
+  const [rangeSaleItems, setRangeSaleItems] = useState<SaleItem[]>([])
   const [rangePayments, setRangePayments] = useState<Payment[]>([])
   const [openingBalance, setOpeningBalance] = useState(0)
 
   const [tab, setTab] = useState<Tab>('summary')
-  const [expandedSale, setExpandedSale] = useState<number | null>(null)
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({})
 
   const [copied, setCopied] = useState(false)
 
@@ -206,7 +226,7 @@ export default function PartyAccountPage() {
 
     const { data: salesData } = await supabase
       .from('sales')
-      .select('sale_id, bill_date, total_amount, status')
+      .select('sale_id, bill_date, total_amount, paid_amount, status')
       .eq('party_id', party.party_id)
       .gte('bill_date', from)
       .lte('bill_date', to)
@@ -217,7 +237,7 @@ export default function PartyAccountPage() {
     setRangeSales(sales)
 
     const saleIds = sales.map((s) => s.sale_id)
-    let itemsBySale: Record<number, SaleItem[]> = {}
+    let items: SaleItem[] = []
     if (saleIds.length > 0) {
       const { data: itemsData } = await supabase
         .from('sale_items')
@@ -243,20 +263,17 @@ export default function PartyAccountPage() {
         for (const it of itemRows || []) skuMap[it.item_id] = it.sku
       }
 
-      itemsBySale = raw.reduce((acc, r) => {
-        if (!acc[r.sale_id]) acc[r.sale_id] = []
-        acc[r.sale_id].push({
-          detail_id: r.detail_id,
-          sale_id: r.sale_id,
-          sku: skuMap[r.item_id] || '(unknown)',
-          quantity: Number(r.quantity),
-          rate: Number(r.rate),
-          amount: Number(r.amount),
-        })
-        return acc
-      }, {} as Record<number, SaleItem[]>)
+      items = raw.map((it) => ({
+        detail_id: it.detail_id,
+        sale_id: it.sale_id,
+        item_id: it.item_id,
+        quantity: Number(it.quantity),
+        rate: Number(it.rate),
+        amount: Number(it.amount),
+        sku: skuMap[it.item_id] || '(unknown)',
+      }))
     }
-    setRangeSaleItems(itemsBySale)
+    setRangeSaleItems(items)
 
     const { data: payData } = await supabase
       .from('payments')
@@ -319,6 +336,54 @@ export default function PartyAccountPage() {
   const rangePaid = rangeCashPaid + rangeUpiPaid
   const balance = Number(party?.current_balance || 0)
 
+  // Group range sales by day (all sales, paid or not)
+  const purchaseDays: PurchaseDay[] = useMemo(() => {
+    const byDate: Record<string, Sale[]> = {}
+    for (const s of rangeSales) {
+      if (!byDate[s.bill_date]) byDate[s.bill_date] = []
+      byDate[s.bill_date].push(s)
+    }
+
+    const itemsBySale: Record<number, SaleItem[]> = {}
+    for (const it of rangeSaleItems) {
+      if (!itemsBySale[it.sale_id]) itemsBySale[it.sale_id] = []
+      itemsBySale[it.sale_id].push(it)
+    }
+
+    return Object.keys(byDate)
+      .sort()
+      .reverse() // newest first for purchase history
+      .map((date) => {
+        const bills = byDate[date]
+        const total = bills.reduce((s, b) => s + Number(b.total_amount), 0)
+        const items: SaleItem[] = []
+        let itemCount = 0
+        for (const b of bills) {
+          const billItems = itemsBySale[b.sale_id] || []
+          for (const it of billItems) {
+            items.push(it)
+            itemCount += it.quantity
+          }
+        }
+        return { date, bills, total, itemCount, items }
+      })
+  }, [rangeSales, rangeSaleItems])
+
+  // Only days with money still due — used for balance breakdown (oldest first)
+  const outstandingDays: OutstandingDay[] = useMemo(() => {
+    return purchaseDays
+      .map((day) => {
+        const paid = day.bills.reduce(
+          (s, b) => s + Number(b.paid_amount || 0),
+          0
+        )
+        const due = Math.max(0, day.total - paid)
+        return { ...day, paid, due }
+      })
+      .filter((day) => day.due > 0)
+      .sort((a, b) => (a.date < b.date ? -1 : 1))
+  }, [purchaseDays])
+
   const ledgerRows: LedgerRow[] = useMemo(() => {
     const rows: Omit<LedgerRow, 'balance'>[] = []
     for (const s of rangeSales) {
@@ -354,17 +419,17 @@ export default function PartyAccountPage() {
 
   const statementText = useMemo(() => {
     if (!party) return ''
-    const flatItems = Object.values(rangeSaleItems).flat()
+    const flatItems = rangeSaleItems.map((l) => ({
+      sku: l.sku,
+      quantity: l.quantity,
+      rate: l.rate,
+      amount: l.amount,
+    }))
     return buildStatementText({
       customerName: party.party_name,
       fromDate,
       toDate,
-      items: flatItems.map((l) => ({
-        sku: l.sku,
-        quantity: l.quantity,
-        rate: l.rate,
-        amount: l.amount,
-      })),
+      items: flatItems,
       purchasesTotal: rangePurchased,
       previousBalance: openingBalance,
       cashPaid: rangeCashPaid,
@@ -480,6 +545,10 @@ export default function PartyAccountPage() {
       setFromDate(firstOfMonthStr())
       setToDate(t)
     }
+  }
+
+  function toggleDay(date: string) {
+    setExpandedDays((prev) => ({ ...prev, [date]: !prev[date] }))
   }
     // ============ RENDER ============
   if (loading) {
@@ -600,7 +669,7 @@ export default function PartyAccountPage() {
             </div>
           )}
 
-          {/* Balance hero — solid chip */}
+          {/* Balance hero */}
           <div
             className={`${balanceChipClass} rounded-xl px-4 py-4 text-center text-white`}
           >
@@ -612,7 +681,7 @@ export default function PartyAccountPage() {
             </div>
           </div>
 
-          {/* Statement actions — under balance */}
+          {/* Statement actions */}
           <div className="grid grid-cols-2 gap-2 mt-3">
             <button
               onClick={copyStatement}
@@ -676,14 +745,14 @@ export default function PartyAccountPage() {
               type="date"
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
-              className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
             />
             <span className="text-slate-400 text-sm shrink-0">to</span>
             <input
               type="date"
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
-              className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="flex-1 h-9 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
             />
           </div>
           <div className="flex flex-wrap gap-1.5">
@@ -758,6 +827,88 @@ export default function PartyAccountPage() {
                 />
               </div>
 
+              {/* Balance breakdown — which days/bills make up the balance */}
+              {outstandingDays.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">
+                    Balance Breakdown
+                  </div>
+                  <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                    {outstandingDays.map((day) => {
+                      const isOpen = !!expandedDays[day.date]
+                      const age = daysAgo(day.date)
+                      const ageColor =
+                        age < 7
+                          ? 'text-slate-400'
+                          : age <= 30
+                          ? 'text-amber-700'
+                          : 'text-rose-700'
+                      return (
+                        <div key={day.date}>
+                          <button
+                            onClick={() => toggleDay(day.date)}
+                            className="w-full px-3 py-2.5 flex items-center gap-2 hover:bg-slate-50 text-left"
+                          >
+                            <div className="shrink-0 text-slate-400">
+                              {isOpen ? (
+                                <ChevronDown className="w-3.5 h-3.5" />
+                              ) : (
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs font-semibold text-slate-800">
+                                {formatDate(day.date)}
+                                {age > 0 && (
+                                  <span
+                                    className={`ml-1.5 text-[10px] font-normal ${ageColor}`}
+                                  >
+                                    · {age}d old
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[10px] text-slate-500 mt-0.5">
+                                ₹{day.total.toFixed(0)} total · ₹
+                                {day.paid.toFixed(0)} paid
+                              </div>
+                            </div>
+                            <div className="text-xs font-bold text-rose-700 shrink-0">
+                              ₹ {day.due.toFixed(0)} due
+                            </div>
+                          </button>
+                          {isOpen && (
+                            <div className="px-8 pb-2 pt-1 bg-slate-50 space-y-1">
+                              {day.items.length === 0 ? (
+                                <div className="text-[11px] text-slate-400 py-1">
+                                  No line items.
+                                </div>
+                              ) : (
+                                day.items.map((it) => (
+                                  <div
+                                    key={it.detail_id}
+                                    className="flex items-center justify-between text-[11px] gap-2"
+                                  >
+                                    <div className="font-mono text-slate-700 truncate flex-1">
+                                      {it.sku}
+                                    </div>
+                                    <div className="text-slate-500 shrink-0">
+                                      {it.quantity} × ₹{it.rate.toFixed(0)}
+                                    </div>
+                                    <div className="text-slate-800 w-16 text-right shrink-0">
+                                      ₹{it.amount.toFixed(0)}
+                                    </div>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              )}
+
               {lifetimePurchased > 0 && (
                 <div>
                   <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
@@ -794,56 +945,60 @@ export default function PartyAccountPage() {
             </div>
           )}
 
-          {/* PURCHASES */}
+          {/* PURCHASES — grouped by day */}
           {tab === 'purchases' && (
             <div>
               {rangeLoading ? (
                 <TabLoading />
+              ) : purchaseDays.length === 0 ? (
+                <TabEmpty
+                  icon={<ShoppingCart className="w-8 h-8 text-slate-300" />}
+                  title="No purchases in this range."
+                  sub="Try widening the date range."
+                />
               ) : (
-                <DateGroupedList
-                  rows={rangeSales}
-                  getDate={(s) => s.bill_date}
-                  getAmount={(s) => Number(s.total_amount)}
-                  getKey={(s) => s.sale_id}
-                  emptyState={
-                    <TabEmpty
-                      icon={
-                        <ShoppingCart className="w-8 h-8 text-slate-300" />
-                      }
-                      title="No purchases in this range."
-                      sub="Try widening the date range."
-                    />
-                  }
-                  renderRow={(s) => {
-                    const isOpen = expandedSale === s.sale_id
-                    const items = rangeSaleItems[s.sale_id] || []
+                <div className="divide-y divide-slate-100">
+                  {purchaseDays.map((day) => {
+                    const isOpen = !!expandedDays[day.date]
                     return (
-                      <div className="border-b border-slate-100 last:border-b-0">
+                      <div key={day.date}>
                         <button
-                          onClick={() =>
-                            setExpandedSale(isOpen ? null : s.sale_id)
-                          }
-                          className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
+                          onClick={() => toggleDay(day.date)}
+                          className="w-full px-3 sm:px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
                         >
-                          <div className="text-xs text-slate-400 w-16 shrink-0">
-                            #{s.sale_id}
+                          <div className="shrink-0 text-slate-400">
+                            {isOpen ? (
+                              <ChevronDown className="w-4 h-4" />
+                            ) : (
+                              <ChevronRight className="w-4 h-4" />
+                            )}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <StatusPill status={s.status} />
+                            <div className="text-sm font-semibold text-slate-900">
+                              {formatDate(day.date)}
+                            </div>
+                            <div className="text-[11px] text-slate-500 mt-0.5">
+                              {day.itemCount} item
+                              {day.itemCount === 1 ? '' : 's'}
+                              {day.bills.length > 1 && (
+                                <> · {day.bills.length} bills</>
+                              )}
+                            </div>
                           </div>
                           <div className="text-sm font-bold text-slate-900 shrink-0">
-                            {money(s.total_amount)}
+                            {money(day.total)}
                           </div>
                         </button>
+
                         {isOpen && (
-                          <div className="bg-slate-50 px-4 py-3 border-t border-slate-100">
-                            {items.length === 0 ? (
+                          <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                            {day.items.length === 0 ? (
                               <div className="text-xs text-slate-400 text-center py-2">
                                 No line items.
                               </div>
                             ) : (
-                              <div className="space-y-1.5">
-                                {items.map((it) => (
+                              <div className="space-y-1">
+                                {day.items.map((it) => (
                                   <div
                                     key={it.detail_id}
                                     className="flex items-center justify-between text-xs gap-2"
@@ -859,14 +1014,23 @@ export default function PartyAccountPage() {
                                     </div>
                                   </div>
                                 ))}
+                                <div className="pt-2 mt-2 border-t border-slate-200 flex justify-between text-xs">
+                                  <span className="text-slate-500">
+                                    {day.itemCount} item
+                                    {day.itemCount === 1 ? '' : 's'}
+                                  </span>
+                                  <span className="font-semibold text-slate-800">
+                                    Total {money(day.total)}
+                                  </span>
+                                </div>
                               </div>
                             )}
                           </div>
                         )}
                       </div>
                     )
-                  }}
-                />
+                  })}
+                </div>
               )}
             </div>
           )}
@@ -876,82 +1040,108 @@ export default function PartyAccountPage() {
             <div>
               {rangeLoading ? (
                 <TabLoading />
+              ) : rangePayments.length === 0 ? (
+                <TabEmpty
+                  icon={<Wallet className="w-8 h-8 text-slate-300" />}
+                  title="No payments in this range."
+                  sub="Payments received from this customer appear here."
+                />
               ) : (
-                <DateGroupedList
-                  rows={rangePayments}
-                  getDate={(p) => p.payment_date}
-                  getAmount={(p) => Number(p.amount)}
-                  getKey={(p) => p.payment_id}
-                  emptyState={
-                    <TabEmpty
-                      icon={<Wallet className="w-8 h-8 text-slate-300" />}
-                      title="No payments in this range."
-                      sub="Payments received from this customer appear here."
-                    />
-                  }
-                  renderRow={(p) => (
-                    <div className="px-4 py-3 border-b border-slate-100 last:border-b-0 flex items-center gap-3">
+                <div>
+                  {rangePayments.map((p) => (
+                    <div
+                      key={p.payment_id}
+                      className="px-4 py-3 border-b border-slate-100 last:border-b-0 flex items-center gap-3"
+                    >
                       <div className="text-xs text-slate-400 w-16 shrink-0">
                         #{p.payment_id}
                       </div>
                       <div className="flex-1 min-w-0">
-                        <ModePill mode={p.payment_mode} />
+                        <div className="text-sm font-medium text-slate-800">
+                          {formatDate(p.payment_date)}
+                        </div>
+                        <div className="mt-0.5">
+                          <ModePill mode={p.payment_mode} />
+                        </div>
                       </div>
                       <div className="text-sm font-bold text-emerald-700 shrink-0">
                         {money(p.amount)}
                       </div>
                     </div>
-                  )}
-                />
+                  ))}
+                </div>
               )}
             </div>
           )}
 
-          {/* LEDGER */}
+          {/* LEDGER — chronological, unchanged */}
           {tab === 'ledger' && (
             <div>
               {rangeLoading ? (
                 <TabLoading />
-              ) : (
-                <DateGroupedList
-                  rows={ledgerRows}
-                  getDate={(r) => r.date}
-                  getAmount={(r) => Number(r.amount)}
-                  getKey={(r) => `${r.type}-${r.ref_id}`}
-                  dayTotalLabel="net"
-                  emptyState={
-                    <TabEmpty
-                      icon={<BookOpen className="w-8 h-8 text-slate-300" />}
-                      title="No activity in this range."
-                      sub="Sales and payments will appear here chronologically."
-                    />
-                  }
-                  renderRow={(r) => (
-                    <div className="px-3 py-2 border-b border-slate-100 last:border-b-0 grid grid-cols-12 gap-2 text-xs sm:text-sm">
-                      <div className="col-span-4 sm:col-span-4">
-                        <span
-                          className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
-                            r.type === 'Sale'
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-emerald-100 text-emerald-700'
-                          }`}
-                        >
-                          {r.type}
-                        </span>
-                      </div>
-                      <div
-                        className={`col-span-4 text-right font-medium whitespace-nowrap ${
-                          r.amount >= 0 ? 'text-rose-700' : 'text-emerald-700'
-                        }`}
-                      >
-                        {r.amount >= 0 ? '+' : '−'} {money(Math.abs(r.amount))}
-                      </div>
-                      <div className="col-span-4 text-right font-semibold text-slate-900 whitespace-nowrap">
-                        {money(r.balance)}
-                      </div>
-                    </div>
-                  )}
+              ) : ledgerRows.length === 0 ? (
+                <TabEmpty
+                  icon={<BookOpen className="w-8 h-8 text-slate-300" />}
+                  title="No activity in this range."
+                  sub="Sales and payments will appear here chronologically."
                 />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-xs sm:text-sm">
+                    <thead>
+                      <tr className="bg-slate-50">
+                        <th className="px-3 py-2 text-left text-[10px] sm:text-xs font-semibold text-slate-600">
+                          Date
+                        </th>
+                        <th className="px-3 py-2 text-left text-[10px] sm:text-xs font-semibold text-slate-600">
+                          Type
+                        </th>
+                        <th className="px-3 py-2 text-right text-[10px] sm:text-xs font-semibold text-slate-600">
+                          Amount
+                        </th>
+                        <th className="px-3 py-2 text-right text-[10px] sm:text-xs font-semibold text-slate-600">
+                          Balance
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledgerRows.map((r, i) => (
+                        <tr
+                          key={`${r.type}-${r.ref_id}-${i}`}
+                          className="border-b border-slate-100 last:border-b-0"
+                        >
+                          <td className="px-3 py-2 text-slate-600 whitespace-nowrap">
+                            {formatDate(r.date).slice(0, 6)}
+                          </td>
+                          <td className="px-3 py-2">
+                            <span
+                              className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide ${
+                                r.type === 'Sale'
+                                  ? 'bg-rose-100 text-rose-700'
+                                  : 'bg-emerald-100 text-emerald-700'
+                              }`}
+                            >
+                              {r.type}
+                            </span>
+                          </td>
+                          <td
+                            className={`px-3 py-2 text-right font-medium whitespace-nowrap ${
+                              r.amount >= 0
+                                ? 'text-rose-700'
+                                : 'text-emerald-700'
+                            }`}
+                          >
+                            {r.amount >= 0 ? '+' : '−'}{' '}
+                            {money(Math.abs(r.amount))}
+                          </td>
+                          <td className="px-3 py-2 text-right font-semibold text-slate-900 whitespace-nowrap">
+                            {money(r.balance)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           )}
@@ -1016,10 +1206,7 @@ export default function PartyAccountPage() {
   )
 }
 
-// ============================================================
-// SUB-COMPONENTS
-// ============================================================
-
+// ---------- Sub-components ----------
 function StatBox({
   label,
   value,
@@ -1045,22 +1232,6 @@ function StatBox({
   )
 }
 
-function StatusPill({ status }: { status: string }) {
-  const styles =
-    status === 'Paid'
-      ? 'bg-emerald-100 text-emerald-700'
-      : status === 'Partially Paid'
-      ? 'bg-amber-100 text-amber-700'
-      : 'bg-rose-100 text-rose-700'
-  return (
-    <span
-      className={`inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded-full uppercase tracking-wide ${styles}`}
-    >
-      {status}
-    </span>
-  )
-}
-
 function ModePill({ mode }: { mode: string }) {
   const isUpi = mode === 'UPI'
   return (
@@ -1076,9 +1247,7 @@ function ModePill({ mode }: { mode: string }) {
 
 function TabLoading() {
   return (
-    <div className="px-4 py-8 text-center text-xs text-slate-400">
-      Loading…
-    </div>
+    <div className="px-4 py-8 text-center text-xs text-slate-400">Loading…</div>
   )
 }
 

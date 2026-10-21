@@ -25,7 +25,6 @@ type ReportCard = {
   Icon: any
   color: 'blue' | 'green' | 'amber' | 'red' | 'purple' | 'indigo' | 'slate'
   ownerOnly?: boolean
-  comingSoon?: boolean
 }
 
 const REPORTS: ReportCard[] = [
@@ -33,7 +32,7 @@ const REPORTS: ReportCard[] = [
     href: '/reports/cost-history',
     title: 'Cost Change Tracker',
     description:
-      'Rate history for each SKU across invoices — spot price shifts, cheapest supplier, and price creep.',
+      'Rate history for each SKU across invoices — spot price shifts and price creep.',
     Icon: TrendingUp,
     color: 'blue',
   },
@@ -44,6 +43,7 @@ const REPORTS: ReportCard[] = [
       'Same SKU bought from different suppliers — find who is cheaper and by how much.',
     Icon: Store,
     color: 'purple',
+    ownerOnly: true,
   },
   {
     href: '/reports/fast-moving',
@@ -126,48 +126,48 @@ const REPORTS: ReportCard[] = [
 
 const COLOR_THEMES: Record<
   string,
-  { bg: string; iconBg: string; iconText: string; titleText: string }
+  { hoverBorder: string; iconBg: string; iconText: string; titleText: string }
 > = {
   blue: {
-    bg: 'hover:border-blue-300',
-    iconBg: 'bg-blue-100',
-    iconText: 'text-blue-700',
-    titleText: 'text-blue-900',
+    hoverBorder: 'hover:border-blue-400',
+    iconBg: 'bg-blue-50',
+    iconText: 'text-blue-600',
+    titleText: 'text-slate-900',
   },
   green: {
-    bg: 'hover:border-green-300',
-    iconBg: 'bg-green-100',
-    iconText: 'text-green-700',
-    titleText: 'text-green-900',
+    hoverBorder: 'hover:border-emerald-400',
+    iconBg: 'bg-emerald-50',
+    iconText: 'text-emerald-600',
+    titleText: 'text-slate-900',
   },
   amber: {
-    bg: 'hover:border-amber-300',
-    iconBg: 'bg-amber-100',
-    iconText: 'text-amber-700',
-    titleText: 'text-amber-900',
+    hoverBorder: 'hover:border-amber-400',
+    iconBg: 'bg-amber-50',
+    iconText: 'text-amber-600',
+    titleText: 'text-slate-900',
   },
   red: {
-    bg: 'hover:border-red-300',
-    iconBg: 'bg-red-100',
-    iconText: 'text-red-700',
-    titleText: 'text-red-900',
+    hoverBorder: 'hover:border-rose-400',
+    iconBg: 'bg-rose-50',
+    iconText: 'text-rose-600',
+    titleText: 'text-slate-900',
   },
   purple: {
-    bg: 'hover:border-purple-300',
-    iconBg: 'bg-purple-100',
-    iconText: 'text-purple-700',
-    titleText: 'text-purple-900',
+    hoverBorder: 'hover:border-purple-400',
+    iconBg: 'bg-purple-50',
+    iconText: 'text-purple-600',
+    titleText: 'text-slate-900',
   },
   indigo: {
-    bg: 'hover:border-indigo-300',
-    iconBg: 'bg-indigo-100',
-    iconText: 'text-indigo-700',
-    titleText: 'text-indigo-900',
+    hoverBorder: 'hover:border-indigo-400',
+    iconBg: 'bg-indigo-50',
+    iconText: 'text-indigo-600',
+    titleText: 'text-slate-900',
   },
   slate: {
-    bg: 'hover:border-slate-300',
+    hoverBorder: 'hover:border-slate-400',
     iconBg: 'bg-slate-100',
-    iconText: 'text-slate-700',
+    iconText: 'text-slate-600',
     titleText: 'text-slate-900',
   },
 }
@@ -185,16 +185,18 @@ export default function ReportsIndex() {
 
   return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
-      <div className="max-w-7xl mx-auto">
+      <div className="max-w-6xl mx-auto">
 
-        <div className="mb-6">
-          <div className="flex items-center gap-3 mb-1">
-            <BarChart3 className="w-6 h-6 text-blue-700" />
+        <div className="mb-6 sm:mb-8">
+          <div className="flex items-center gap-3 mb-1.5">
+            <div className="w-10 h-10 rounded-xl bg-indigo-100 text-indigo-600 flex items-center justify-center">
+              <BarChart3 className="w-5 h-5" />
+            </div>
             <h1 className="text-2xl sm:text-3xl font-bold text-slate-900">
               Reports
             </h1>
           </div>
-          <p className="text-xs sm:text-sm text-slate-500">
+          <p className="text-xs sm:text-sm text-slate-500 ml-13 pl-1">
             Business insight across sales, purchases, stock, and ledger.
           </p>
         </div>
@@ -202,44 +204,26 @@ export default function ReportsIndex() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
           {visible.map((r) => {
             const t = COLOR_THEMES[r.color]
-            const isComingSoon = !!r.comingSoon
-
-            const Card = (
-              <div
-                className={`h-full bg-white rounded-xl border border-slate-200 p-5 transition-all ${
-                  isComingSoon
-                    ? 'opacity-60 cursor-not-allowed'
-                    : `${t.bg} hover:shadow-md cursor-pointer group`
-                }`}
-              >
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <div
-                    className={`w-10 h-10 rounded-lg ${t.iconBg} ${t.iconText} flex items-center justify-center shrink-0`}
-                  >
-                    <r.Icon className="w-5 h-5" />
+            return (
+              <Link key={r.href} href={r.href} className="block group">
+                <div
+                  className={`h-full bg-white rounded-xl border border-slate-200 p-5 transition-all group-hover:shadow-md group-active:scale-[0.99] ${t.hoverBorder}`}
+                >
+                  <div className="flex items-start justify-between gap-3 mb-3">
+                    <div
+                      className={`w-10 h-10 rounded-lg ${t.iconBg} ${t.iconText} flex items-center justify-center shrink-0`}
+                    >
+                      <r.Icon className="w-5 h-5" />
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-slate-600 group-hover:translate-x-0.5 transition-all" />
                   </div>
-                  {isComingSoon ? (
-                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 uppercase tracking-wide">
-                      Soon
-                    </span>
-                  ) : (
-                    <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-slate-600 transition-colors" />
-                  )}
+                  <h2 className={`text-base font-bold mb-1 ${t.titleText}`}>
+                    {r.title}
+                  </h2>
+                  <p className="text-xs text-slate-500 leading-relaxed">
+                    {r.description}
+                  </p>
                 </div>
-                <h2 className={`text-base font-bold mb-1 ${t.titleText}`}>
-                  {r.title}
-                </h2>
-                <p className="text-xs text-slate-500 leading-relaxed">
-                  {r.description}
-                </p>
-              </div>
-            )
-
-            return isComingSoon ? (
-              <div key={r.href}>{Card}</div>
-            ) : (
-              <Link key={r.href} href={r.href} className="block">
-                {Card}
               </Link>
             )
           })}

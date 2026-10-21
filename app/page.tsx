@@ -10,6 +10,7 @@ import {
   Search,
   Wallet,
   Package,
+  PackageX,
   RotateCcw,
   BarChart3,
   Users,
@@ -70,19 +71,16 @@ export default function Home() {
   const [role, setRole] = useState<Role>(null)
   const [roleChecked, setRoleChecked] = useState(false)
 
-  // Today snapshot
   const [todaySales, setTodaySales] = useState(0)
   const [todayCashIn, setTodayCashIn] = useState(0)
   const [todayPurchases, setTodayPurchases] = useState(0)
   const [pendingKhata, setPendingKhata] = useState(0)
 
-  // Lists
   const [recentSales, setRecentSales] = useState<RecentSale[]>([])
   const [topDebtors, setTopDebtors] = useState<DebtorRow[]>([])
 
   const [loading, setLoading] = useState(true)
 
-  // Customer search
   const [searchQuery, setSearchQuery] = useState('')
   const [searchResults, setSearchResults] = useState<Party[]>([])
   const [searchOpen, setSearchOpen] = useState(false)
@@ -100,7 +98,6 @@ export default function Home() {
     loadAll()
   }, [])
 
-  // Close search dropdown on outside click
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (
@@ -114,7 +111,6 @@ export default function Home() {
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [])
 
-  // Debounced customer search
   useEffect(() => {
     if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current)
 
@@ -169,7 +165,6 @@ export default function Home() {
       (pu.data || []).reduce((a, r) => a + Number(r.total_amount), 0)
     )
 
-    // Pending khata: sum of all customer balances
     const { data: customers } = await supabase
       .from('parties')
       .select('current_balance')
@@ -249,7 +244,8 @@ export default function Home() {
       year: 'numeric',
     })
   }, [])
-    // ============ RENDER ============
+
+  // ============ RENDER ============
   return (
     <div className="min-h-screen bg-slate-50 p-3 sm:p-6 lg:p-8">
       <div className="max-w-4xl mx-auto">
@@ -291,7 +287,6 @@ export default function Home() {
             )}
           </div>
 
-          {/* Search results dropdown */}
           {searchOpen && searchQuery.trim().length >= 2 && (
             <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg z-30 max-h-80 overflow-y-auto">
               {searching ? (
@@ -393,7 +388,7 @@ export default function Home() {
           </div>
         </div>
 
-        {/* QUICK ACTIONS */}
+        {/* QUICK ACTIONS — 9 tiles */}
         <div className="mb-5">
           <h2 className="text-xs sm:text-sm font-semibold text-slate-500 uppercase tracking-wide mb-2">
             Quick Actions
@@ -418,9 +413,9 @@ export default function Home() {
               color="blue"
             />
             <ActionTile
-              href="/purchases"
-              label="Purchases"
-              Icon={Package}
+              href="/parties"
+              label="Parties"
+              Icon={Users}
               color="slate"
             />
             <ActionTile
@@ -433,6 +428,24 @@ export default function Home() {
               href="/reports"
               label="Reports"
               Icon={BarChart3}
+              color="purple"
+            />
+            <ActionTile
+              href="/purchases"
+              label="Purchases"
+              Icon={Package}
+              color="slate"
+            />
+            <ActionTile
+              href="/purchase-returns"
+              label="Purchase Returns"
+              Icon={PackageX}
+              color="amber"
+            />
+            <ActionTile
+              href="/expenses"
+              label="Expenses"
+              Icon={Wallet}
               color="purple"
             />
           </div>
@@ -579,11 +592,17 @@ function ActionTile({
 }) {
   const themes: Record<typeof color, { bg: string; text: string }> = {
     indigo: { bg: 'bg-indigo-50 hover:bg-indigo-100', text: 'text-indigo-600' },
-    emerald: { bg: 'bg-emerald-50 hover:bg-emerald-100', text: 'text-emerald-600' },
+    emerald: {
+      bg: 'bg-emerald-50 hover:bg-emerald-100',
+      text: 'text-emerald-600',
+    },
     blue: { bg: 'bg-blue-50 hover:bg-blue-100', text: 'text-blue-600' },
     slate: { bg: 'bg-slate-100 hover:bg-slate-200', text: 'text-slate-600' },
     amber: { bg: 'bg-amber-50 hover:bg-amber-100', text: 'text-amber-600' },
-    purple: { bg: 'bg-purple-50 hover:bg-purple-100', text: 'text-purple-600' },
+    purple: {
+      bg: 'bg-purple-50 hover:bg-purple-100',
+      text: 'text-purple-600',
+    },
   }
   const t = themes[color]
   return (

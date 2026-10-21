@@ -5,7 +5,6 @@ import { useSearchParams } from 'next/navigation'
 import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../components/ui/new-party-dialog'
-import { DateGroupedList } from '../../components/ui/date-grouped-list'
 import {
   Save,
   X,
@@ -15,6 +14,8 @@ import {
   MessageCircle,
   Phone,
   User,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 import {
   buildStatementText,
@@ -55,6 +56,7 @@ type SaleItem = {
   quantity: number
   rate: number
   amount: number
+  sku: string
 }
 
 type StatementLine = {
@@ -83,6 +85,16 @@ type ReceiptSnapshot = {
   paymentDate: string
 }
 
+type OutstandingDay = {
+  date: string
+  bills: SaleRow[]
+  total: number
+  paid: number
+  due: number
+  itemCount: number
+  items: SaleItem[]
+}
+
 // ---------- Helpers ----------
 function todayStr() {
   return new Date().toISOString().slice(0, 10)
@@ -108,20 +120,20 @@ function daysAgo(d: string) {
   return Math.max(0, Math.floor((now - then) / (1000 * 60 * 60 * 24)))
 }
 
-// ---------- Component (inner) ----------
+// ---------- Component ----------
 function PaymentsPageInner() {
   const searchParams = useSearchParams()
 
   const [shops, setShops] = useState<Party[]>([])
   const [todayPayments, setTodayPayments] = useState<Payment[]>([])
   const [outstandingBills, setOutstandingBills] = useState<SaleRow[]>([])
+  const [outstandingItems, setOutstandingItems] = useState<SaleItem[]>([])
   const [statementLines, setStatementLines] = useState<StatementLine[]>([])
   const [lastPaymentForShop, setLastPaymentForShop] = useState<{
     amount: number
     payment_date: string
   } | null>(null)
 
-  // Receipt state — set after a successful save, cleared on shop change / reset
   const [receipt, setReceipt] = useState<ReceiptSnapshot | null>(null)
   const [receiptLines, setReceiptLines] = useState<StatementLine[]>([])
 
@@ -147,6 +159,8 @@ function PaymentsPageInner() {
   const [savingPhone, setSavingPhone] = useState(false)
   const [phoneMessage, setPhoneMessage] = useState('')
 
+  const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({})
+
   const amountRef = useRef<HTMLInputElement>(null)
   const upiRef = useRef<HTMLInputElement>(null)
 
@@ -154,7 +168,7 @@ function PaymentsPageInner() {
     loadData()
   }, [])
 
-  // Prefill shop from ?party_id= (from party account page buttons)
+  // Prefill shop from ?party_id=
   useEffect(() => {
     const prefill = searchParams.get('party_id')
     if (!prefill) return
@@ -179,10 +193,12 @@ function PaymentsPageInner() {
       loadShopOutstanding(pickedShop.id)
     } else {
       setOutstandingBills([])
+      setOutstandingItems([])
       setStatementLines([])
       setLastPaymentForShop(null)
       setReceipt(null)
       setReceiptLines([])
+      setExpandedDays({})
     }
   }, [pickedShop.id])
 
@@ -249,51 +265,54 @@ function PaymentsPageInner() {
     )
 
     if (rows.length === 0) {
+      setOutstandingItems([])
       setStatementLines([])
       return
     }
 
-    const lines = await fetchLinesForSales(rows.map((r) => r.sale_id), rows)
-    setStatementLines(lines)
-  }
-
-  async function fetchLinesForSales(
-    saleIds: number[],
-    billsForOrder?: SaleRow[]
-  ): Promise<StatementLine[]> {
-    if (saleIds.length === 0) return []
-
+    // Fetch items for all outstanding bills
+    const saleIds = rows.map((r) => r.sale_id)
     const { data: itemsData } = await supabase
       .from('sale_items')
       .select('detail_id, sale_id, item_id, quantity, rate, amount')
       .in('sale_id', saleIds)
 
-    const itemList = (itemsData as SaleItem[]) || []
-    const itemIds = Array.from(new Set(itemList.map((x) => x.item_id)))
+    const rawItems = (itemsData || []) as {
+      detail_id: number
+      sale_id: number
+      item_id: number
+      quantity: number
+      rate: number
+      amount: number
+    }[]
 
-    let itemMap: Record<number, string> = {}
+    const itemIds = Array.from(new Set(rawItems.map((x) => x.item_id)))
+    let skuMap: Record<number, string> = {}
     if (itemIds.length > 0) {
       const { data: itemRows } = await supabase
         .from('items')
         .select('item_id, sku')
         .in('item_id', itemIds)
-      for (const it of itemRows || []) itemMap[it.item_id] = it.sku
+      for (const it of itemRows || []) skuMap[it.item_id] = it.sku
     }
 
+    const items: SaleItem[] = rawItems.map((it) => ({
+      detail_id: it.detail_id,
+      sale_id: it.sale_id,
+      item_id: it.item_id,
+      quantity: Number(it.quantity),
+      rate: Number(it.rate),
+      amount: Number(it.amount),
+      sku: skuMap[it.item_id] || '(unknown)',
+    }))
+    setOutstandingItems(items)
+
+    // Statement lines: today's items first, then older — same as before
     const billDateById: Record<number, string> = {}
-    if (billsForOrder) {
-      for (const r of billsForOrder) billDateById[r.sale_id] = r.bill_date
-    } else {
-      const { data: billRows } = await supabase
-        .from('sales')
-        .select('sale_id, bill_date')
-        .in('sale_id', saleIds)
-      for (const b of billRows || []) billDateById[b.sale_id] = b.bill_date
-    }
-
+    for (const r of rows) billDateById[r.sale_id] = r.bill_date
     const today = todayStr()
 
-    const sortedItems = [...itemList].sort((a, b) => {
+    const sortedForStatement = [...items].sort((a, b) => {
       const aDate = billDateById[a.sale_id] || ''
       const bDate = billDateById[b.sale_id] || ''
       const aToday = aDate === today ? 1 : 0
@@ -302,14 +321,97 @@ function PaymentsPageInner() {
       return aDate < bDate ? -1 : aDate > bDate ? 1 : a.sale_id - b.sale_id
     })
 
-    return sortedItems.map((it) => ({
+    setStatementLines(
+      sortedForStatement.map((it) => ({
+        detail_id: it.detail_id,
+        sku: it.sku,
+        quantity: it.quantity,
+        rate: it.rate,
+        amount: it.amount,
+      }))
+    )
+  }
+
+  async function fetchLinesForSales(
+    saleIds: number[]
+  ): Promise<StatementLine[]> {
+    if (saleIds.length === 0) return []
+
+    const { data: itemsData } = await supabase
+      .from('sale_items')
+      .select('detail_id, sale_id, item_id, quantity, rate, amount')
+      .in('sale_id', saleIds)
+
+    const raw = (itemsData || []) as {
+      detail_id: number
+      sale_id: number
+      item_id: number
+      quantity: number
+      rate: number
+      amount: number
+    }[]
+
+    const itemIds = Array.from(new Set(raw.map((x) => x.item_id)))
+    let skuMap: Record<number, string> = {}
+    if (itemIds.length > 0) {
+      const { data: itemRows } = await supabase
+        .from('items')
+        .select('item_id, sku')
+        .in('item_id', itemIds)
+      for (const it of itemRows || []) skuMap[it.item_id] = it.sku
+    }
+
+    return raw.map((it) => ({
       detail_id: it.detail_id,
-      sku: itemMap[it.item_id] || '(unknown)',
+      sku: skuMap[it.item_id] || '(unknown)',
       quantity: Number(it.quantity),
       rate: Number(it.rate),
       amount: Number(it.amount),
     }))
   }
+
+  // ---------- Group by day ----------
+  const outstandingDays: OutstandingDay[] = useMemo(() => {
+    const byDate: Record<string, SaleRow[]> = {}
+    for (const b of outstandingBills) {
+      if (!byDate[b.bill_date]) byDate[b.bill_date] = []
+      byDate[b.bill_date].push(b)
+    }
+
+    const itemsBySale: Record<number, SaleItem[]> = {}
+    for (const it of outstandingItems) {
+      if (!itemsBySale[it.sale_id]) itemsBySale[it.sale_id] = []
+      itemsBySale[it.sale_id].push(it)
+    }
+
+    return Object.keys(byDate)
+      .sort()
+      .map((date) => {
+        const bills = byDate[date]
+        const total = bills.reduce((s, b) => s + Number(b.total_amount), 0)
+        const paid = bills.reduce(
+          (s, b) => s + Number(b.paid_amount || 0),
+          0
+        )
+        const due = Math.max(0, total - paid)
+        const items: SaleItem[] = []
+        let itemCount = 0
+        for (const b of bills) {
+          const billItems = itemsBySale[b.sale_id] || []
+          for (const it of billItems) {
+            items.push(it)
+            itemCount += it.quantity
+          }
+        }
+        return { date, bills, total, paid, due, itemCount, items }
+      })
+  }, [outstandingBills, outstandingItems])
+
+  const outstandingTotal = outstandingDays.reduce((s, d) => s + d.due, 0)
+  const outstandingItemCount = outstandingDays.reduce(
+    (s, d) => s + d.itemCount,
+    0
+  )
 
   // ---------- Options ----------
   const shopOptions = shops.map((s) => ({
@@ -319,12 +421,6 @@ function PaymentsPageInner() {
 
   const selectedShop = shops.find((s) => s.party_id === pickedShop.id)
   const currentBalance = Number(selectedShop?.current_balance || 0)
-
-  const outstandingTotal = outstandingBills.reduce(
-    (s, b) =>
-      s + Math.max(0, Number(b.total_amount) - Number(b.paid_amount || 0)),
-    0
-  )
 
   const shopsByBalance = useMemo(
     () =>
@@ -441,7 +537,6 @@ function PaymentsPageInner() {
       )
     }
 
-    // Snapshot receipt BEFORE clearing amount fields
     setReceipt({
       previousBalance,
       amountPaid: paymentAmt,
@@ -452,7 +547,6 @@ function PaymentsPageInner() {
       paymentDate,
     })
 
-    // Fetch items for the bills just touched (for the receipt itemization)
     if (touchedSaleIds.length > 0) {
       const lines = await fetchLinesForSales(touchedSaleIds)
       setReceiptLines(lines)
@@ -471,7 +565,7 @@ function PaymentsPageInner() {
     setSaving(false)
   }
 
-  // ---------- FIFO (writes paid_amount, derives status, returns touched IDs) ----------
+  // ---------- FIFO ----------
   async function applyFIFO(
     shopId: number,
     paymentAmount: number
@@ -524,6 +618,7 @@ function PaymentsPageInner() {
     setSuccess(false)
     setReceipt(null)
     setReceiptLines([])
+    setExpandedDays({})
   }
 
   async function deletePayment(id: number) {
@@ -558,14 +653,17 @@ function PaymentsPageInner() {
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'
 
-  // ---------- Statement text (receipt after payment, outstanding otherwise) ----------
+  function toggleDay(date: string) {
+    setExpandedDays((prev) => ({ ...prev, [date]: !prev[date] }))
+  }
+
+  // ---------- Statement text ----------
   const statementText = useMemo(() => {
     if (!selectedShop) return ''
 
     const today = todayStr()
 
     if (success && receipt) {
-      // RECEIPT MODE — what was just paid + remaining due
       const billDates = outstandingBills.map((b) => b.bill_date).filter(Boolean)
       const fromDate =
         billDates.length > 0
@@ -593,7 +691,6 @@ function PaymentsPageInner() {
       })
     }
 
-    // OUTSTANDING MODE — what is still owed
     const billDates = outstandingBills.map((b) => b.bill_date).filter(Boolean)
     const fromDate =
       billDates.length > 0
@@ -788,6 +885,7 @@ function PaymentsPageInner() {
                 setSuccess(false)
                 setReceipt(null)
                 setReceiptLines([])
+                setExpandedDays({})
                 setTimeout(() => amountRef.current?.focus(), 100)
               }}
               placeholder="Select or type shop..."
@@ -809,11 +907,13 @@ function PaymentsPageInner() {
             </div>
           )}
 
-          {pickedShop.id && outstandingBills.length > 0 && (
+          {pickedShop.id && outstandingDays.length > 0 && (
             <div className="bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 flex items-center justify-between">
               <span className="text-xs text-rose-800">
-                {outstandingBills.length} outstanding bill
-                {outstandingBills.length === 1 ? '' : 's'}
+                {outstandingDays.length} day
+                {outstandingDays.length === 1 ? '' : 's'} ·{' '}
+                {outstandingItemCount} item
+                {outstandingItemCount === 1 ? '' : 's'}
               </span>
               <span className="text-sm font-bold text-rose-800">
                 ₹ {outstandingTotal.toFixed(2)} due
@@ -962,12 +1062,12 @@ function PaymentsPageInner() {
           )}
         </div>
 
-        {/* Outstanding bills for selected shop */}
-        {pickedShop.id && outstandingBills.length > 0 && (
+        {/* Outstanding — grouped by day */}
+        {pickedShop.id && outstandingDays.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mb-5">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
               <span className="text-sm font-semibold text-slate-700">
-                Outstanding Bills — {pickedShop.label}
+                Outstanding — {pickedShop.label}
               </span>
               <span className="text-xs text-rose-700 font-semibold">
                 ₹ {outstandingTotal.toFixed(2)} due
@@ -989,24 +1089,10 @@ function PaymentsPageInner() {
               </div>
             )}
 
-            <DateGroupedList
-              rows={outstandingBills}
-              getDate={(s) => s.bill_date}
-              getAmount={(s) =>
-                Number(s.total_amount) - Number(s.paid_amount || 0)
-              }
-              dayTotalLabel="due"
-              getKey={(s) => s.sale_id}
-              emptyState={
-                <div className="px-3 py-4 text-center text-sm text-slate-400">
-                  No outstanding bills.
-                </div>
-              }
-              renderRow={(s) => {
-                const total = Number(s.total_amount)
-                const paid = Number(s.paid_amount || 0)
-                const due = Math.max(0, total - paid)
-                const age = daysAgo(s.bill_date)
+            <div className="divide-y divide-slate-100">
+              {outstandingDays.map((day) => {
+                const isOpen = !!expandedDays[day.date]
+                const age = daysAgo(day.date)
                 const ageColor =
                   age < 7
                     ? 'text-slate-500'
@@ -1014,36 +1100,95 @@ function PaymentsPageInner() {
                     ? 'text-amber-700'
                     : 'text-rose-700'
                 return (
-                  <div className="grid grid-cols-12 gap-2 px-3 py-2 border-b border-slate-100 last:border-b-0 text-sm items-center">
-                    <div className="col-span-2 text-slate-500 text-xs">
-                      #{s.sale_id}
-                    </div>
-                    <div className="col-span-3 text-slate-800">
-                      {formatDateShort(s.bill_date)}
-                    </div>
-                    <div className="col-span-2 text-right text-slate-600 text-xs">
-                      ₹ {total.toFixed(0)}
-                    </div>
-                    <div className="col-span-2 text-right text-emerald-700 text-xs">
-                      ₹ {paid.toFixed(0)}
-                    </div>
-                    <div className="col-span-3 text-right font-semibold text-rose-700">
-                      ₹ {due.toFixed(2)}
-                      <span
-                        className={`ml-1 text-[10px] font-normal ${ageColor}`}
-                      >
-                        · {age}d
-                      </span>
-                    </div>
+                  <div key={day.date}>
+                    {/* Day header row — tappable */}
+                    <button
+                      onClick={() => toggleDay(day.date)}
+                      className="w-full px-3 sm:px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
+                    >
+                      <div className="shrink-0 text-slate-400">
+                        {isOpen ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-slate-900">
+                          {formatDateLong(day.date)}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5">
+                          {day.itemCount} item
+                          {day.itemCount === 1 ? '' : 's'} · ₹
+                          {day.total.toFixed(0)} total
+                          {day.paid > 0 && (
+                            <span className="text-emerald-700">
+                              {' '}
+                              · ₹{day.paid.toFixed(0)} paid
+                            </span>
+                          )}
+                          <span className={`ml-1 ${ageColor}`}>
+                            · {age}d old
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-bold text-rose-700">
+                          ₹ {day.due.toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-slate-400">due</div>
+                      </div>
+                    </button>
+
+                    {/* Expanded items */}
+                    {isOpen && (
+                      <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                        {day.items.length === 0 ? (
+                          <div className="text-xs text-slate-400 text-center py-2">
+                            No line items.
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            {day.items.map((it) => (
+                              <div
+                                key={it.detail_id}
+                                className="flex items-center justify-between text-xs gap-2"
+                              >
+                                <div className="font-mono text-slate-700 truncate flex-1">
+                                  {it.sku}
+                                </div>
+                                <div className="text-slate-500 shrink-0">
+                                  {it.quantity} × ₹{it.rate.toFixed(0)}
+                                </div>
+                                <div className="font-medium text-slate-800 w-20 text-right shrink-0">
+                                  ₹ {it.amount.toFixed(2)}
+                                </div>
+                              </div>
+                            ))}
+                            <div className="pt-2 mt-2 border-t border-slate-200 flex justify-between text-xs">
+                              <span className="text-slate-500">
+                                {day.itemCount} item
+                                {day.itemCount === 1 ? '' : 's'} ·{' '}
+                                {day.bills.length} bill
+                                {day.bills.length === 1 ? '' : 's'}
+                              </span>
+                              <span className="font-semibold text-slate-800">
+                                Total ₹{day.total.toFixed(2)}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )
-              }}
-            />
+              })}
+            </div>
           </div>
         )}
 
-        {/* All-clear state — only when NOT showing a receipt */}
-        {pickedShop.id && outstandingBills.length === 0 && !success && (
+        {/* All clear — only when NOT showing a receipt */}
+        {pickedShop.id && outstandingDays.length === 0 && !success && (
           <div className="bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3 mb-5 flex items-center justify-between">
             <span className="text-sm font-medium text-emerald-800">
               All clear — no outstanding bills for {pickedShop.label}.
@@ -1052,9 +1197,9 @@ function PaymentsPageInner() {
           </div>
         )}
 
-        {/* Statement card — outstanding OR receipt, available any time there's content */}
+        {/* Statement card */}
         {pickedShop.id &&
-          (outstandingBills.length > 0 || success) &&
+          (outstandingDays.length > 0 || success) &&
           statementText && (
             <div className="bg-white border border-slate-200 rounded-2xl shadow-sm mb-5 overflow-hidden">
               <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -1316,7 +1461,7 @@ function PaymentsPageInner() {
   )
 }
 
-// ---------- Export with Suspense (required for useSearchParams) ----------
+// ---------- Export with Suspense ----------
 export default function PaymentsPage() {
   return (
     <Suspense
