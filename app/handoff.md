@@ -517,5 +517,37 @@ Not sticky — flat slate bands. **Rule: never put `overflow-*` on a wrapper con
 - 2026-10-20: `sales.paid_amount` migration, `/payments` rebuild (outstanding + receipt), `/parties` rebuild, `/parties/[id]` new, `/sales` prefill
 - 2026-10-21: `/expenses`, `/reports/expenses`, `/reports/profit`, `/reports` updated, home rebuilt, `/returns` + `/losses` fixed, `/parties` default filter, balance breakdown
 - 2026-10-22: 5 new reports (fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity), `/reports` index cleaned up (all live), home 9 quick action tiles
+## Session 2026-10-22 — Parser v31 + Purchase Edit Fix
 
+**Code changes this session:** major parser rewrite (`lib/csv-parser.ts`), purchase edit page fixed (`app/purchases/[id]/edit/page.tsx`), `ImportCSVDialog.tsx` uses `generateSku` from parser. Data reconciliation done (no schema changes).
+
+### `lib/csv-parser.ts` — rewritten parser (v29 → v31)
+
+**Architecture change: single-pass dictionary scanner.**
+
+Replaced the old step-by-step extraction (part → quality → color → brand, each running separately and greedily consuming tokens) with a single left-to-right scan that classifies each token exactly once:
+
+1. At each position, try to match (in priority order): part phrase (longest first, from `brand_aliases` + `part_type_aliases` + `PART_TYPE_PHRASES`) → quality marker → network → year → size → flag → color → variant keyword → brand.
+2. **Word-boundary enforced** — `BK` never matches inside `BLACK`, `MF` never inside `MIDFRAME`.
+3. **Longest phrase wins** — `MIDDLE FRAME WITH FLEX` before `MIDDLE FRAME` before `MF`.
+4. Matches are **consumed** (never re-scanned).
+5. **Leftover unconsumed tokens = model name**, then run through `normalizeModelName` (spacing rules, part-strip, quality strip).
+
+**`normalizePartCode` — reject long strings (v29):**
+
+Old behavior: `normalizePartCode('BACK PANEL (OG) (BLACK)')` → `'BACKPANELOGBLACK'` (became part code, wrong).
+
+New behavior: after stripping to bare alnum, if length > 10 → return `null`. Row errors out cleanly instead of producing a mangled part. Only short bare codes (`BP`, `CG`, `LCD`, `SENSORSIDE`, etc.) pass through.
+
+**`extendColor` helper (v29):**
+
+When a color word matches, tries to absorb **one** adjacent unconsumed alpha token (length ≥ 4, not a variant/size/flag/color keyword). Handles:
+- `BUBBLEGUM BLUE` → color `BUBBLEGUM BLUE` (absorb backward)
+- `BLACK VELVET` → color `BLACK VELVET` (absorb forward)
+- `SUNSET GOLD`, `DUSK PINK`, `NATURAL TITANIUM`, etc.
+
+**`normalizeTypos` — new rule (v31):**
+
+```ts
+.replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
 End of handoff.
