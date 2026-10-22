@@ -6,7 +6,16 @@ import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../components/ui/new-party-dialog'
 import { DateGroupedList } from '../../components/ui/date-grouped-list'
-import { Plus, Trash2, Save, X } from 'lucide-react'
+import {
+  Plus,
+  Trash2,
+  Save,
+  X,
+  Pencil,
+  ChevronDown,
+  ChevronRight,
+  Users,
+} from 'lucide-react'
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
 
@@ -45,6 +54,7 @@ type SaleHeader = {
   bill_date: string
   total_amount: number
   status: string
+  paid_amount?: number | null
   entry_date?: string
 }
 
@@ -60,6 +70,29 @@ type ReportLine = {
   quantity: number
   rate: number
   amount: number
+}
+
+type EditRow = {
+  rowId: number
+  detail_id: number | null
+  item_id: number | null
+  sku: string
+  quantity: number
+  rate: number
+  amount: number
+  cost_at_sale: number
+}
+
+type EditState = {
+  sale_id: number
+  party_id: number
+  bill_date: string
+  original_total: number
+  paid_amount: number
+  rows: EditRow[]
+  nextRowId: number
+  // cached items for display; populated on open
+  itemCache: Record<number, Item>
 }
 
 const COUNTER_SALE_NAME = 'Counter Sale'
@@ -117,6 +150,19 @@ function SalesEntryPage() {
   >(null)
 
   const [pendingNewParty, setPendingNewParty] = useState<string | null>(null)
+
+  // Today's Sales: expanded state per customer
+  const [expandedCustomers, setExpandedCustomers] = useState<
+    Record<number, boolean>
+  >({})
+
+  // Edit modal state
+  const [editState, setEditState] = useState<EditState | null>(null)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editMessage, setEditMessage] = useState('')
+  const [editRowOptions, setEditRowOptions] = useState<
+    Record<number, Item[]>
+  >({})
 
   const itemRefs = useRef<
     Record<number, React.RefObject<HTMLInputElement | null>>
@@ -679,6 +725,343 @@ function SalesEntryPage() {
     }
   }
 
+  // ============ EDIT MODAL HANDLERS ============
+
+  async function openEditSale(saleId: number) {
+    setEditMessage('')
+    const sale = todaySales.find((s) => s.sale_id === saleId)
+    if (!sale) return
+
+    // Fetch sale_items for this sale
+    const { data: lineData, error: lineErr } = await supabase
+      .from('sale_items')
+      .select('detail_id, item_id, quantity, rate, amount, cost_at_sale')
+      .eq('sale_id', saleId)
+      .order('detail_id')
+
+    if (lineErr) {
+      setMessage('Could not open sale: ' + lineErr.message)
+      return
+    }
+
+    const lines = (lineData || []) as any[]
+    const itemIds = Array.from(
+      new Set(lines.map((l) => l.item_id).filter(Boolean))
+    ) as number[]
+
+    let itemCache: Record<number, Item> = {}
+    if (itemIds.length > 0) {
+      const { data: itemRows } = await supabase
+        .from('items')
+        .select(
+          'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
+        )
+        .in('item_id', itemIds)
+      for (const it of itemRows || []) {
+        itemCache[it.item_id] = it as Item
+      }
+    }
+
+    let nid = 1
+    const editRows: EditRow[] = lines.map((l) => {
+      const it = itemCache[l.item_id]
+      return {
+        rowId: nid++,
+        detail_id: l.detail_id,
+        item_id: l.item_id,
+        sku: it?.sku || '(unknown)',
+        quantity: Number(l.quantity),
+        rate: Number(l.rate),
+        amount: Number(l.amount),
+        cost_at_sale: Number(l.cost_at_sale || 0),
+      }
+    })
+
+    if (editRows.length === 0) {
+      editRows.push({
+        rowId: nid++,
+        detail_id: null,
+        item_id: null,
+        sku: '',
+        quantity: 0,
+        rate: 0,
+        amount: 0,
+        cost_at_sale: 0,
+      })
+    }
+
+    setEditRowOptions({})
+    setEditState({
+      sale_id: sale.sale_id,
+      party_id: sale.party_id,
+      bill_date: sale.bill_date,
+      original_total: Number(sale.total_amount),
+      paid_amount: Number(sale.paid_amount || 0),
+      rows: editRows,
+      nextRowId: nid,
+      itemCache,
+    })
+  }
+
+  function closeEdit() {
+    setEditState(null)
+    setEditMessage('')
+    setEditRowOptions({})
+  }
+
+  async function searchEditRow(rowId: number, query: string) {
+    if (!query || query.trim().length < 2) {
+      setEditRowOptions((prev) => ({ ...prev, [rowId]: [] }))
+      return
+    }
+    const results = await searchItemsShared(query)
+    const items = results as Item[]
+    setEditRowOptions((prev) => ({ ...prev, [rowId]: items }))
+    // extend edit item cache
+    setEditState((prev) => {
+      if (!prev) return prev
+      const next = { ...prev.itemCache }
+      for (const it of items) next[it.item_id] = it
+      return { ...prev, itemCache: next }
+    })
+  }
+
+  function editAddRow() {
+    setEditState((prev) => {
+      if (!prev) return prev
+      const newId = prev.nextRowId
+      return {
+        ...prev,
+        rows: [
+          ...prev.rows,
+          {
+            rowId: newId,
+            detail_id: null,
+            item_id: null,
+            sku: '',
+            quantity: 0,
+            rate: 0,
+            amount: 0,
+            cost_at_sale: 0,
+          },
+        ],
+        nextRowId: newId + 1,
+      }
+    })
+  }
+
+  function editRemoveRow(rowId: number) {
+    setEditState((prev) => {
+      if (!prev) return prev
+      const filtered = prev.rows.filter((r) => r.rowId !== rowId)
+      if (filtered.length === 0) {
+        return {
+          ...prev,
+          rows: [
+            {
+              rowId: prev.nextRowId,
+              detail_id: null,
+              item_id: null,
+              sku: '',
+              quantity: 0,
+              rate: 0,
+              amount: 0,
+              cost_at_sale: 0,
+            },
+          ],
+          nextRowId: prev.nextRowId + 1,
+        }
+      }
+      return { ...prev, rows: filtered }
+    })
+    setEditRowOptions((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
+  }
+
+  function editUpdateRow(rowId: number, patch: Partial<EditRow>) {
+    setEditState((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        rows: prev.rows.map((r) => {
+          if (r.rowId !== rowId) return r
+          const merged = { ...r, ...patch }
+          merged.amount = Number(merged.quantity) * Number(merged.rate)
+          return merged
+        }),
+      }
+    })
+  }
+
+  function editSelectItem(rowId: number, itemId: number) {
+    setEditState((prev) => {
+      if (!prev) return prev
+      const it = prev.itemCache[itemId]
+      if (!it) return prev
+      return {
+        ...prev,
+        rows: prev.rows.map((r) => {
+          if (r.rowId !== rowId) return r
+          const qty = r.quantity > 0 ? r.quantity : 1
+          return {
+            ...r,
+            item_id: it.item_id,
+            sku: it.sku,
+            quantity: qty,
+            rate: it.selling_price,
+            amount: Number(qty) * Number(it.selling_price),
+            cost_at_sale: it.cost_price,
+          }
+        }),
+      }
+    })
+  }
+
+  function editOptionsFor(rowId: number) {
+    if (!editState) return []
+    const seen = new Set<number>()
+    const out: { value: number; label: string }[] = []
+    const row = editState.rows.find((r) => r.rowId === rowId)
+    if (row?.item_id) {
+      const cached = editState.itemCache[row.item_id]
+      if (cached) {
+        seen.add(cached.item_id)
+        out.push({
+          value: cached.item_id,
+          label: itemLabel(cached),
+        })
+      }
+    }
+    for (const it of editRowOptions[rowId] || []) {
+      if (seen.has(it.item_id)) continue
+      seen.add(it.item_id)
+      out.push({ value: it.item_id, label: itemLabel(it) })
+    }
+    return out
+  }
+
+  async function saveEdit() {
+    if (!editState) return
+    setEditMessage('')
+
+    const validRows = editState.rows.filter(
+      (r) => r.item_id && r.quantity > 0 && r.rate > 0
+    )
+    if (validRows.length === 0) {
+      setEditMessage('Add at least one item with quantity and rate.')
+      return
+    }
+
+    const newTotal = validRows.reduce((s, r) => s + r.amount, 0)
+
+    // Guard: don't allow reducing below paid_amount
+    if (editState.paid_amount > 0 && newTotal < editState.paid_amount) {
+      setEditMessage(
+        `Cannot reduce total below what's already paid (₹${editState.paid_amount.toFixed(
+          2
+        )}). Delete or adjust the payment first.`
+      )
+      return
+    }
+
+    setEditSaving(true)
+
+    const oldSale = todaySales.find((s) => s.sale_id === editState.sale_id)
+    const oldPartyId = oldSale?.party_id ?? editState.party_id
+    const oldTotal = editState.original_total
+    const newPartyId = editState.party_id
+
+    // 1. Update sales header
+    const { error: headerErr } = await supabase
+      .from('sales')
+      .update({
+        party_id: newPartyId,
+        bill_date: editState.bill_date,
+        total_amount: newTotal,
+      })
+      .eq('sale_id', editState.sale_id)
+
+    if (headerErr) {
+      setEditMessage('Save failed: ' + headerErr.message)
+      setEditSaving(false)
+      return
+    }
+
+    // 2. Delete old lines (trigger restores stock), insert new
+    const { error: delErr } = await supabase
+      .from('sale_items')
+      .delete()
+      .eq('sale_id', editState.sale_id)
+
+    if (delErr) {
+      setEditMessage('Save failed: ' + delErr.message)
+      setEditSaving(false)
+      return
+    }
+
+    const lineInserts = validRows.map((r) => ({
+      sale_id: editState.sale_id,
+      item_id: r.item_id,
+      quantity: r.quantity,
+      rate: r.rate,
+      amount: Number((r.rate * r.quantity).toFixed(2)),
+      cost_at_sale: r.cost_at_sale || 0,
+    }))
+
+    const { error: insErr } = await supabase
+      .from('sale_items')
+      .insert(lineInserts)
+
+    if (insErr) {
+      setEditMessage('Save failed: ' + insErr.message)
+      setEditSaving(false)
+      return
+    }
+
+    // 3. Balance adjustments
+    if (oldPartyId === newPartyId) {
+      const delta = newTotal - oldTotal
+      if (Math.abs(delta) > 0.001) {
+        const shop = shops.find((s) => s.party_id === newPartyId)
+        if (shop) {
+          await supabase
+            .from('parties')
+            .update({ current_balance: Number(shop.current_balance) + delta })
+            .eq('party_id', newPartyId)
+        }
+      }
+    } else {
+      // Old party loses old_total, new party gains new_total
+      const oldShop = shops.find((s) => s.party_id === oldPartyId)
+      const newShop = shops.find((s) => s.party_id === newPartyId)
+      if (oldShop) {
+        await supabase
+          .from('parties')
+          .update({
+            current_balance: Number(oldShop.current_balance) - oldTotal,
+          })
+          .eq('party_id', oldPartyId)
+      }
+      if (newShop) {
+        await supabase
+          .from('parties')
+          .update({
+            current_balance: Number(newShop.current_balance) + newTotal,
+          })
+          .eq('party_id', newPartyId)
+      }
+    }
+
+    await loadData()
+    await loadReport()
+    setEditSaving(false)
+    closeEdit()
+    setMessage(`Updated sale #${editState.sale_id}.`)
+  }
+
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'
 
@@ -698,6 +1081,49 @@ function SalesEntryPage() {
     return (rowItemOptions[rowId] || []).map((it) => ({
       value: it.item_id,
       label: itemLabel(it),
+    }))
+  }
+
+  function formatTime(entry?: string) {
+    if (!entry) return ''
+    const d = new Date(entry)
+    if (isNaN(d.getTime())) return ''
+    return d.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
+  // Group today's sales by customer
+  const todayGrouped = (() => {
+    const byCustomer: Record<number, SaleHeader[]> = {}
+    for (const s of todaySales) {
+      if (!byCustomer[s.party_id]) byCustomer[s.party_id] = []
+      byCustomer[s.party_id].push(s)
+    }
+    return Object.keys(byCustomer)
+      .map((pid) => {
+        const sales = byCustomer[Number(pid)]
+        const total = sales.reduce((sum, s) => sum + Number(s.total_amount), 0)
+        return {
+          party_id: Number(pid),
+          party_name: shopName(Number(pid)),
+          sales,
+          total,
+        }
+      })
+      .sort((a, b) => b.total - a.total)
+  })()
+
+  const todayTotal = todaySales.reduce(
+    (s, x) => s + Number(x.total_amount),
+    0
+  )
+
+  function toggleCustomer(partyId: number) {
+    setExpandedCustomers((prev) => ({
+      ...prev,
+      [partyId]: !prev[partyId],
     }))
   }
 
@@ -741,7 +1167,8 @@ function SalesEntryPage() {
       }, delay)
     })
   }
-    return (
+    // ============ RENDER ============
+  return (
     <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
@@ -1045,6 +1472,17 @@ function SalesEntryPage() {
               )}
             </div>
           </div>
+
+          {/* Mobile — Today's Sales by customer */}
+          <TodaySalesGrouped
+            grouped={todayGrouped}
+            todayTotal={todayTotal}
+            expanded={expandedCustomers}
+            onToggle={toggleCustomer}
+            onEdit={openEditSale}
+            onDelete={deleteSale}
+            formatTime={formatTime}
+          />
         </div>
 
         {/* ============ DESKTOP VIEW ============ */}
@@ -1273,7 +1711,7 @@ function SalesEntryPage() {
           </div>
 
           {/* Desktop Sales Report */}
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mb-6">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <span className="text-sm font-semibold text-slate-700">
                 Sales Report ({reportLines.length})
@@ -1342,8 +1780,230 @@ function SalesEntryPage() {
               )}
             </div>
           </div>
+
+          {/* Desktop — Today's Sales by customer */}
+          <TodaySalesGrouped
+            grouped={todayGrouped}
+            todayTotal={todayTotal}
+            expanded={expandedCustomers}
+            onToggle={toggleCustomer}
+            onEdit={openEditSale}
+            onDelete={deleteSale}
+            formatTime={formatTime}
+          />
         </div>
       </div>
+
+      {/* ============ EDIT MODAL ============ */}
+      {editState && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+            <div className="px-4 sm:px-5 py-3 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <div className="text-base font-bold text-slate-900">
+                  Edit Sale #{editState.sale_id}
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  Original total ₹{editState.original_total.toFixed(2)}
+                  {editState.paid_amount > 0 && (
+                    <>
+                      {' '}
+                      · Paid ₹{editState.paid_amount.toFixed(2)}
+                    </>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={closeEdit}
+                disabled={editSaving}
+                className="w-8 h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Shop
+                  </label>
+                  <SmartCombobox
+                    options={shopOptions}
+                    value={String(editState.party_id)}
+                    onValueChange={(
+                      v: string,
+                      _l: string,
+                      isNew: boolean
+                    ) => {
+                      if (isNew) return
+                      setEditState({
+                        ...editState,
+                        party_id: Number(v),
+                      })
+                    }}
+                    placeholder="Select shop..."
+                    allowCreate={false}
+                    focusNextOnSelect={false}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-700 mb-1">
+                    Bill Date
+                  </label>
+                  <input
+                    type="date"
+                    value={editState.bill_date}
+                    onChange={(e) =>
+                      setEditState({
+                        ...editState,
+                        bill_date: e.target.value,
+                      })
+                    }
+                    className="w-full h-10 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">
+                  Items ({editState.rows.length})
+                </div>
+                <div className="space-y-2">
+                  {editState.rows.map((row, idx) => (
+                    <div
+                      key={row.rowId}
+                      className="border border-slate-200 rounded-lg p-2 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-xs font-semibold text-slate-500">
+                          Item #{idx + 1}
+                        </div>
+                        <button
+                          onClick={() => editRemoveRow(row.rowId)}
+                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                      <SmartCombobox
+                        options={editOptionsFor(row.rowId)}
+                        value={row.item_id ? String(row.item_id) : null}
+                        fallbackLabel={
+                          row.item_id && row.sku ? row.sku : null
+                        }
+                        onValueChange={(
+                          v: string,
+                          _l: string,
+                          isNew: boolean
+                        ) => {
+                          if (isNew) return
+                          editSelectItem(row.rowId, Number(v))
+                        }}
+                        onSearch={(q) => searchEditRow(row.rowId, q)}
+                        placeholder="Search SKU..."
+                        allowCreate={false}
+                        focusNextOnSelect={false}
+                      />
+                      <div className="grid grid-cols-3 gap-2">
+                        <div>
+                          <label className="block text-[10px] text-slate-500 mb-0.5">
+                            Qty
+                          </label>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            value={row.quantity || ''}
+                            onChange={(e) =>
+                              editUpdateRow(row.rowId, {
+                                quantity: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="w-full h-9 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-500 mb-0.5">
+                            Rate
+                          </label>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            value={row.rate || ''}
+                            onChange={(e) =>
+                              editUpdateRow(row.rowId, {
+                                rate: parseFloat(e.target.value) || 0,
+                              })
+                            }
+                            className="w-full h-9 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] text-slate-500 mb-0.5">
+                            Amount
+                          </label>
+                          <div className="h-9 px-2 flex items-center justify-end text-sm font-bold text-slate-800">
+                            ₹ {row.amount.toFixed(2)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={editAddRow}
+                    className="w-full h-10 text-xs font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-lg hover:bg-blue-50 flex items-center justify-center gap-1"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Add Item
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-600">New Total</span>
+                  <span className="font-bold text-slate-900">
+                    ₹{' '}
+                    {editState.rows
+                      .reduce((s, r) => s + (r.amount || 0), 0)
+                      .toFixed(2)}
+                  </span>
+                </div>
+                {editState.paid_amount > 0 && (
+                  <div className="text-[11px] text-amber-800 mt-1">
+                    Already paid ₹{editState.paid_amount.toFixed(2)}. Cannot
+                    reduce total below that.
+                  </div>
+                )}
+              </div>
+
+              {editMessage && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
+                  {editMessage}
+                </div>
+              )}
+            </div>
+
+            <div className="px-4 sm:px-5 py-3 border-t border-slate-200 flex items-center gap-2 bg-slate-50 rounded-b-2xl">
+              <button
+                onClick={closeEdit}
+                disabled={editSaving}
+                className="flex-1 h-10 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-white disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={saveEdit}
+                disabled={editSaving}
+                className="flex-1 h-10 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                <Save className="w-4 h-4" />
+                {editSaving ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <NewPartyDialog
         open={pendingNewParty !== null}
@@ -1352,6 +2012,151 @@ function SalesEntryPage() {
         onClose={() => setPendingNewParty(null)}
         onCreated={handleNewPartyCreated}
       />
+    </div>
+  )
+}
+
+// ============ TODAY'S SALES GROUPED COMPONENT ============
+
+type TodayGroupedRow = {
+  party_id: number
+  party_name: string
+  sales: SaleHeader[]
+  total: number
+}
+
+function TodaySalesGrouped({
+  grouped,
+  todayTotal,
+  expanded,
+  onToggle,
+  onEdit,
+  onDelete,
+  formatTime,
+}: {
+  grouped: TodayGroupedRow[]
+  todayTotal: number
+  expanded: Record<number, boolean>
+  onToggle: (partyId: number) => void
+  onEdit: (saleId: number) => void
+  onDelete: (saleId: number) => void
+  formatTime: (entry?: string) => string
+}) {
+  if (grouped.length === 0) {
+    return (
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center gap-2">
+          <Users className="w-4 h-4 text-slate-500" />
+          <span className="text-sm font-semibold text-slate-700">
+            Today's Sales
+          </span>
+        </div>
+        <div className="px-4 py-8 text-center text-sm text-slate-400">
+          No sales entered today yet.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Users className="w-4 h-4 text-slate-500" />
+          <span className="text-sm font-semibold text-slate-700">
+            Today's Sales
+          </span>
+          <span className="text-xs text-slate-500">
+            ({grouped.length} customer{grouped.length === 1 ? '' : 's'})
+          </span>
+        </div>
+        <span className="text-sm font-bold text-slate-900">
+          ₹ {todayTotal.toFixed(2)}
+        </span>
+      </div>
+
+      <div className="divide-y divide-slate-100">
+        {grouped.map((g) => {
+          const isOpen = !!expanded[g.party_id]
+          return (
+            <div key={g.party_id}>
+              <button
+                onClick={() => onToggle(g.party_id)}
+                className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
+              >
+                <div className="shrink-0 text-slate-400">
+                  {isOpen ? (
+                    <ChevronDown className="w-4 h-4" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-slate-900 truncate">
+                    {g.party_name}
+                  </div>
+                  <div className="text-[11px] text-slate-500">
+                    {g.sales.length} bill{g.sales.length === 1 ? '' : 's'}
+                  </div>
+                </div>
+                <div className="text-sm font-bold text-slate-900 shrink-0">
+                  ₹ {g.total.toFixed(2)}
+                </div>
+              </button>
+
+              {isOpen && (
+                <div className="bg-slate-50 divide-y divide-slate-100 border-t border-slate-100">
+                  {g.sales.map((s) => (
+                    <div
+                      key={s.sale_id}
+                      className="px-4 py-2 flex items-center gap-3 text-xs"
+                    >
+                      <div className="text-slate-400 w-14 shrink-0">
+                        #{s.sale_id}
+                      </div>
+                      <div className="text-slate-500 w-16 shrink-0">
+                        {formatTime(s.entry_date)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span
+                          className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide ${
+                            s.status === 'Paid'
+                              ? 'bg-emerald-100 text-emerald-700'
+                              : s.status === 'Partially Paid'
+                              ? 'bg-amber-100 text-amber-700'
+                              : 'bg-rose-100 text-rose-700'
+                          }`}
+                        >
+                          {s.status}
+                        </span>
+                      </div>
+                      <div className="font-semibold text-slate-800 shrink-0">
+                        ₹ {Number(s.total_amount).toFixed(2)}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => onEdit(s.sale_id)}
+                          className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-blue-700 hover:bg-blue-100 rounded"
+                          aria-label="Edit"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => onDelete(s.sale_id)}
+                          className="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-rose-700 hover:bg-rose-100 rounded"
+                          aria-label="Delete"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
     </div>
   )
 }
