@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '../../../../lib/supabase'
 import { SmartCombobox } from '../../../../components/ui/smart-combobox'
+import { searchItems as searchItemsShared } from '../../../../lib/item-search'
 import {
   ArrowLeft,
   Plus,
@@ -29,7 +30,7 @@ type Item = {
 
 type EditRow = {
   rowId: number
-  detail_id: number | null   // null = newly added row
+  detail_id: number | null
   item_id: number | null
   sku: string
   quantity: number
@@ -48,7 +49,14 @@ export default function EditPurchasePage() {
   const [message, setMessage] = useState('')
 
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [items, setItems] = useState<Item[]>([])
+
+  // Per-row item lookup cache (populated from the purchase lines + from RPC search)
+  const [rowItemCache, setRowItemCache] = useState<Record<number, Item>>({})
+
+  // Current search results per row (from RPC)
+  const [rowSearchOptions, setRowSearchOptions] = useState<
+    Record<number, Item[]>
+  >({})
 
   const [partyId, setPartyId] = useState<number | null>(null)
   const [invoiceNo, setInvoiceNo] = useState('')
@@ -59,7 +67,9 @@ export default function EditPurchasePage() {
   const [rows, setRows] = useState<EditRow[]>([])
   const [nextRowId, setNextRowId] = useState(1)
 
-  const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(null)
+  const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(
+    null
+  )
   const itemRefs = useRef<
     Record<number, React.RefObject<HTMLInputElement | null>>
   >({})
@@ -73,7 +83,6 @@ export default function EditPurchasePage() {
     return itemRefs.current[rowId]
   }
 
-  // Load purchase + lines + master data
   useEffect(() => {
     if (!purchaseId) return
     loadAll()
@@ -93,7 +102,7 @@ export default function EditPurchasePage() {
     setLoading(true)
     setError('')
 
-    const [purRes, linesRes, supRes, itemsRes] = await Promise.all([
+    const [purRes, linesRes, supRes] = await Promise.all([
       supabase
         .from('purchases')
         .select('*')
@@ -109,7 +118,6 @@ export default function EditPurchasePage() {
         .select('party_id, party_name')
         .eq('party_type', 'Supplier')
         .order('party_name'),
-      supabase.from('items').select('item_id, sku, current_stock, cost_price').order('sku'),
     ])
 
     if (purRes.error || !purRes.data) {
@@ -126,14 +134,28 @@ export default function EditPurchasePage() {
     setCashPaid(String(header.cash_paid ?? 0))
 
     setSuppliers(supRes.data || [])
-    const itemList = itemsRes.data || []
-    setItems(itemList)
+
+    // Only fetch the items that are actually on this purchase
+    const lines = (linesRes.data || []) as any[]
+    const lineItemIds = Array.from(
+      new Set(lines.map((l) => l.item_id).filter(Boolean))
+    ) as number[]
+
+    let purchaseItems: Item[] = []
+    if (lineItemIds.length > 0) {
+      const { data: itemRows } = await supabase
+        .from('items')
+        .select('item_id, sku, current_stock, cost_price')
+        .in('item_id', lineItemIds)
+      purchaseItems = (itemRows as Item[]) || []
+    }
 
     const itemMap: Record<number, Item> = {}
-    for (const it of itemList) itemMap[it.item_id] = it
+    for (const it of purchaseItems) itemMap[it.item_id] = it
+    setRowItemCache(itemMap)
 
     let nid = 1
-    const editRows: EditRow[] = (linesRes.data || []).map((l: any) => {
+    const editRows: EditRow[] = lines.map((l) => {
       const it = itemMap[l.item_id]
       return {
         rowId: nid++,
@@ -163,25 +185,72 @@ export default function EditPurchasePage() {
     setLoading(false)
   }
 
+  async function searchItemsForRow(rowId: number, query: string) {
+    if (!query || query.trim().length < 2) {
+      setRowSearchOptions((prev) => ({ ...prev, [rowId]: [] }))
+      return
+    }
+    const results = await searchItemsShared(query)
+    const items = results as Item[]
+    setRowSearchOptions((prev) => ({ ...prev, [rowId]: items }))
+    // Cache any new items we learned about
+    setRowItemCache((prev) => {
+      const next = { ...prev }
+      for (const it of items) {
+        next[it.item_id] = it
+      }
+      return next
+    })
+  }
+
+  function itemOptionsFor(rowId: number) {
+    const seen = new Set<number>()
+    const out: { value: number; label: string }[] = []
+
+    // Include the currently selected item (from cache) so it always shows
+    const row = rows.find((r) => r.rowId === rowId)
+    if (row?.item_id) {
+      const cached = rowItemCache[row.item_id]
+      if (cached) {
+        seen.add(cached.item_id)
+        out.push({
+          value: cached.item_id,
+          label: `${cached.sku}  ·  stock: ${cached.current_stock}  ·  cp: ₹${Number(cached.cost_price).toFixed(2)}`,
+        })
+      }
+    }
+
+    // Add search results
+    for (const it of rowSearchOptions[rowId] || []) {
+      if (seen.has(it.item_id)) continue
+      seen.add(it.item_id)
+      out.push({
+        value: it.item_id,
+        label: `${it.sku}  ·  stock: ${it.current_stock}  ·  cp: ₹${Number(it.cost_price).toFixed(2)}`,
+      })
+    }
+
+    return out
+  }
+
   const supplierOptions = suppliers.map((s) => ({
     value: s.party_id,
     label: s.party_name,
   }))
 
-  const itemOptions = useMemo(
-    () =>
-      items.map((it) => ({
-        value: it.item_id,
-        label: `${it.sku}  ·  stock: ${it.current_stock}  ·  cp: ₹${Number(it.cost_price).toFixed(2)}`,
-      })),
-    [items]
-  )
-
   function addRow(): number {
     const newId = nextRowId
     setRows((prev) => [
       ...prev,
-      { rowId: newId, detail_id: null, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
+      {
+        rowId: newId,
+        detail_id: null,
+        item_id: null,
+        sku: '',
+        quantity: 0,
+        rate: 0,
+        amount: 0,
+      },
     ])
     setNextRowId((n) => n + 1)
     setPendingFocusRowId(newId)
@@ -206,6 +275,11 @@ export default function EditPurchasePage() {
       }
       return next
     })
+    setRowSearchOptions((prev) => {
+      const next = { ...prev }
+      delete next[rowId]
+      return next
+    })
   }
 
   function updateRow(rowId: number, patch: Partial<EditRow>) {
@@ -220,7 +294,7 @@ export default function EditPurchasePage() {
   }
 
   function handleItemSelect(rowId: number, itemId: number) {
-    const it = items.find((x) => x.item_id === itemId)
+    const it = rowItemCache[itemId]
     if (!it) return
     setRows((prev) =>
       prev.map((r) => {
@@ -260,8 +334,6 @@ export default function EditPurchasePage() {
 
     setSaving(true)
 
-    // Compute effectiveRate the same way the create flow does:
-    // freight is distributed by value, then added to rate
     const validSubtotal = validRows.reduce((s, r) => s + r.amount, 0)
     const linesForRPC = validRows.map((r) => {
       const share =
@@ -294,7 +366,6 @@ export default function EditPurchasePage() {
     }
 
     setMessage('Saved. Stock and cost updated.')
-    // Navigate back to purchases after a short pause
     setTimeout(() => router.push('/purchases'), 800)
   }
 
@@ -402,12 +473,20 @@ export default function EditPurchasePage() {
                     </td>
                     <td className="px-2 py-1">
                       <SmartCombobox
-                        options={itemOptions}
+                        options={itemOptionsFor(row.rowId)}
                         value={row.item_id ? String(row.item_id) : null}
-                        onValueChange={(v: string, _l: string, isNew: boolean) => {
+                        fallbackLabel={
+                          row.item_id && row.sku ? row.sku : null
+                        }
+                        onValueChange={(
+                          v: string,
+                          _l: string,
+                          isNew: boolean
+                        ) => {
                           if (isNew) return
                           handleItemSelect(row.rowId, Number(v))
                         }}
+                        onSearch={(q) => searchItemsForRow(row.rowId, q)}
                         placeholder="Search SKU..."
                         allowCreate={false}
                         focusNextOnSelect={true}
@@ -465,7 +544,10 @@ export default function EditPurchasePage() {
           {/* Mobile list */}
           <div className="md:hidden p-3 space-y-3">
             {rows.map((row, idx) => (
-              <div key={row.rowId} className="border border-slate-200 rounded-lg p-3 space-y-2">
+              <div
+                key={row.rowId}
+                className="border border-slate-200 rounded-lg p-3 space-y-2"
+              >
                 <div className="flex items-center justify-between">
                   <div className="text-xs font-semibold text-slate-500">
                     Item #{idx + 1}
@@ -478,12 +560,14 @@ export default function EditPurchasePage() {
                   </button>
                 </div>
                 <SmartCombobox
-                  options={itemOptions}
+                  options={itemOptionsFor(row.rowId)}
                   value={row.item_id ? String(row.item_id) : null}
+                  fallbackLabel={row.item_id && row.sku ? row.sku : null}
                   onValueChange={(v: string, _l: string, isNew: boolean) => {
                     if (isNew) return
                     handleItemSelect(row.rowId, Number(v))
                   }}
+                  onSearch={(q) => searchItemsForRow(row.rowId, q)}
                   placeholder="Search SKU..."
                   allowCreate={false}
                 />
@@ -574,10 +658,11 @@ export default function EditPurchasePage() {
         <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mb-5 flex items-start gap-2">
           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
           <div>
-            Saving will <strong>delete all existing lines</strong> (stock decreases),
-            then <strong>insert the edited lines</strong> (stock increases,
-            cost recomputes). Stock values will be correct, but cost price will
-            be recalculated as if this is the latest purchase for each item.
+            Saving will <strong>delete all existing lines</strong> (stock
+            decreases), then <strong>insert the edited lines</strong> (stock
+            increases, cost recomputes). Stock values will be correct, but cost
+            price will be recalculated as if this is the latest purchase for
+            each item.
           </div>
         </div>
 

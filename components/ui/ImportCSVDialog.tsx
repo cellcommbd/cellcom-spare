@@ -6,6 +6,7 @@ import {
   parseCSV,
   groupParsedRows,
   flagDuplicates,
+  generateSku,
   AliasMaps,
   ItemLookup,
   ParsedRow,
@@ -1021,29 +1022,15 @@ function buildSkuFromParts(row: {
   color: string | null
   quality: string
 }): string | null {
-  if (!row.brandCode || !row.modelName || !row.partCode) return null
-
-  const dash = (s: string) =>
-    s
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '-')
-      .replace(/-+/g, '-')
-      .replace(/^-|-$/g, '')
-
-  const seg: string[] = []
-  seg.push(row.brandCode)
-  seg.push(dash(row.modelName))
-  seg.push(row.partCode)
-  if (row.year) seg.push(row.year)
-  if (row.variant) seg.push(dash(row.variant))
-  if (row.network) seg.push(row.network)
-  if (row.flag) seg.push(dash(row.flag))
-  if (row.color) seg.push(dash(row.color))
-  if (row.quality === 'OG') seg.push('OG')
-  else if (row.quality === '100 OG') seg.push('100OG')
-  else if (row.quality === 'ORG') seg.push('ORG')
-  else if (row.quality === 'Care OG') seg.push('CARE')
-  else if (row.quality === 'China OG') seg.push('CHINAOG')
-
-  return seg.filter(Boolean).join('-')
+  return generateSku({
+    brandCode: row.brandCode,
+    modelName: row.modelName,
+    partCode: row.partCode,
+    year: row.year,
+    variant: row.variant,
+    network: row.network,
+    flag: row.flag,
+    color: row.color,
+    quality: row.quality as Quality,
+  })
 }

@@ -364,3 +364,158 @@ Recent commit history (approximate)
 2026-10-20: sales.paid_amount migration, /payments rebuild (outstanding bills + receipt), /parties rebuild, /parties/[id] new, /sales prefill
 
 2026-10-21: /expenses new, /reports/expenses new, /reports/profit new, /reports updated, home rebuilt, /returns + /losses fixed, /parties default filte
+- **Do NOT subtract returns separately** — already reflected via `(quantity − returned_qty)`
+- **Do NOT use `Σ(amount)`** for sales — that's gross, not net of returns
+
+## Allocation model (payments)
+- `applyFIFO` in `/payments` applies payments to bills **oldest-first**
+- Reads `paid_amount` per bill, writes back `paid_amount` + derived `status`
+- **Decision 2026-10-22:** keep oldest-first. Oldest debt gets cleared first, prevents "old ₹500 sits forever" problem. If customer asks "which bill does my balance come from?", answer is via **Balance Breakdown** on `/parties/[id]` Summary tab (added 2026-10-21).
+- **Counter Sale** behaves like any customer — sale inserts `Pending`, `paid_amount = 0`, balance increments, payment clears. No special code path.
+
+## lib/csv-parser.ts (v28)
+SKU grammar: `BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]`
+
+Key features:
+- `normalizeTypos` — SAMRT→SMART, BORD→BOARD, CONVETOR→CONVERTER, SILVAR→SILVER
+- `extractPartFromDescription(desc, aliases)` — DB aliases + hardcoded, longest-first
+- Multi-word brand matching, model extraction
+- `normalizeModelName` — strips trailing part codes, quality markers, size markers
+- Spacing rules 1-3: `CE 2 → CE2`, `10 R → 10R`, `11 X → 11X`
+- **v26 fix (PRO+ → PRO PLUS):** `([A-Z])\+` → `$1 PLUS` after digit-plus rule
+- **v28 fix:** part-strip runs BEFORE spacing rules (prevents 10 CG → 10CG fusion)
+
+## lib/statement-format.ts (shared)
+- `buildStatementText(data: StatementData): string` — WhatsApp text. `*bold*`, `_italic_`, `━━━` dividers, `Rs.` not `₹`. No emoji.
+- `normalizePhoneForWhatsApp(raw): string | null`
+- `buildWhatsAppUrl(phone, message): string | null`
+- `StatementData`: `{ shopName?, customerName, fromDate, toDate, items[], purchasesTotal, previousBalance, cashPaid, upiPaid, netDue }`
+- **Shared by:** `/statement`, `/parties/[id]`, `/payments`. Any change affects all three.
+
+## components/ui/date-grouped-list.tsx
+Generic list renderer that inserts date header bands with day totals between consecutive same-date rows.
+Props: `rows, getDate, getAmount, getKey, renderRow, emptyState, dayTotalLabel, amountPrefix, hideRowCount`.
+Not sticky — flat slate bands. **Rule: never put `overflow-*` on a wrapper containing SmartCombobox** (clips dropdown).
+
+## Reports (all 11 built and live as of 2026-10-22)
+
+| Report | Route | Owner-only | Default range | Notes |
+|---|---|---|---|---|
+| Cost Change Tracker | `/reports/cost-history` | No | — | Rate history per SKU |
+| Supplier Price Comparison | `/reports/supplier-prices` | Yes | Last 90 days | Only SKUs from 2+ suppliers; cheapest highlighted; savings potential card |
+| Fast-Moving Items | `/reports/fast-moving` | No | This Month | Sort units/revenue; top 50 + show all |
+| Dead Stock | `/reports/dead-stock` | No | — | RPC-based |
+| Profit per Item | `/reports/profit-per-item` | Yes | This Month | `(qty−returned)×rate` vs `(qty−returned)×cost_at_sale`; sort profit/margin/revenue |
+| Khata Aging | `/reports/khata-aging` | Yes | none (ages as of today) | 4 buckets: 0-30/31-60/61-90/90+; customer can appear in multiple buckets |
+| Expenses by Type | `/reports/expenses` | Yes | This Month | Grouped by category, expandable, percentage bars |
+| Profit Report (P&L) | `/reports/profit` | Yes | This Month | Warnings if no expenses, if cost_at_sale=0 on lines |
+| Low Stock & Reorder | `/reports/low-stock` | No | — | Threshold-based |
+| Stock Value | `/reports/stock-value` | Yes | — | RPC-based brand aggregation |
+| Recent Activity | `/reports/recent-activity` | No | This Month | Unified timeline of sales/payments/purchases/returns/losses; filter pills; 200-row cap |
+
+## Session 2026-10-22 additions
+- Built 5 new reports: fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity
+- `/reports/page.tsx` cleaned up — removed `comingSoon` logic entirely, all cards `<Link>`, no "Soon" badge, tighter UI (icon in rounded square, hover lift, active scale)
+- Home Quick Actions: 6 tiles → **9 tiles (3×3)**: Sales, Payments, Find Stock, Parties, Returns, Reports, Purchases, Purchase Returns, Expenses. Both roles see all 9 (staff can't use CSV import anyway, harmless)
+- `PackageX` icon for Purchase Returns (distinct from `RotateCcw` for customer returns)
+- **Import path bug fixed** — supplier-prices page got pasted into `/reports/page.tsx` (2-level file) causing "Cannot find module" — index page correctly uses `'../../lib/auth'`, report pages use `'../../../lib/...'`
+- Supabase auth issue on `errfactor99@gmail.com` — resolved
+
+## Session 2026-10-21 additions
+- **`/expenses`** — owner-only entry form (date, type, amount, note). 5 types: Rent / Staff / Kitty / Bill / Others. Month summary card at top. After save: keeps date+type, clears amount+note, refocuses amount.
+- **`/reports/expenses`** — grouped by type, from/to default month-start → today, expandable per type, percentage bars
+- **`/reports/profit`** — P&L using proven formula. Net Profit hero (green/rose), warnings for empty expenses + zero-cost lines
+- **`/reports`** — added two cards (Expenses, Profit)
+- **`/returns` fixed** — was loading full `items` table (hit 1000-row cap, SKU showed `'—'` for items beyond row 1000 like SAM-TEST1-BP item_id 2723); keying was on `item_id` instead of `detail_id` (two lines of same SKU shared checkbox). Fixed: scoped `.in('item_id', itemIds)` fetch, all state keyed on `detail_id`.
+- **`/losses` fixed** — same class of bug. Item search now uses `searchItemsShared` RPC. `todayItems` fetched scoped to today's loss rows.
+- **Removed `overflow-x-auto` from losses table wrapper** — was clipping the SmartCombobox dropdown and creating horizontal scrollbar
+- **End-to-end test cycle** — purchased 10 × SAM-TEST1-BP @ 100, sold 4 @ 150 to Anas, returned 1, lost 2. Verified: returns use `returned_qty`, losses are cost-valued, profit formula. Cleaned up all test data (item, purchase 41, line 3117 all deleted).
+- **`/parties/[id]` Balance Breakdown** — added to Summary tab. Lists outstanding days oldest-first with aging badge, total/paid/due, expandable to show items. Answers "why do I owe ₹500?" without changing FIFO.
+
+## Session 2026-10-20 additions
+- **`sales.paid_amount`** column added, backfilled (Paid→total, Pending→0, Partially Paid reconciled manually: sale 56 Anas ₹3,000 of ₹4,300; sale 83 Counter Sale actually paid). Anas (party 9) `current_balance` fixed to ₹1,300 (was ₹1,500, ₹200 drift).
+- **`applyFIFO` in `/payments`** rewritten — reads `paid_amount`, writes back `paid_amount` + derived `status`. Oldest-first preserved.
+- **`/payments` rebuilt:**
+  - Outstanding bills list (all bills with `paid_amount < total_amount`)
+  - **Day grouping** — one row per day with item count + day total + day due + aging; tap → expands to flat items list
+  - Last-payment banner (amount + date + N days ago)
+  - "All clear" green card when nothing outstanding
+  - Statement card + Copy + WhatsApp **available without saving first** (gate: `outstandingBills.length > 0 || success`)
+  - **Receipt after payment** — statement switches to receipt shape (paid X, due Y, itemizes just-touched bills)
+  - `?party_id=` prefill via `useSearchParams` — **requires `<Suspense>` wrapper** (`PaymentsPageInner()` + default export `PaymentsPage()` with Suspense)
+- **`/parties` rebuilt:** mobile cards, no whole-row click, three explicit 44px pads per row (Open ›/Edit/Delete), search, balance-sorted, Opening Balance removed from add form, Enter-to-save, cursor returns to Name after save. Default filter = Customer.
+- **`/parties/[id]` (new):** per-customer account view. Balance chip, Copy + WhatsApp, date range with quick buttons, 4 tabs (Summary/Purchases/Payments/Ledger). Ledger opening balance = `current_balance − Σ(sales ≥ fromDate) + Σ(payments ≥ fromDate)` — correct for any range. Purchases tab now day-grouped.
+- **`/sales` `?party_id=` prefill:** reads `searchParams`, preselects shop, focuses item field. **CRITICAL:** `loadData`'s Counter Sale default must be guarded with `&& !prefillPartyId` — otherwise `loadData` overwrites URL selection (race). Focus requires explicit `document.querySelectorAll('input[data-row-item="row-1"]')` + `offsetParent !== null` + 50/150/300ms retries (mobile + desktop DOM duplication).
+
+## Session 2026-10-19 additions
+- Parser v28: part-strip BEFORE spacing rules (prevents 10 CG → 10CG fusion)
+- Search network-aware ranking (5g/4g priority)
+- `search_items` RPC ORDER BY bug fixed — bare `0` was treated as column position, replaced with `order_prefix` variable
+- Data cleanup: Nord duplicates merged (7 pairs); MI 11X, RM 14PRO, SAM S21FE, TEC KE5, VV V50E merged; 0 normalized duplicates; GEN-TOOL-OG removed; 0 orphaned FKs
+- **Form B SKU migration deferred** — dash-everything SKU (e.g. `RM-NOTE-12-PRO-BP-5G-BLACK`). Scope: rewrite `normalizeModelName` (~40 lines), bulk `items.sku` UPDATE, optional `models.model_name` UPDATE. No other file changes needed. **Before committing:** run collision-check SQL (normalize model_name, group, count dups >1). If near zero, defer indefinitely. Form B is layer 1 of 3; still needs alias tables + Levenshtein warning.
+
+## Standing rules for AI assistant
+1. **Never guess at code you haven't seen. Ask for the file.**
+2. **Never delete or rename items without checking `purchase_items`, `sale_items`, `returns`, `losses` for references first.**
+3. **Full files, one per message. No fragments. No `...` placeholders.** Split into 2-3 parts only if file exceeds ~800 lines, clearly labeled "Part 1 of 2" / "Part 2 of 2".
+4. **Mobile-first for every UI change.**
+5. **Ask for SQL output / raw data before proposing fixes.**
+6. **Same 6-column CSV header** for purchases and returns: `Description of Goods,Type of Goods,Quality,Quantity,Price,Unit`
+7. **One CSV per source invoice.**
+8. **User is often on phone** — keep queries short, one at a time.
+9. **"give me csv"** = full CSV content to paste into import dialog, not SQL.
+10. **Stock/cost changes handled by DB triggers — do NOT add app-level stock updates.**
+11. **Real production data — no destructive SQL without first showing SELECT COUNT(*) with the same WHERE and getting explicit confirmation.**
+12. **User's number keys sometimes broken — provide copy-paste-ready SQL, avoid requiring digit typing.**
+13. **PostgREST caps responses at 1000 rows.** Any query fetching full `items` table must use RPC aggregation OR scoped `.in('item_id', ids)` filtering. **This bit twice on `/returns` and `/losses` — always scope item fetches.**
+14. **Verify writes: after a save, refetch and confirm the value persisted. Never say "saved" unless it landed.**
+15. **Party creation modal flow:** staff types new name → SmartCombobox reports `isNew = true` → parent opens NewPartyDialog → on OK, insert with title case, duplicate check, verify, append to list.
+16. **NEVER put `overflow-*` on a wrapper containing a `SmartCombobox`** — clips the dropdown.
+17. **Prefill from URL requires disabling competing defaults** — any `loadData`/`useEffect` setting a "default selection" must check the query param and bail (`&& !prefillPartyId`).
+18. **Compute due from `total_amount − paid_amount`, never trust `current_balance` alone.** `current_balance` can drift (Anas had ₹200 drift). Bills are truth for per-bill dues.
+19. **Profit formula uses `(quantity − returned_qty)` — never `amount` directly.**
+20. **Test data cleanup:** delete by `item_id` + date range, NOT by note text. Verify stock/khata after. Delete triggers fire.
+21. **Import path depth matters** — see "Import path depth" section. A report page pasted into `/reports/page.tsx` (wrong depth) causes "Cannot find module". Index page has no `supabase` import.
+22. **`useSearchParams` requires `<Suspense>` boundary** in Next.js App Router — pattern: rename default export to `Inner()`, add `export default function Page() { return <Suspense fallback={...}><Inner/></Suspense> }`. Used in `/payments`, `/sales`.
+23. **`localStorage` state changes require hard reload** (Ctrl+Shift+R) to see — Next.js preserves component state across client-side nav. Changing `useState` initial values only takes effect on fresh mount.
+24. **One file per message** when sending code. No clustering.
+
+## Known open items (parked)
+- **Auto-deploy:** Vercel connected but pushes don't always trigger. Manual `vercel --prod` if needed.
+- **Junk models cleanup** — trailing quotes, quality words in names, part codes stuck in models.
+- **Unique constraints** on `models(brand_id, model_name, network)` and `part_types(part_code)` — need dup check first.
+- **Historical `invoice_rate`** — old purchases have `invoice_rate = rate` (backfilled). New purchases correct.
+- **UTC date default bug** — `toISOString().slice(0,10)` shows previous day 00:00-05:30 IST. User doesn't care — parked.
+- **`app/purchases/[id]/edit/page.tsx`** — never audited.
+- **`update_purchase` RPC** — not updated for `invoice_rate`.
+- **Form B SKU migration** — deferred. See 2026-10-19 section.
+- **Migration file for `expenses` table** — schema exists in Supabase only, no `db/2026-10-21_expenses.sql` in repo. Worth adding for documentation.
+- **Migration files for `sales.paid_amount`** — same, no file in repo.
+- **Backups** — not automated. DB loss = unrecoverable except what's in code.
+- **Vercel Hobby is technically non-commercial** — $20/month if you want to be clean. Runs fine, terms say shouldn't.
+- **Supabase 7-day pause** on free tier if inactive — free uptime monitor fixes it.
+
+## Working state at end of 2026-10-22
+- Anas (party 9): `current_balance = 1300` (one partial bill: sale 56, ₹4,300 total, ₹3,000 paid, ₹1,300 due)
+- Counter Sale (party 3): balance ₹0
+- All other customers: ₹0
+- `expenses` table: 1 real entry (₹6,000 Staff)
+- `sale_items.cost_at_sale`: 917 lines, 0 with zero cost — COGS is accurate
+- All 11 reports working
+- No test data (SAM-TEST1-BP fully deleted, purchase 41 gone)
+
+## Useful shortcuts
+- Item count: `SELECT COUNT(*) FROM items;`
+- Recent purchases: `SELECT purchase_id, invoice_no, total_amount FROM purchases ORDER BY purchase_id DESC LIMIT 10;`
+- Recent sales: `SELECT sale_id, bill_date, total_amount FROM sales ORDER BY sale_id DESC LIMIT 10;`
+- Zero-cost sale lines: `SELECT COUNT(*) FROM sale_items WHERE cost_at_sale = 0 OR cost_at_sale IS NULL;`
+- Expense totals by type this month: `SELECT expense_type, COUNT(*), SUM(amount) FROM expenses WHERE expense_date >= date_trunc('month', CURRENT_DATE) GROUP BY expense_type;`
+- Check outstanding balance per customer: `SELECT party_id, party_name, current_balance FROM parties WHERE party_type = 'Customer' AND current_balance > 0 ORDER BY current_balance DESC;`
+
+## Recent commit history (approximate)
+- 2026-10-19: parser v28, network-aware search, search_items ORDER BY fix, data cleanup
+- 2026-10-20: `sales.paid_amount` migration, `/payments` rebuild (outstanding + receipt), `/parties` rebuild, `/parties/[id]` new, `/sales` prefill
+- 2026-10-21: `/expenses`, `/reports/expenses`, `/reports/profit`, `/reports` updated, home rebuilt, `/returns` + `/losses` fixed, `/parties` default filter, balance breakdown
+- 2026-10-22: 5 new reports (fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity), `/reports` index cleaned up (all live), home 9 quick action tiles
+
+End of handoff.
