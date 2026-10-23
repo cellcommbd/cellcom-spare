@@ -1,10 +1,5 @@
 // lib/csv-parser.ts
-// v29 — Single-pass dictionary-driven scanner. Replaces column-order
-//       dependent extraction with a scan that finds brands, parts,
-//       quality, color, network, flags, and variants in any order,
-//       anywhere in the concatenated Description + Type string.
-//       Preserves v26 (PRO+ → PRO PLUS), v27 (spacing rules),
-//       v28 (part-strip before spacing).
+// v33 — EXX-BEE routing (ESPK/ESPKF), ONLY removed from FLAG_MAP, bracket strip keeps content
 
 export type Quality =
   | 'Normal'
@@ -75,7 +70,7 @@ export function resetBrandCodeWarnings(): void {
 }
 
 // ============================================================
-// Dictionaries (fallback when DB aliases are incomplete)
+// Dictionaries
 // ============================================================
 
 const SIZE_MARKERS: Record<string, string> = {
@@ -92,7 +87,7 @@ const SIZE_MARKERS: Record<string, string> = {
   '2 PIN': '2PIN', '2PIN': '2PIN',
 }
 
-const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|SPARK|DISPLAY|FOR|MAINBOARD|MAIN BOARD)$/i
+const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD)$/i
 const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
 
 const COLOR_WORDS = [
@@ -105,8 +100,6 @@ const COLOR_WORDS = [
   'BURGUNDY', 'BLUSH', 'NEON', 'CHROME', 'GRAPHITE', 'MATTE',
 ]
 
-// Hardcoded part code map — fallback for aliases not in DB.
-// Every code here MUST exist in part_types.
 const PART_CODE_MAP: Record<string, string> = {
   BP: 'BP', 'BACK PANEL': 'BP', 'BACK COVER': 'BP', BK: 'BP',
   'BACK PANEL WITH LENS': 'BP', 'BACK PANEL WL': 'BP',
@@ -143,6 +136,14 @@ const PART_CODE_MAP: Record<string, string> = {
   EARPIECE: 'ESPK', 'EAR SPEAKER': 'ESPK', 'EAR SPK': 'ESPK',
   ESPKF: 'ESPKF', 'EXX-BEE FLEX': 'ESPKF', 'EARPIECE FLEX': 'ESPKF',
   ESPKFL: 'ESPKFL', 'EXX-BEE ONLY FLEX': 'ESPKFL', 'EARPIECE FLEX ONLY': 'ESPKFL',
+  'SPEAKER FLEX EXX-BEE': 'ESPKF',
+  'SPEAKER FLEX EXX BEE': 'ESPKF',
+  'EXX-BEE SPEAKER FLEX': 'ESPKF',
+  'EXX BEE SPEAKER FLEX': 'ESPKF',
+  'SPEAKER EXX-BEE': 'ESPK',
+  'SPEAKER EXX BEE': 'ESPK',
+  'EXX-BEE SPEAKER': 'ESPK',
+  'EXX BEE SPEAKER': 'ESPK',
   CG: 'CG', 'CAMERA GLASS': 'CG', CL: 'CL', 'CAMERA LENS': 'CL',
   CAM: 'CAM', CAMERA: 'CAM',
   BCAM: 'BCAM', 'BACK CAMERA': 'BCAM', 'BACK CAM': 'BCAM',
@@ -171,7 +172,8 @@ const FLAG_MAP: Record<string, string> = {
   WL: 'WL', 'W/L': 'WL', 'WITH LENS': 'WL', 'WITH LOGO': 'WL',
   FLEX: 'FLEX', SET: 'SET', FRONT: 'FRONT', BACK: 'BACK',
   'W/C': 'WC', WC: 'WC', 'W/C/L': 'WCL', 'W/CL': 'WCL', WCL: 'WCL',
-  ONLY: 'ONLY', COPY: 'COPY',
+  COPY: 'COPY',
+  METAL: 'METAL',
 }
 
 const PART_CODE_TOKENS = new Set<string>([
@@ -190,8 +192,11 @@ const TRAILING_QUALITY_REGEX = /\s+(100\s*%?(?:\s*(?:OG|ORIG|ORIGINAL))?|100OG|O
 
 const TRAILING_FLAG_REGEX = /\s+(W\s*\/\s*C(?:\s*\/\s*L)?|WC|WCL|W\s*\/\s*CL|WL)\b/i
 
-// Legacy phrase list — used only by extractPartFromDescription fallback.
 const PART_TYPE_PHRASES: string[] = [
+  'SPEAKER FLEX EXX-BEE', 'SPEAKER FLEX EXX BEE',
+  'EXX-BEE SPEAKER FLEX', 'EXX BEE SPEAKER FLEX',
+  'SPEAKER EXX-BEE', 'SPEAKER EXX BEE',
+  'EXX-BEE SPEAKER', 'EXX BEE SPEAKER',
   'EAR SPEAKER', 'EAR SPK', 'BACK CAMERA', 'FRONT CAMERA', 'BACK CAM', 'FRONT CAM',
   'FLASH FLEX', 'TYPE FLASH FLEX', 'TYPE FLASH', 'SENSOR [SIDE]', 'SENSOR SIDE',
   'SENSOR CONNECTOR', 'SENSOR CONN.', 'SENSOR CONN', 'SENSOR',
@@ -220,7 +225,7 @@ const PART_TYPE_PHRASES: string[] = [
 ]
 
 // ============================================================
-// Text normalization
+// CSV utilities
 // ============================================================
 
 export function splitCSVLines(text: string): string[][] {
@@ -260,6 +265,8 @@ export function findColumnIndex(headers: string[], candidates: string[]): number
 function normalizeTypos(desc: string): string {
   return desc
     .replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
+    .replace(/(\d)\+/g, '$1 PLUS')
+    .replace(/\bOPPO\s*-?\s*REALME\b/gi, 'REALME')
     .replace(/\bPANLE\b/gi, 'PANEL')
     .replace(/\bPANAL\b/gi, 'PANEL')
     .replace(/\bPANNEL\b/gi, 'PANEL')
@@ -301,10 +308,6 @@ function resolveColorAlias(text: string, colorAliases?: Record<string, string>):
   const upper = text.toUpperCase().trim()
   return colorAliases[upper] || null
 }
-
-// ============================================================
-// Parenthetical / bracket marker extraction
-// ============================================================
 
 function extractMarkers(desc: string): { markers: string[]; cleanedDesc: string } {
   const markers: string[] = []
@@ -381,10 +384,6 @@ function extractParentheticals(desc: string): ParentheticalResult {
   const cleanedDesc = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
   return { colors, network, quality, flag, size, variant, year, cleanedDesc }
 }
-
-// ============================================================
-// Quality / marker classification
-// ============================================================
 
 function extractQualityFromMarkers(markers: string[]): {
   quality: Quality
@@ -496,14 +495,15 @@ function classifyMarkers(
   return { variant, year, network, flag, size, color, modelAlias }
 }
 
-// ============================================================
-// Brand lookup
-// ============================================================
-
 function findBrandAnywhere(
   text: string,
   aliases: AliasMaps
-): { brandCode: string | null; matchIndex: number; matchLength: number; matchedKey: string } {
+): {
+  brandCode: string | null
+  matchIndex: number
+  matchLength: number
+  matchedKey: string
+} {
   if (typeof text !== 'string') {
     return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
   }
@@ -527,10 +527,6 @@ function findBrandAnywhere(
   return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
 }
 
-// ============================================================
-// Part code normalization (v29: reject long descriptive strings)
-// ============================================================
-
 function normalizePartCode(raw: string | null): string | null {
   if (!raw) return null
   const upper = raw
@@ -545,19 +541,16 @@ function normalizePartCode(raw: string | null): string | null {
   const noSpace = upper.replace(/\s+/g, '')
   if (PART_CODE_MAP[noSpace]) return PART_CODE_MAP[noSpace]
 
-  // v29: reject long descriptive strings — never let "BACKPANELOGBLACK"
-  // become a part code. Only accept short bare codes.
   const bare = upper.replace(/[^A-Z0-9]/g, '')
   if (bare.length === 0 || bare.length > 10) return null
   if (!/^[A-Z0-9]+$/.test(bare)) return null
   return bare
 }
 
-// ============================================================
-// Model name normalization (v28: part-strip BEFORE spacing rules)
-// ============================================================
-
-function normalizeModelName(model: string | null): { model: string | null; strippedPart: string | null } {
+function normalizeModelName(model: string | null): {
+  model: string | null
+  strippedPart: string | null
+} {
   if (!model) return { model: null, strippedPart: null }
 
   let cleaned = model
@@ -617,10 +610,6 @@ function normalizeModelName(model: string | null): { model: string | null; strip
   return { model: cleaned, strippedPart }
 }
 
-// ============================================================
-// SKU builder
-// ============================================================
-
 export function generateSku(fields: {
   brandCode: string | null
   modelName: string | null
@@ -649,8 +638,6 @@ export function generateSku(fields: {
       .replace(/-+/g, '-')
       .replace(/^-|-$/g, '')
 
-  // Canonical SKU grammar:
-  // BRAND - MODEL - [YEAR] - PART - [NETWORK] - [FLAG] - [VARIANT] - [COLOR] - [QUALITY]
   const seg: string[] = []
   seg.push(brandCode)
   if (modelName) seg.push(dash(modelName))
@@ -667,10 +654,6 @@ export function generateSku(fields: {
 
   return seg.filter(Boolean).join('-')
 }
-
-// ============================================================
-// Duplicate flagging
-// ============================================================
 
 export function flagDuplicates(rows: ParsedRow[]): ParsedRow[] {
   const skuMap = new Map<string, number[]>()
@@ -712,10 +695,6 @@ export function flagDuplicates(rows: ParsedRow[]): ParsedRow[] {
   return next
 }
 
-// ============================================================
-// Group parsed rows by status
-// ============================================================
-
 export function groupParsedRows(rows: ParsedRow[]): {
   matched: ParsedRow[]
   newItems: ParsedRow[]
@@ -734,7 +713,7 @@ export function groupParsedRows(rows: ParsedRow[]): {
   return { matched, newItems, errors }
 }
 // ============================================================
-// extractPartFromDescription — retained as fallback only.
+// extractPartFromDescription — fallback only
 // ============================================================
 
 function extractPartFromDescription(
@@ -763,7 +742,7 @@ function extractPartFromDescription(
 }
 
 // ============================================================
-// scanDescription — v29 single-pass dictionary-driven scanner.
+// scanDescription — single-pass dictionary-driven scanner
 // ============================================================
 
 type ScanResult = {
@@ -780,11 +759,8 @@ type ScanResult = {
   matchedPartPhrase: string | null
 }
 
-function scanDescription(
-  text: string,
-  aliases: AliasMaps
-): ScanResult {
-  let work = normalizeTypos(text).toUpperCase()
+function scanDescription(text: string, aliases: AliasMaps): ScanResult {
+  const work = normalizeTypos(text).toUpperCase()
 
   const partPhraseMap: Record<string, string> = {}
   for (const p of Object.keys(aliases.partAliases)) {
@@ -872,28 +848,49 @@ function scanDescription(
       ws++
       if (isModifierCandidate(ws, we)) {
         start = ws
-        return { start, end, text: work.slice(start, end).replace(/\s+/g, ' ').trim() }
+        return {
+          start,
+          end,
+          text: work.slice(start, end).replace(/\s+/g, ' ').trim(),
+        }
       }
     }
 
     let q = end
-    while (q < work.length && (work[q] === ' ' || work[q] === '(' || work[q] === ')')) q++
+    while (
+      q < work.length &&
+      (work[q] === ' ' || work[q] === '(' || work[q] === ')')
+    )
+      q++
     if (q < work.length) {
       const ws = q
       let we = q
       while (we < work.length && /[A-Z]/.test(work[we])) we++
       if (isModifierCandidate(ws, we)) {
         end = we
-        return { start, end, text: work.slice(start, end).replace(/\s+/g, ' ').trim() }
+        return {
+          start,
+          end,
+          text: work.slice(start, end).replace(/\s+/g, ' ').trim(),
+        }
       }
     }
 
-    return { start, end, text: work.slice(start, end).replace(/\s+/g, ' ').trim() }
+    return {
+      start,
+      end,
+      text: work.slice(start, end).replace(/\s+/g, ' ').trim(),
+    }
   }
 
   let pos = 0
   while (pos < work.length) {
-    if (consumed[pos] || work[pos] === ' ' || work[pos] === '(' || work[pos] === ')') {
+    if (
+      consumed[pos] ||
+      work[pos] === ' ' ||
+      work[pos] === '(' ||
+      work[pos] === ')'
+    ) {
       pos++
       continue
     }
@@ -982,7 +979,11 @@ function scanDescription(
           const ext = extendColor(pos, phrase.length)
           if (ext.start < pos || ext.end > pos + phrase.length) {
             for (let i = ext.start; i < ext.end; i++) {
-              if (work[i] !== ' ' && work[i] !== '(' && work[i] !== ')') {
+              if (
+                work[i] !== ' ' &&
+                work[i] !== '(' &&
+                work[i] !== ')'
+              ) {
                 consumed[i] = true
               }
             }
@@ -1003,10 +1004,16 @@ function scanDescription(
     }
     if (colorMatched) continue
 
-    const variantMatch = work.slice(pos).match(/^(?:BOX\s*PACKING|BOXPACKING|MAIN|OCTA|NEW|DAMD\.?|SPARK|DISPLAY|FOR|MAINBOARD|MAIN BOARD)(?![A-Z0-9])/i)
+    const variantMatch = work
+      .slice(pos)
+      .match(
+        /^(?:BOX\s*PACKING|BOXPACKING|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD)(?![A-Z0-9])/i
+      )
     if (variantMatch && tryMatchAt(pos, variantMatch[0])) {
       const v = variantMatch[0].toUpperCase().replace(/\.$/, '')
-      if (!variant) variant = v === 'BOX PACKING' || v === 'BOXPACKING' ? 'BOX-PACKING' : v
+      if (!variant)
+        variant =
+          v === 'BOX PACKING' || v === 'BOXPACKING' ? 'BOX-PACKING' : v
       consume(pos, variantMatch[0].length)
       pos += variantMatch[0].length
       continue
@@ -1056,7 +1063,7 @@ function scanDescription(
 }
 
 // ============================================================
-// parseCSV — v29
+// parseCSV — v33
 // ============================================================
 
 export function parseCSV(
@@ -1073,7 +1080,13 @@ export function parseCSV(
     const line = lines[i]
     const qty = findColumnIndex(line, ['quantity', 'qty'])
     const rate = findColumnIndex(line, ['rate', 'price'])
-    const desc = findColumnIndex(line, ['descriptionofgoods', 'description', 'item', 'product', 'itemname'])
+    const desc = findColumnIndex(line, [
+      'descriptionofgoods',
+      'description',
+      'item',
+      'product',
+      'itemname',
+    ])
     const brand = findColumnIndex(line, ['brand'])
     if (qty !== -1 && rate !== -1 && (desc !== -1 || brand !== -1)) {
       headerRowIndex = i
@@ -1090,8 +1103,19 @@ export function parseCSV(
 
   const colBrand = findColumnIndex(header, ['brand'])
   const colModel = findColumnIndex(header, ['model'])
-  const colPart = findColumnIndex(header, ['parttype', 'typeofgoods', 'type', 'part'])
-  const colDesc = findColumnIndex(header, ['descriptionofgoods', 'description', 'item', 'product', 'itemname'])
+  const colPart = findColumnIndex(header, [
+    'parttype',
+    'typeofgoods',
+    'type',
+    'part',
+  ])
+  const colDesc = findColumnIndex(header, [
+    'descriptionofgoods',
+    'description',
+    'item',
+    'product',
+    'itemname',
+  ])
   const colQty = findColumnIndex(header, ['quantity', 'qty'])
   const colRate = findColumnIndex(header, ['rate', 'price'])
 
@@ -1112,7 +1136,8 @@ export function parseCSV(
     if (firstCell.includes('total') || firstCell === '') continue
 
     const rawDescFromRow = colDesc >= 0 ? row[colDesc] || '' : ''
-    const rawTypeFromRow = colPart >= 0 ? (row[colPart] || '').toUpperCase().trim() : ''
+    const rawTypeFromRow =
+      colPart >= 0 ? (row[colPart] || '').toUpperCase().trim() : ''
     const rawQtyCell = colQty >= 0 ? row[colQty] || '' : ''
     const rawRateCell = colRate >= 0 ? row[colRate] || '' : ''
 
@@ -1142,9 +1167,13 @@ export function parseCSV(
     let color: string | null = null
 
     if (isNewFormat) {
-      const brandRaw = normalizeTypos((row[colBrand] || '').toUpperCase().trim())
+      const brandRaw = normalizeTypos(
+        (row[colBrand] || '').toUpperCase().trim()
+      )
       const modelRaw = normalizeTypos((row[colModel] || '').trim())
-      const partRaw = normalizeTypos((row[colPart] || '').toUpperCase().trim())
+      const partRaw = normalizeTypos(
+        (row[colPart] || '').toUpperCase().trim()
+      )
 
       rawDescription = `${brandRaw} ${modelRaw}`
       rawType = partRaw
@@ -1153,7 +1182,9 @@ export function parseCSV(
       if (network) network = network.toUpperCase()
 
       brandCode = aliases.brandAliases[brandRaw] || brandRaw
-      const nm = normalizeModelName(modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim())
+      const nm = normalizeModelName(
+        modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim()
+      )
       modelName = nm.model
 
       const directAlias = aliases.partAliases[partRaw]
@@ -1170,24 +1201,34 @@ export function parseCSV(
         }
       }
       if (nm.strippedPart && !partCode) {
-        partCode = aliases.partAliases[nm.strippedPart] || normalizePartCode(nm.strippedPart)
+        partCode =
+          aliases.partAliases[nm.strippedPart] ||
+          normalizePartCode(nm.strippedPart)
       }
     } else {
-      // Unstructured format — v30: only extract (...) before scan.
-      // Brackets [SIDE], [W/C], {OG} are handled naturally by the scanner.
       rawDescription = rawDescFromRow
       rawType = rawTypeFromRow
 
-      const combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
+      let combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
 
-      // Extract paren groups — handles (BUBBLEGUM BLUE), (OG), (WL), (4G) etc.
+      // v33: bracket strip preserves content, drops brackets
+      combined = combined.replace(/\[([^\]]*)\]/g, (match, inner) => {
+        const upper = inner.trim().toUpperCase()
+        if (FLAG_MAP[upper]) return ' ' + inner + ' '
+        if (SIZE_MARKERS[upper]) return ' ' + inner + ' '
+        if (/EXX\s*-?\s*BEE/i.test(inner)) return ' ' + inner + ' '
+        if (
+          /^(ORI|ORIG|ORIGINAL|OG|C\+|100\s*%?\s*(?:OG|ORIG)?)$/i.test(upper)
+        )
+          return ' ' + inner + ' '
+        return ' '
+      })
+
       const paren = extractParentheticals(combined)
       const working = paren.cleanedDesc
 
-      // Scan the working text — brackets still present, scanner handles them
       const scan = scanDescription(working, aliases)
 
-      // Merge — parens > scanner
       brandCode = scan.brandCode
       partCode = scan.partCode
       quality = paren.quality || scan.quality
@@ -1202,14 +1243,14 @@ export function parseCSV(
         color = scan.color
       }
 
-      // Model text
       const nm = normalizeModelName(scan.modelText)
       modelName = nm.model
       if (nm.strippedPart && !partCode) {
-        partCode = aliases.partAliases[nm.strippedPart] || normalizePartCode(nm.strippedPart)
+        partCode =
+          aliases.partAliases[nm.strippedPart] ||
+          normalizePartCode(nm.strippedPart)
       }
 
-      // Fallback if no part
       if (!partCode) {
         const fallback = extractPartFromDescription(working, aliases)
         if (fallback.partText) {
@@ -1219,26 +1260,34 @@ export function parseCSV(
         }
       }
 
-      // If no brand yet, try findBrandAnywhere on model text
       if (!brandCode && modelName) {
         const bm = findBrandAnywhere(modelName, aliases)
         if (bm.brandCode) {
           brandCode = bm.brandCode
-          const after = modelName.slice(0, bm.matchIndex) + ' ' + modelName.slice(bm.matchIndex + bm.matchLength)
+          const after =
+            modelName.slice(0, bm.matchIndex) +
+            ' ' +
+            modelName.slice(bm.matchIndex + bm.matchLength)
           const nm2 = normalizeModelName(after.trim())
           modelName = nm2.model
         }
       }
     }
 
-    // GEN fallback for general items
     if (!brandCode && partCode) {
       brandCode = 'GEN'
     }
 
     const sku = generateSku({
-      brandCode, modelName, variant, year, partCode,
-      network, quality, flag, color,
+      brandCode,
+      modelName,
+      variant,
+      year,
+      partCode,
+      network,
+      quality,
+      flag,
+      color,
       validBrandCodes: aliases.validBrandCodes,
     })
 
@@ -1295,7 +1344,9 @@ export function parseCSV(
   if (failed.length > 0) {
     console.log(`\n===== PARSE FAILED ROWS (${failed.length}) =====`)
     for (const f of failed.slice(0, 20)) {
-      console.log(`Row ${f.rowNumber}: "${f.rawDescription}" [type: "${f.rawType}"]`)
+      console.log(
+        `Row ${f.rowNumber}: "${f.rawDescription}" [type: "${f.rawType}"]`
+      )
       console.log(`   → ${f.errorMessage}`)
     }
     if (failed.length > 20) console.log(`   ... ${failed.length - 20} more`)
