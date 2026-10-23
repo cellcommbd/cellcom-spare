@@ -120,7 +120,7 @@ function SalesEntryPage() {
   const [todaySales, setTodaySales] = useState<SaleHeader[]>([])
   const [isOwner, setIsOwner] = useState(false)
 
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = new Date().toLocaleDateString('en-CA')
   const [reportFrom, setReportFrom] = useState(todayStr)
   const [reportTo, setReportTo] = useState(todayStr)
   const [reportLines, setReportLines] = useState<ReportLine[]>([])
@@ -974,13 +974,21 @@ function SalesEntryPage() {
     const oldTotal = editState.original_total
     const newPartyId = editState.party_id
 
-    // 1. Update sales header
+    // 1. Update sales header — recompute status from new total vs paid_amount
+    const newStatus =
+      newTotal <= editState.paid_amount
+        ? 'Paid'
+        : editState.paid_amount > 0
+        ? 'Partially Paid'
+        : 'Pending'
+
     const { error: headerErr } = await supabase
       .from('sales')
       .update({
         party_id: newPartyId,
         bill_date: editState.bill_date,
         total_amount: newTotal,
+        status: newStatus,
       })
       .eq('sale_id', editState.sale_id)
 
