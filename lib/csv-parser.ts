@@ -1,5 +1,5 @@
 // lib/csv-parser.ts
-// v33 — EXX-BEE routing (ESPK/ESPKF), ONLY removed from FLAG_MAP, bracket strip keeps content
+// v34 — 1+NORD fix, brand-consume fix, curly-brace quality extraction
 
 export type Quality =
   | 'Normal'
@@ -264,8 +264,10 @@ export function findColumnIndex(headers: string[], candidates: string[]): number
 
 function normalizeTypos(desc: string): string {
   return desc
+    .replace(/\b(SAM|MI|IP|VV|OP|RM|NK|TEC|INF|HUA|ITL|JIO|MT|NOTH|ONE)([A-Z])(\d)/g, '$1 $2$3')
     .replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
-    .replace(/(\d)\+/g, '$1 PLUS')
+    .replace(/\b1\s*\+\s*(?=[A-Z])/gi, '1+ ')
+    .replace(/(\d)\+/g, (m, d) => (d === '1' ? m : d + ' PLUS'))
     .replace(/\bOPPO\s*-?\s*REALME\b/gi, 'REALME')
     .replace(/\bPANLE\b/gi, 'PANEL')
     .replace(/\bPANAL\b/gi, 'PANEL')
@@ -712,6 +714,7 @@ export function groupParsedRows(rows: ParsedRow[]): {
 
   return { matched, newItems, errors }
 }
+
 // ============================================================
 // extractPartFromDescription — fallback only
 // ============================================================
@@ -1019,15 +1022,20 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
       continue
     }
 
+    // Brand block — do NOT consume if brandCode already set.
+    // The token falls through to model text.
     let brandMatched = false
     for (const phrase of brandPhrases) {
       if (phrase.length < 2) continue
       if (tryMatchAt(pos, phrase)) {
-        if (!brandCode) brandCode = brandPhraseMap[phrase]
-        consume(pos, phrase.length)
-        pos += phrase.length
-        brandMatched = true
-        break
+        if (!brandCode) {
+          brandCode = brandPhraseMap[phrase]
+          consume(pos, phrase.length)
+          pos += phrase.length
+          brandMatched = true
+          break
+        }
+        // brand already set — skip this match, let the char fall through
       }
     }
     if (brandMatched) continue
@@ -1063,13 +1071,13 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 }
 
 // ============================================================
-// parseCSV — v33
+// parseCSV — v34
 // ============================================================
 
 export function parseCSV(
   text: string,
   aliases: AliasMaps,
-  items: ItemLookup[]
+  items: ItemLookup[] = []
 ): ParsedRow[] {
   const lines = splitCSVLines(text)
   if (lines.length < 2) return []
@@ -1211,6 +1219,30 @@ export function parseCSV(
 
       let combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
 
+      // Curly-brace quality extraction — before any strip
+      const curlyMatches = combined.match(/\{[^}]*\}/g)
+      if (curlyMatches) {
+        for (const block of curlyMatches) {
+          const inner = block.slice(1, -1).trim().toUpperCase()
+          if (/100\s*%/.test(inner) || inner === '100') {
+            quality = '100 OG'
+            break
+          }
+          if (/CHINA/.test(inner)) {
+            quality = 'China OG'
+            break
+          }
+          if (/CARE/.test(inner)) {
+            quality = 'Care OG'
+            break
+          }
+          if (/\b(OG|ORIG|ORIGINAL|ORI|ORG)\b/.test(inner)) {
+            quality = 'OG'
+            break
+          }
+        }
+      }
+
       // v33: bracket strip preserves content, drops brackets
       combined = combined.replace(/\[([^\]]*)\]/g, (match, inner) => {
         const upper = inner.trim().toUpperCase()
@@ -1218,7 +1250,7 @@ export function parseCSV(
         if (SIZE_MARKERS[upper]) return ' ' + inner + ' '
         if (/EXX\s*-?\s*BEE/i.test(inner)) return ' ' + inner + ' '
         if (
-          /^(ORI|ORIG|ORIGINAL|OG|C\+|100\s*%?\s*(?:OG|ORIG)?)$/i.test(upper)
+          /^(ORI|ORIG|ORIGINAL|OG|C\+|CARE(?:\s*(?:OG|ORIG|ORIGINAL))?|100\s*%?\s*(?:OG|ORIG|ORIGINAL)?|CHINA\s*(?:OG|ORIG|ORIGINAL))$/i.test(upper)
         )
           return ' ' + inner + ' '
         return ' '
@@ -1231,7 +1263,11 @@ export function parseCSV(
 
       brandCode = scan.brandCode
       partCode = scan.partCode
-      quality = paren.quality || scan.quality
+      // Quality precedence: scan quality (from text) OR paren OR curly.
+      // Curly extraction ran before strips, so it's the most explicit.
+      if (quality === 'Normal') {
+        quality = paren.quality || scan.quality
+      }
       network = paren.network || scan.network || null
       year = paren.year || scan.year || null
       variant = paren.variant || scan.variant || scan.size || null
