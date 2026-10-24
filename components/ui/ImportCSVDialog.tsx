@@ -42,7 +42,6 @@ type Props = {
   onClose: () => void
   onImport: (matched: ParsedRow[], newItems: ParsedRow[], margin: number) => void
   actionLabel?: string
-  /** Optional: called with any rows the user skipped (either individually or via "Skip all errors") */
   onSkipRows?: (skipped: ParsedRow[]) => void
 }
 
@@ -69,12 +68,10 @@ export function ImportCSVDialog({
   const [mapping, setMapping] = useState<ColumnMapping>({})
   const [parsedRows, setParsedRows] = useState<ParsedRow[]>([])
   const [aliases, setAliases] = useState<AliasMaps | null>(null)
-  const [items, setItems] = useState<ItemLookup[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [margin, setMargin] = useState('1.5')
   const [editingRow, setEditingRow] = useState<number | null>(null)
-  // NEW: which original indices the user has chosen to skip
   const [skippedIndices, setSkippedIndices] = useState<Set<number>>(new Set())
 
   useEffect(() => {
@@ -89,19 +86,6 @@ export function ImportCSVDialog({
       supabase.from('part_type_aliases').select('csv_text, part_code'),
       supabase.from('parser_color_aliases').select('csv_text, color_value'),
     ])
-
-    const allItems: any[] = []
-    const PAGE = 1000
-    for (let from = 0; from < 20000; from += PAGE) {
-      const { data, error } = await supabase
-        .from('items')
-        .select('item_id, sku, brand_id, model_id, part_id, quality')
-        .order('sku')
-        .range(from, from + PAGE - 1)
-      if (error || !data || data.length === 0) break
-      allItems.push(...data)
-      if (data.length < PAGE) break
-    }
 
     const brandAliases: Record<string, string> = {}
     for (const r of (brandRes.data as any[]) || []) {
@@ -119,8 +103,58 @@ export function ImportCSVDialog({
     }
 
     setAliases({ brandAliases, partAliases, colorAliases })
-    setItems(allItems as ItemLookup[])
     setLoading(false)
+  }
+
+  // Scoped SKU lookup — no full-table load. Chunked at 500.
+  async function lookupItemsBySku(skus: string[]): Promise<ItemLookup[]> {
+    const uniq = Array.from(
+      new Set(skus.map((s) => s.toUpperCase()).filter(Boolean))
+    )
+    if (uniq.length === 0) return []
+
+    const out: ItemLookup[] = []
+    const CHUNK = 500
+    for (let i = 0; i < uniq.length; i += CHUNK) {
+      const slice = uniq.slice(i, i + CHUNK)
+      const { data, error } = await supabase
+        .from('items')
+        .select('item_id, sku, brand_id, model_id, part_id, quality')
+        .in('sku', slice)
+      if (error) {
+        throw new Error('Could not look up existing SKUs: ' + error.message)
+      }
+      for (const it of (data as ItemLookup[]) || []) out.push(it)
+    }
+    return out
+  }
+
+  // Reclassify matched/new from real DB state.
+  async function reclassify(rows: ParsedRow[]): Promise<ParsedRow[]> {
+    const skus = rows.map((r) => r.generatedSku).filter(Boolean) as string[]
+    const freshItems = await lookupItemsBySku(skus)
+    const freshBySku = new Map(
+      freshItems.map((it) => [it.sku.toUpperCase(), it])
+    )
+    return rows.map((r) => {
+      if (r.status === 'error') return r
+      if (!r.generatedSku) return r
+      const found = freshBySku.get(r.generatedSku.toUpperCase())
+      if (found) {
+        return {
+          ...r,
+          status: 'matched' as const,
+          matchedItemId: found.item_id,
+          matchedItemSku: found.sku,
+        }
+      }
+      return {
+        ...r,
+        status: 'new' as const,
+        matchedItemId: null,
+        matchedItemSku: null,
+      }
+    })
   }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -152,7 +186,7 @@ export function ImportCSVDialog({
     setMapping(buildDefaultMapping(result.columns))
   }
 
-  function handleParseAuto() {
+  async function handleParseAuto() {
     setError('')
     if (!aliases) return
     if (!csvText.trim()) {
@@ -160,33 +194,35 @@ export function ImportCSVDialog({
       return
     }
     try {
-      // Auto-detect: is this a general-items CSV (TOOL/CLEANING/OTHER/SPRAY in Type column)?
       const isGeneral = detectGeneralItemCSV(csvText)
 
       let rows: ParsedRow[]
       if (isGeneral) {
-        // Parse as general items
-        const generalRows = parseGeneralCSV(csvText, items)
-        // Cast to ParsedRow[] — compatible (extra fields ignored downstream)
+        const generalRows = parseGeneralCSV(csvText, [])
         rows = generalRows as unknown as ParsedRow[]
       } else {
-        // Existing phone-part parser
-        rows = parseCSV(csvText, aliases, items)
+        rows = parseCSV(csvText, aliases, [])
       }
 
       if (rows.length === 0) {
         setError('No valid rows found in auto mode. Try Manual mapping.')
         return
       }
+
+      setLoading(true)
+      rows = await reclassify(rows)
+      setLoading(false)
+
       setParsedRows(rows)
       setEditingRow(null)
       setSkippedIndices(new Set())
     } catch (e: any) {
+      setLoading(false)
       setError(e.message || 'Failed to parse CSV')
     }
   }
 
-  function handleParseManual() {
+  async function handleParseManual() {
     setError('')
     if (!aliases) return
     const validation = validateMapping(mapping)
@@ -195,15 +231,21 @@ export function ImportCSVDialog({
       return
     }
     try {
-      const rows = applyMapping(csvText, mapping, aliases, items)
+      let rows = applyMapping(csvText, mapping, aliases, [])
       if (rows.length === 0) {
         setError('No valid rows found. Check your mapping.')
         return
       }
+
+      setLoading(true)
+      rows = await reclassify(rows)
+      setLoading(false)
+
       setParsedRows(rows)
       setEditingRow(null)
       setSkippedIndices(new Set())
     } catch (e: any) {
+      setLoading(false)
       setError(e.message || 'Failed to parse CSV')
     }
   }
@@ -236,18 +278,9 @@ export function ImportCSVDialog({
           merged.status = 'error'
           merged.errorMessage = 'Could not build SKU'
         } else {
-          const found = items.find(
-            (it) => it.sku.toUpperCase() === merged.generatedSku!.toUpperCase()
-          )
-          if (found) {
-            merged.matchedItemId = found.item_id
-            merged.matchedItemSku = found.sku
-            merged.status = 'matched'
-          } else {
-            merged.matchedItemId = null
-            merged.matchedItemSku = null
-            merged.status = 'new'
-          }
+          merged.matchedItemId = null
+          merged.matchedItemSku = null
+          merged.status = 'new'
           merged.errorMessage = undefined
         }
 
@@ -258,7 +291,6 @@ export function ImportCSVDialog({
     })
   }
 
-  // NEW: skip one row
   function skipRow(index: number) {
     setSkippedIndices((prev) => {
       const next = new Set(prev)
@@ -266,14 +298,12 @@ export function ImportCSVDialog({
       return next
     })
     if (editingRow === index) setEditingRow(null)
-    // Persist this skipped row immediately
     const row = parsedRows[index]
     if (row && onSkipRows) {
       onSkipRows([row])
     }
   }
 
-  // NEW: unskip one row
   function unskipRow(index: number) {
     setSkippedIndices((prev) => {
       const next = new Set(prev)
@@ -282,7 +312,6 @@ export function ImportCSVDialog({
     })
   }
 
-  // NEW: skip all currently-erroring rows
   function skipAllErrors() {
     setSkippedIndices((prev) => {
       const next = new Set(prev)
@@ -294,7 +323,6 @@ export function ImportCSVDialog({
   }
 
   function handleFill() {
-    // Build the effective set of rows: parsed rows minus skipped ones
     const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
 
     const { matched, newItems } = groupParsedRows(effectiveRows)
@@ -310,8 +338,6 @@ export function ImportCSVDialog({
       setError('No valid rows to import.')
       return
     }
-
-    // Skips are saved immediately on skip click — nothing to do here.
 
     onImport(usableMatched, usableNew, Number(margin) || 1.5)
     resetAndClose()
@@ -332,7 +358,6 @@ export function ImportCSVDialog({
   if (!open) return null
 
   const grouped = groupParsedRows(parsedRows)
-  // effective usable count = everything not skipped and not erroring
   const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
   const groupedEffective = groupParsedRows(effectiveRows)
   const totalUsable =
@@ -340,7 +365,6 @@ export function ImportCSVDialog({
     groupedEffective.newItems.filter((r) => r.status !== 'error').length
   const mappingValidation = validateMapping(mapping)
 
-  // Sort: errors first, then new, then matched. Keeps original order within each group.
   const sortedRows: { row: ParsedRow; originalIndex: number }[] = parsedRows
     .map((row, originalIndex) => ({ row, originalIndex }))
     .sort((a, b) => {
@@ -396,7 +420,7 @@ export function ImportCSVDialog({
         <div className="flex-1 overflow-y-auto p-6">
           {loading && (
             <div className="text-center py-8 text-slate-500">
-              Loading items master...
+              {parsedRows.length === 0 ? 'Loading aliases…' : 'Checking SKUs…'}
             </div>
           )}
 
@@ -775,7 +799,7 @@ export function ImportCSVDialog({
 }
 
 /* ============================================================
-   Edit row panel — unchanged from original
+   Edit row panel
    ============================================================ */
 function EditRowPanel({
   row,
@@ -923,7 +947,7 @@ function EditRowPanel({
           <input
             value={flag}
             onChange={(e) => setFlag(e.target.value.toUpperCase())}
-            placeholder="WC / ONLY"
+            placeholder="WL / WC"
             className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
@@ -950,7 +974,6 @@ function EditRowPanel({
             <option value="Normal">Normal</option>
             <option value="OG">OG</option>
             <option value="100 OG">100 OG</option>
-            <option value="ORG">ORG</option>
             <option value="Care OG">Care OG</option>
             <option value="China OG">China OG</option>
           </select>
