@@ -16,6 +16,7 @@ import {
   Package,
   CalendarClock,
   Wallet,
+  Search,
 } from 'lucide-react'
 
 type ReportCard = {
@@ -52,6 +53,14 @@ const REPORTS: ReportCard[] = [
       'Top-selling SKUs in the selected period, ranked by quantity and revenue.',
     Icon: Flame,
     color: 'red',
+  },
+  {
+    href: '/reports/sales-explorer',
+    title: 'Sales Explorer',
+    description:
+      'Find sales by date, customer, item, or Counter Sale. Group by day, party, item, or bill.',
+    Icon: Search,
+    color: 'slate',
   },
   {
     href: '/reports/dead-stock',
