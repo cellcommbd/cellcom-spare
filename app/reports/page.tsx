@@ -86,7 +86,7 @@ const REPORTS: ReportCard[] = [
       'Receivables bucketed by age: 0–30, 31–60, 61–90, 90+ days.',
     Icon: Users,
     color: 'red',
-    ownerOnly: true,
+    
   },
   {
     href: '/reports/expenses',

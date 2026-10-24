@@ -4,11 +4,11 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { supabase } from '../../../lib/supabase'
-import { getRole } from '../../../lib/auth'
+
 import {
   ArrowLeft,
   Users,
-  AlertCircle,
+
   ChevronRight,
   ChevronDown,
   Store,
@@ -126,8 +126,7 @@ function formatDate(d: string) {
 export default function KhataAgingReportPage() {
   const router = useRouter()
 
-  const [isOwner, setIsOwner] = useState(false)
-  const [roleChecked, setRoleChecked] = useState(false)
+
 
   const [customers, setCustomers] = useState<CustomerAging[]>([])
   const [loading, setLoading] = useState(true)
@@ -146,16 +145,9 @@ export default function KhataAgingReportPage() {
   })
 
   useEffect(() => {
-    const r = getRole()
-    setIsOwner(r === 'owner')
-    setRoleChecked(true)
-  }, [])
-
-  useEffect(() => {
-    if (isOwner) loadReport()
-    else setLoading(false)
+    loadReport()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOwner])
+  }, [])
 
   async function loadReport() {
     setLoading(true)
@@ -296,29 +288,6 @@ export default function KhataAgingReportPage() {
 
   const grandTotal = customers.reduce((s, c) => s + c.total_due, 0)
   const grandCustomerCount = customers.length
-
-  // ---------- Role gate ----------
-  if (roleChecked && !isOwner) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-        <div className="text-center max-w-sm">
-          <AlertCircle className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-          <div className="text-slate-700 font-medium mb-1">
-            Owner access required.
-          </div>
-          <div className="text-xs text-slate-500">
-            Khata aging is visible to the shop owner only.
-          </div>
-          <Link
-            href="/reports"
-            className="mt-3 inline-block text-sm text-indigo-600 hover:text-indigo-800 underline"
-          >
-            ← Back to reports
-          </Link>
-        </div>
-      </div>
-    )
-  }
 
   // ============ RENDER ============
   return (
