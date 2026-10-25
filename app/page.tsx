@@ -51,7 +51,7 @@ function todayStr() {
   return new Date().toLocaleDateString('en-CA')
 }
 
-function greeting() {
+function greetingFromNow() {
   const h = new Date().getHours()
   if (h < 12) return 'Good morning'
   if (h < 17) return 'Good afternoon'
@@ -70,6 +70,8 @@ export default function Home() {
 
   const [role, setRole] = useState<Role>(null)
   const [roleChecked, setRoleChecked] = useState(false)
+  const [greetingText, setGreetingText] = useState('Good day')
+  const [dateLabel, setDateLabel] = useState('Loading date…')
 
   const [todaySales, setTodaySales] = useState(0)
   const [todayCashIn, setTodayCashIn] = useState(0)
@@ -92,6 +94,15 @@ export default function Home() {
   useEffect(() => {
     setRole(getRole())
     setRoleChecked(true)
+    setGreetingText(greetingFromNow())
+    setDateLabel(
+      new Date().toLocaleDateString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+    )
   }, [])
 
   useEffect(() => {
@@ -236,15 +247,6 @@ export default function Home() {
 
   const isOwner = role === 'owner'
 
-  const dateLabel = useMemo(() => {
-    return new Date().toLocaleDateString('en-IN', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    })
-  }, [])
-
   // ============ RENDER ============
   return (
     <div className="min-h-screen bg-slate-50 p-3 sm:p-6 lg:p-8">
@@ -253,7 +255,7 @@ export default function Home() {
         {/* Header */}
         <div className="mb-4 sm:mb-6">
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900">
-            {greeting()}
+            {greetingText}
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
             {dateLabel}

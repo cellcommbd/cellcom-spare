@@ -39,6 +39,47 @@ export type AliasMaps = {
   validBrandCodes?: string[]
 }
 
+const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
+  OP: 'OP',
+  RE: 'RE',
+  OPPO: 'OP',
+  REALME: 'RE',
+  SAM: 'SAM',
+  SM: 'SAM',
+  VV: 'VV',
+  VIVO: 'VV',
+  IP: 'IP',
+  IPHONE: 'IP',
+  NK: 'NK',
+  RM: 'RE',
+  MI: 'MI',
+  ONE: 'ONE',
+  REDMI: 'RE',
+  NOKIA: 'NK',
+  GENERIC: 'GEN',
+  '1+': 'ONE',
+  '1PLUS': 'ONE',
+}
+
+export function mergeBrandAliases(input?: Record<string, string>): Record<string, string> {
+  const merged: Record<string, string> = { ...BUILT_IN_BRAND_ALIASES }
+  if (!input) return merged
+
+  for (const [key, value] of Object.entries(input)) {
+    if (!key || !value) continue
+    const upperKey = String(key).trim().toUpperCase()
+    if (!upperKey) continue
+    if (upperKey in merged) continue
+    merged[upperKey] = String(value)
+  }
+
+  return merged
+}
+
+function withFallbackBrandAliases(input?: Record<string, string>): Record<string, string> {
+  return mergeBrandAliases(input)
+}
+
 export type ItemLookup = {
   item_id: number
   sku: string
@@ -120,7 +161,7 @@ const PART_CODE_MAP: Record<string, string> = {
   'SENSOR CONNECTOR': 'SENSORCONN', 'ON OFF SENSOR CONN': 'SENSORCONN',
   SENSORSIDE: 'SENSORSIDE', 'SENSOR SIDE': 'SENSORSIDE', 'SENSOR [SIDE]': 'SENSORSIDE',
   SENSOR: 'SENSOR',
-  ONOFF: 'ONOFF', 'ON OFF FLEX': 'ONOFF', 'ON/OFF FLEX': 'ONOFF',
+  ONOFF: 'ONOFF', 'ON OFF': 'ONOFF', 'ON/OFF': 'ONOFF', 'ON OFF FLEX': 'ONOFF', 'ON/OFF FLEX': 'ONOFF',
   ONOFFSWITCH: 'ONOFFSWITCH', 'ON OFF SWITCH': 'ONOFFSWITCH', 'ONOFF SWITCH': 'ONOFFSWITCH',
   SWITCH: 'ONOFFSWITCH', TIKLI: 'ONOFFSWITCH',
   VOL: 'VOL', 'VOL FLEX': 'VOL', 'VOLUME FLEX': 'VOL', 'VOLLUME FLEX': 'VOL',
@@ -166,6 +207,7 @@ const PART_CODE_MAP: Record<string, string> = {
   'CONVERT HOUSIG': 'CONVHOUSING',
   CONVERTER: 'CONVHOUSING', CONVETOR: 'CONVHOUSING', CONVERT: 'CONVHOUSING',
   NETWORKWIRE: 'NETWORKWIRE', 'NETWORK WIRE': 'NETWORKWIRE',
+  WIRE: 'WIRE', TOOL: 'TOOL', FLEX: 'FLEX',
 }
 
 const FLAG_MAP: Record<string, string> = {
@@ -183,7 +225,7 @@ const PART_CODE_TOKENS = new Set<string>([
   'CCFLEX', 'CHG', 'RB', 'SPK', 'SPKF', 'SPKFL', 'SPKJ', 'ESPK',
   'ESPKF', 'ESPKFL', 'CG', 'CL', 'CAM', 'ST', 'GASKIT', 'GASKITF',
   'GASKITB', 'OUTKEY', 'MIC', 'VIB', 'ANT', 'INRUBBER', 'BACKGLASS',
-  'FF', 'BCAM', 'FCAM', 'CONVHOUSING', 'NETWORKWIRE',
+  'FF', 'BCAM', 'FCAM', 'CONVHOUSING', 'NETWORKWIRE', 'WIRE', 'TOOL', 'FLEX',
 ])
 
 const QUALITY_TOKEN_REGEX = /^(100\s*%?\s*(?:OG|ORIG|ORIGINAL)|100OG|OG|ORI|ORIG|ORIGINAL|ORG|CARE(?:\s*(?:OG|ORIG|ORIGINAL))?|CHINA\s*(?:OG|ORIG|ORIGINAL)|C\+|MIX\s+OG)$/i
@@ -200,7 +242,7 @@ const PART_TYPE_PHRASES: string[] = [
   'EAR SPEAKER', 'EAR SPK', 'BACK CAMERA', 'FRONT CAMERA', 'BACK CAM', 'FRONT CAM',
   'FLASH FLEX', 'TYPE FLASH FLEX', 'TYPE FLASH', 'SENSOR [SIDE]', 'SENSOR SIDE',
   'SENSOR CONNECTOR', 'SENSOR CONN.', 'SENSOR CONN', 'SENSOR',
-  'IN RUBBER', 'INRUBBER', 'NETWORK WIRE', 'NETWORKWIRE',
+  'IN RUBBER', 'INRUBBER', 'NETWORK WIRE', 'NETWORKWIRE', 'WIRE', 'TOOL', 'FLEX',
   'MIDDLE FRAME WITH FLEX', 'ON OFF SENSOR CONN',
   'ONLY EARPIECE FLEX', 'EARPIECE FLEX ONLY',
   'ONLY SPEAKER FLEX', 'SPEAKER FLEX ONLY', 'SPK FLEX COPY', 'SPK FLEX ONLY',
@@ -211,7 +253,7 @@ const PART_TYPE_PHRASES: string[] = [
   'B/C CONN.', 'B/C CONN', 'BOARD CONN.', 'BOARD CONN', 'BORD CONN.', 'BORD CONN',
   'LCD CONNECTOR', 'LCD CONN.', 'LCD CONN', 'LCD RING',
   'GAS KIT FRONT', 'GAS KIT BACK', 'GAS KIT',
-  'ON OFF SWITCH', 'ONOFF SWITCH', 'TIKLI', 'ON OFF FLEX', 'ON/OFF FLEX',
+  'ON OFF', 'ON/OFF', 'ON OFF SWITCH', 'ONOFF SWITCH', 'TIKLI', 'ON OFF FLEX', 'ON/OFF FLEX',
   'ONLY FLEX', 'FLEX ONLY',
   'OUT SIM TRAY', 'OUT SIM TRY', 'SIM TRAY', 'SIM TRY',
   'SPEAKER JALI', 'SPEAKER FLEX', 'SPK FLEX', 'SPEAKER',
@@ -509,24 +551,51 @@ function findBrandAnywhere(
   if (typeof text !== 'string') {
     return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
   }
+
   const upper = text.toUpperCase()
+  const candidates: Array<{
+    brandCode: string
+    matchIndex: number
+    matchLength: number
+    matchedKey: string
+  }> = []
+
   const keys = Object.keys(aliases.brandAliases).sort((a, b) => b.length - a.length)
   for (const key of keys) {
     if (key.length < 2) continue
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const re = new RegExp(`(^|[^A-Z0-9])(${escaped})(?=[^A-Z0-9]|$)`, 'i')
     const m = re.exec(upper)
-    if (m) {
-      const idx = m.index + m[1].length
-      return {
-        brandCode: aliases.brandAliases[key],
-        matchIndex: idx,
-        matchLength: key.length,
-        matchedKey: key,
-      }
-    }
+    if (!m) continue
+
+    const brandCode = aliases.brandAliases[key]
+    if (!brandCode) continue
+
+    candidates.push({
+      brandCode,
+      matchIndex: m.index + m[1].length,
+      matchLength: key.length,
+      matchedKey: key,
+    })
   }
-  return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
+
+  if (candidates.length === 0) {
+    return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
+  }
+
+  candidates.sort((a, b) => {
+    if (b.matchLength !== a.matchLength) return b.matchLength - a.matchLength
+    if (b.matchIndex !== a.matchIndex) return b.matchIndex - a.matchIndex
+    return b.matchedKey.length - a.matchedKey.length
+  })
+
+  const winner = candidates[0]
+  return {
+    brandCode: winner.brandCode,
+    matchIndex: winner.matchIndex,
+    matchLength: winner.matchLength,
+    matchedKey: winner.matchedKey,
+  }
 }
 
 function normalizePartCode(raw: string | null): string | null {
@@ -764,6 +833,7 @@ type ScanResult = {
 
 function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   const work = normalizeTypos(text).toUpperCase()
+  const strongestBrand = findBrandAnywhere(work, aliases)
 
   const partPhraseMap: Record<string, string> = {}
   for (const p of Object.keys(aliases.partAliases)) {
@@ -793,7 +863,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   }
   const colorPhrases = Object.keys(colorPhraseMap).sort((a, b) => b.length - a.length)
 
-  let brandCode: string | null = null
+  let brandCode: string | null = strongestBrand.brandCode
   let partCode: string | null = null
   let quality: Quality = 'Normal'
   let network: string | null = null
@@ -1055,8 +1125,23 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   }
   modelText = modelText.replace(/\s+/g, ' ').trim()
 
+  const finalBrandCode = strongestBrand.brandCode || brandCode
+  if (finalBrandCode) {
+    const brandAliases = Object.keys(aliases.brandAliases)
+      .filter((key) => key.length >= 2)
+      .sort((a, b) => b.length - a.length)
+
+    for (const alias of brandAliases) {
+      const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'gi')
+      modelText = modelText.replace(re, (_m, prefix, suffix) => `${prefix}${suffix}`.trim())
+    }
+
+    modelText = modelText.replace(/\s+/g, ' ').trim()
+  }
+
   return {
-    brandCode,
+    brandCode: finalBrandCode,
     partCode,
     quality,
     network,
@@ -1079,6 +1164,11 @@ export function parseCSV(
   aliases: AliasMaps,
   items: ItemLookup[] = []
 ): ParsedRow[] {
+  const safeAliases: AliasMaps = {
+    ...aliases,
+    brandAliases: withFallbackBrandAliases(aliases.brandAliases),
+  }
+
   const lines = splitCSVLines(text)
   if (lines.length < 2) return []
 
@@ -1189,7 +1279,7 @@ export function parseCSV(
       network = (modelRaw.match(/\b(4G|5G)\b/i) || [null])[0]
       if (network) network = network.toUpperCase()
 
-      brandCode = aliases.brandAliases[brandRaw] || brandRaw
+      brandCode = safeAliases.brandAliases[brandRaw] || brandRaw
       const nm = normalizeModelName(
         modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim()
       )
@@ -1259,7 +1349,7 @@ export function parseCSV(
       const paren = extractParentheticals(combined)
       const working = paren.cleanedDesc
 
-      const scan = scanDescription(working, aliases)
+      const scan = scanDescription(working, safeAliases)
 
       brandCode = scan.brandCode
       partCode = scan.partCode
@@ -1297,7 +1387,7 @@ export function parseCSV(
       }
 
       if (!brandCode && modelName) {
-        const bm = findBrandAnywhere(modelName, aliases)
+        const bm = findBrandAnywhere(modelName, safeAliases)
         if (bm.brandCode) {
           brandCode = bm.brandCode
           const after =

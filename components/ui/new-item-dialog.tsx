@@ -148,8 +148,23 @@ export function NewItemDialog({
       supabase.from('part_types').select('part_id, part_name, part_code').order('part_name').range(0, 9999),
       supabase.from('categories').select('category_id, category_name, category_code').order('category_name').range(0, 9999),
     ])
+
+    const builtInPartTypes = [
+      { part_id: -1, part_name: 'WIRE', part_code: 'WIRE' },
+      { part_id: -2, part_name: 'TOOL', part_code: 'TOOL' },
+      { part_id: -3, part_name: 'FLEX', part_code: 'FLEX' },
+    ]
+
+    const mergedPartTypes = [...builtInPartTypes, ...(p.data || [])]
+    const uniqueByCode = new Map<string, typeof builtInPartTypes[number]>()
+    for (const item of mergedPartTypes) {
+      const code = String(item.part_code || '').trim().toUpperCase()
+      if (!code) continue
+      if (!uniqueByCode.has(code)) uniqueByCode.set(code, item)
+    }
+
     setBrands(b.data || [])
-    setPartTypes(p.data || [])
+    setPartTypes(Array.from(uniqueByCode.values()))
     setCategories(c.data || [])
   }
 

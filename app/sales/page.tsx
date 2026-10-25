@@ -362,6 +362,13 @@ function SalesEntryPage() {
   }
 
   async function loadReport() {
+    // Guard: empty date inputs produce '' → Postgres rejects as invalid date
+    if (!reportFrom || !reportTo) {
+      setReportLines([])
+      setReportLoading(false)
+      return
+    }
+
     setReportLoading(true)
     try {
       const { data, error } = await supabase
