@@ -148,3 +148,28 @@ test('parseCSV keeps ONE PLUS as brand, not generic', () => {
   assert.equal(rows[0]?.partCode, 'LCD')
   assert.equal(rows[0]?.generatedSku, 'ONE-NORD-CE-3-LITE-LCD')
 })
+
+test('parseCSV prefers the last valid brand token in mixed-brand rows', () => {
+  const csv = `Description of Goods,Type of Goods,Quantity,Price\nOP RE SIMTRAY,ST,1,1\n`
+
+  const rows = parseCSV(csv, {
+    brandAliases: {
+      OP: 'OP',
+      RE: 'RE',
+      SAM: 'SAM',
+      VV: 'VV',
+      IP: 'IP',
+      NK: 'NK',
+      MI: 'MI',
+      ONE: 'ONE',
+      TEC: 'TEC',
+      GENERIC: 'GEN',
+    },
+    partAliases: { ST: 'ST', 'SIM TRAY': 'ST', SIMTRAY: 'ST' },
+    colorAliases: {},
+    validBrandCodes: ['OP', 'RE', 'SAM', 'VV', 'IP', 'NK', 'MI', 'ONE', 'TEC', 'GEN'],
+  })
+
+  assert.equal(rows[0]?.brandCode, 'RE')
+  assert.equal(rows[0]?.partCode, 'ST')
+})

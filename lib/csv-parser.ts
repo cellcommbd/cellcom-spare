@@ -570,19 +570,17 @@ function findBrandAnywhere(
   for (const key of keys) {
     if (key.length < 2) continue
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const re = new RegExp(`(^|[^A-Z0-9])(${escaped})(?=[^A-Z0-9]|$)`, 'i')
-    const m = re.exec(upper)
-    if (!m) continue
-
-    const brandCode = aliases.brandAliases[key]
-    if (!brandCode) continue
-
-    candidates.push({
-      brandCode,
-      matchIndex: m.index + m[1].length,
-      matchLength: key.length,
-      matchedKey: key,
-    })
+    const re = new RegExp(`(^|[^A-Z0-9])(${escaped})(?=[^A-Z0-9]|$)`, 'gi')
+    for (const m of upper.matchAll(re)) {
+      const brandCode = aliases.brandAliases[key]
+      if (!brandCode) continue
+      candidates.push({
+        brandCode,
+        matchIndex: m.index! + m[1].length,
+        matchLength: key.length,
+        matchedKey: key,
+      })
+    }
   }
 
   if (candidates.length === 0) {
@@ -590,8 +588,8 @@ function findBrandAnywhere(
   }
 
   candidates.sort((a, b) => {
-    if (b.matchLength !== a.matchLength) return b.matchLength - a.matchLength
     if (b.matchIndex !== a.matchIndex) return b.matchIndex - a.matchIndex
+    if (b.matchLength !== a.matchLength) return b.matchLength - a.matchLength
     return b.matchedKey.length - a.matchedKey.length
   })
 
