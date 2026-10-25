@@ -54,11 +54,17 @@ const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
   RM: 'RE',
   MI: 'MI',
   ONE: 'ONE',
+  'ONE PLUS': 'ONE',
+  ONEPLUS: 'ONE',
   REDMI: 'RE',
   NOKIA: 'NK',
+  TEC: 'TEC',
+  TECNO: 'TEC',
   GENERIC: 'GEN',
   '1+': 'ONE',
   '1PLUS': 'ONE',
+  'NE PLUS': 'ONE',
+  NEPLUS: 'ONE',
 }
 
 export function mergeBrandAliases(input?: Record<string, string>): Record<string, string> {

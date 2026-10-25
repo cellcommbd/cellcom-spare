@@ -102,8 +102,15 @@ export function ImportCSVDialog({
       RM: 'RE',
       MI: 'MI',
       ONE: 'ONE',
+      'ONE PLUS': 'ONE',
+      ONEPLUS: 'ONE',
+      'NE PLUS': 'ONE',
+      NEPLUS: 'ONE',
       REDMI: 'RE',
       NOKIA: 'NK',
+      TEC: 'TEC',
+      TECNO: 'TEC',
+      GENERIC: 'GEN',
     }
     for (const r of (brandRes.data as any[]) || []) {
       const csvCode = String(r.csv_code || '').trim().toUpperCase()

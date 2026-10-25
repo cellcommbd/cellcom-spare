@@ -74,3 +74,77 @@ test('parseCSV accepts generic brand with wire part', () => {
   assert.equal(rows[0]?.partCode, 'WIRE')
   assert.equal(rows[0]?.generatedSku, 'GEN-WIRE-20MM')
 })
+
+test('parseCSV keeps TECNO as brand, not generic', () => {
+  const csv = `Description of Goods,Type of Goods,Quantity,Price\nTECNO SPARK 8 BACK PANEL,Back Panel,1,1\n`
+
+  const rows = parseCSV(csv, {
+    brandAliases: {
+      OP: 'OP',
+      RE: 'RE',
+      OPPO: 'OP',
+      REALME: 'RE',
+      SAM: 'SAM',
+      SM: 'SAM',
+      VV: 'VV',
+      VIVO: 'VV',
+      IP: 'IP',
+      IPHONE: 'IP',
+      NK: 'NK',
+      RM: 'RE',
+      MI: 'MI',
+      ONE: 'ONE',
+      'ONE PLUS': 'ONE',
+      ONEPLUS: 'ONE',
+      REDMI: 'RE',
+      NOKIA: 'NK',
+      TEC: 'TEC',
+      TECNO: 'TEC',
+      GENERIC: 'GEN',
+    },
+    partAliases: { 'BACK PANEL': 'BP', BP: 'BP' },
+    colorAliases: {},
+    validBrandCodes: ['OP', 'RE', 'SAM', 'VV', 'IP', 'NK', 'MI', 'ONE', 'TEC', 'GEN'],
+  })
+
+  assert.equal(rows[0]?.brandCode, 'TEC')
+  assert.equal(rows[0]?.partCode, 'BP')
+  assert.equal(rows[0]?.generatedSku, 'TEC-SPARK-8-BP')
+})
+
+test('parseCSV keeps ONE PLUS as brand, not generic', () => {
+  const csv = `Description of Goods,Type of Goods,Quantity,Price\nONE PLUS NORD CE 3 LITE LCD FLEX,LCD FLEX,1,1\n`
+
+  const rows = parseCSV(csv, {
+    brandAliases: {
+      OP: 'OP',
+      RE: 'RE',
+      OPPO: 'OP',
+      REALME: 'RE',
+      SAM: 'SAM',
+      SM: 'SAM',
+      VV: 'VV',
+      VIVO: 'VV',
+      IP: 'IP',
+      IPHONE: 'IP',
+      NK: 'NK',
+      RM: 'RE',
+      MI: 'MI',
+      ONE: 'ONE',
+      'ONE PLUS': 'ONE',
+      ONEPLUS: 'ONE',
+      REDMI: 'RE',
+      NOKIA: 'NK',
+      TEC: 'TEC',
+      TECNO: 'TEC',
+      GENERIC: 'GEN',
+    },
+    partAliases: { 'LCD FLEX': 'LCD' },
+    colorAliases: {},
+    validBrandCodes: ['OP', 'RE', 'SAM', 'VV', 'IP', 'NK', 'MI', 'ONE', 'TEC', 'GEN'],
+  })
+
+  assert.equal(rows[0]?.brandCode, 'ONE')
+  assert.equal(rows[0]?.partCode, 'LCD')
+  assert.equal(rows[0]?.generatedSku, 'ONE-NORD-CE-3-LITE-LCD')
+})
