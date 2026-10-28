@@ -16,12 +16,14 @@ import {
   User,
   ChevronDown,
   ChevronRight,
+  Pencil,
 } from 'lucide-react'
 import {
   buildStatementText,
   buildWhatsAppUrl,
   normalizePhoneForWhatsApp,
 } from '../../lib/statement-format'
+import { SaleEditModal } from '../../components/ui/sale-edit-modal'
 
 // ---------- Types ----------
 type Party = {
@@ -160,6 +162,7 @@ function PaymentsPageInner() {
   const [phoneMessage, setPhoneMessage] = useState('')
 
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({})
+  const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
   const amountRef = useRef<HTMLInputElement>(null)
   const upiRef = useRef<HTMLInputElement>(null)
@@ -1138,11 +1141,64 @@ function PaymentsPageInner() {
                         </div>
                         <div className="text-[10px] text-slate-400">due</div>
                       </div>
+                      {day.bills.length === 1 && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setEditingSaleId(day.bills[0].sale_id)
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              setEditingSaleId(day.bills[0].sale_id)
+                            }
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded shrink-0 cursor-pointer"
+                          aria-label="Edit bill"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </span>
+                      )}
                     </button>
 
                     {/* Expanded items */}
                     {isOpen && (
                       <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                        {day.bills.length > 1 && (
+                          <div className="mb-2 pb-2 border-b border-slate-200">
+                            <div className="text-[10px] uppercase text-slate-500 mb-1">
+                              {day.bills.length} bills on this day
+                            </div>
+                            {day.bills.map((bill) => (
+                              <div
+                                key={bill.sale_id}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => setEditingSaleId(bill.sale_id)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    setEditingSaleId(bill.sale_id)
+                                  }
+                                }}
+                                className="w-full flex items-center justify-between text-xs py-1 px-1 hover:bg-slate-100 rounded cursor-pointer"
+                              >
+                                <span className="text-slate-600">
+                                  Bill #{bill.sale_id}
+                                </span>
+                                <span className="flex items-center gap-2">
+                                  <span className="text-slate-800 font-medium">
+                                    ₹ {Number(bill.total_amount).toFixed(2)}
+                                  </span>
+                                  <Pencil className="w-3 h-3 text-slate-400" />
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                         {day.items.length === 0 ? (
                           <div className="text-xs text-slate-400 text-center py-2">
                             No line items.
@@ -1449,6 +1505,18 @@ function PaymentsPageInner() {
           </table>
         </div>
       </div>
+
+      {editingSaleId !== null && (
+        <SaleEditModal
+          saleId={editingSaleId}
+          onClose={() => setEditingSaleId(null)}
+          onSaved={() => {
+            setEditingSaleId(null)
+            if (pickedShop.id) loadShopOutstanding(pickedShop.id)
+            loadData()
+          }}
+        />
+      )}
 
       <NewPartyDialog
         open={pendingNewParty !== null}

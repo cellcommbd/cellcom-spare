@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { supabase } from '../../../lib/supabase'
 import { SmartCombobox } from '../../../components/ui/smart-combobox'
 import { searchItems, SearchItemResult } from '../../../lib/item-search'
+import { SaleEditModal } from '../../../components/ui/sale-edit-modal'
 import {
   ArrowLeft,
   Search,
@@ -13,6 +14,7 @@ import {
   Copy,
   ChevronDown,
   ChevronRight,
+  Pencil,
 } from 'lucide-react'
 
 type GroupBy = 'line' | 'day' | 'party' | 'item' | 'bill'
@@ -108,6 +110,7 @@ export default function SalesExplorerPage() {
 
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState(false)
+  const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
   useEffect(() => {
     ;(async () => {
@@ -174,17 +177,24 @@ export default function SalesExplorerPage() {
     const saleIds = salesList.map((s) => s.sale_id)
     let linesList: LineRow[] = []
     if (saleIds.length > 0) {
-      const { data: linesData, error: linesErr } = await supabase
-        .from('sale_items')
-        .select('sale_id, detail_id, item_id, quantity, returned_qty, rate')
-        .in('sale_id', saleIds)
+      const rawLines: any[] = []
+      const PAGE = 1000
+      for (let from = 0; from < 200000; from += PAGE) {
+        const { data, error: linesErr } = await supabase
+          .from('sale_items')
+          .select('sale_id, detail_id, item_id, quantity, returned_qty, rate')
+          .in('sale_id', saleIds)
+          .range(from, from + PAGE - 1)
 
-      if (linesErr) {
-        setError('Could not load lines: ' + linesErr.message)
-        setLoading(false)
-        return
+        if (linesErr) {
+          setError('Could not load lines: ' + linesErr.message)
+          setLoading(false)
+          return
+        }
+        if (!data || data.length === 0) break
+        rawLines.push(...data)
+        if (data.length < PAGE) break
       }
-      const rawLines = (linesData as any[]) || []
 
       const itemIds = Array.from(
         new Set(rawLines.map((l) => l.item_id).filter(Boolean))
@@ -889,10 +899,21 @@ export default function SalesExplorerPage() {
                 const showExpand = groupBy !== 'bill'
                 return (
                   <div key={a.key}>
-                    <button
+                    <div
+                      role="button"
+                      tabIndex={0}
                       onClick={() => showExpand && toggleExpand(a.key)}
+                      onKeyDown={(e) => {
+                        if (
+                          (e.key === 'Enter' || e.key === ' ') &&
+                          showExpand
+                        ) {
+                          e.preventDefault()
+                          toggleExpand(a.key)
+                        }
+                      }}
                       className={`w-full px-3 sm:px-4 py-3 grid grid-cols-12 gap-2 items-center text-left ${
-                        showExpand ? 'hover:bg-slate-50' : ''
+                        showExpand ? 'hover:bg-slate-50 cursor-pointer' : ''
                       }`}
                     >
                       <div className="col-span-8 sm:col-span-4 min-w-0 flex items-center gap-1.5">
@@ -932,7 +953,7 @@ export default function SalesExplorerPage() {
                       <div className="hidden sm:block col-span-2 text-right text-sm font-medium text-rose-700">
                         {a.due > 0 ? money(a.due) : '—'}
                       </div>
-                      <div className="hidden sm:flex col-span-1 justify-end">
+                      <div className="flex col-span-1 justify-end gap-1">
                         {groupBy === 'party' && (
                           <Link
                             href={`/parties/${a.key.replace('party-', '')}`}
@@ -942,8 +963,33 @@ export default function SalesExplorerPage() {
                             Open ›
                           </Link>
                         )}
+                        {groupBy === 'bill' && (
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setEditingSaleId(
+                                Number(a.key.replace('bill-', ''))
+                              )
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault()
+                                e.stopPropagation()
+                                setEditingSaleId(
+                                  Number(a.key.replace('bill-', ''))
+                                )
+                              }
+                            }}
+                            className="p-1.5 text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 rounded cursor-pointer"
+                            aria-label="Edit bill"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </span>
+                        )}
                       </div>
-                    </button>
+                    </div>
 
                     {isOpen && showExpand && (
                       <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-2 space-y-1">
@@ -985,6 +1031,17 @@ export default function SalesExplorerPage() {
           </div>
         )}
       </div>
+
+      {editingSaleId !== null && (
+        <SaleEditModal
+          saleId={editingSaleId}
+          onClose={() => setEditingSaleId(null)}
+          onSaved={() => {
+            setEditingSaleId(null)
+            loadReport()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -19,12 +19,14 @@ import {
   MessageCircle,
   ChevronDown,
   ChevronRight,
+  Pencil,
 } from 'lucide-react'
 import {
   buildStatementText,
   buildWhatsAppUrl,
   normalizePhoneForWhatsApp,
 } from '../../../lib/statement-format'
+import { SaleEditModal } from '../../../components/ui/sale-edit-modal'
 
 // ---------- Types ----------
 type Party = {
@@ -142,6 +144,7 @@ export default function PartyAccountPage() {
   const [expandedDays, setExpandedDays] = useState<Record<string, boolean>>({})
 
   const [copied, setCopied] = useState(false)
+  const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
   const [editingPhone, setEditingPhone] = useState(false)
   const [phoneDraft, setPhoneDraft] = useState('')
@@ -988,6 +991,27 @@ export default function PartyAccountPage() {
                           <div className="text-sm font-bold text-slate-900 shrink-0">
                             {money(day.total)}
                           </div>
+                          {day.bills.length === 1 && (
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setEditingSaleId(day.bills[0].sale_id)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault()
+                                  e.stopPropagation()
+                                  setEditingSaleId(day.bills[0].sale_id)
+                                }
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded shrink-0 cursor-pointer"
+                              aria-label="Edit bill"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </span>
+                          )}
                         </button>
 
                         {isOpen && (
