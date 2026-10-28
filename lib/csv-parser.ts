@@ -51,11 +51,14 @@ const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
   IP: 'IP',
   IPHONE: 'IP',
   NK: 'NK',
-  RM: 'RE',
+  RM: 'MI',
   MI: 'MI',
+  REDMI: 'MI',
   IQOO: 'IQOO',
+  CMF: 'CMF',
+  GGL: 'GGL',
+  GOOGLE: 'GGL',
   ONE: 'ONE',
-  REDMI: 'RE',
   NOKIA: 'NK',
   GENERIC: 'GEN',
   '1+': 'ONE',
@@ -314,6 +317,17 @@ function normalizeTypos(desc: string): string {
     .replace(/\bOPPO\s*-?\s*REALME\b/gi, 'REALME')
     .replace(/\bREALME\s*-?\s*POCO\b/gi, 'POCO')
     .replace(/\bRE\s*-?\s*POCO\b/gi, 'POCO')
+    .replace(/\bNOTHING\s+CMF\b/gi, 'CMF')
+    .replace(/\bSMA\s*(\d)/gi, 'SAM A$1')
+    .replace(/\bON\s*OFFFLEX\b/gi, 'ON OFF FLEX')
+    .replace(/\bONOFFFLEX\b/gi, 'ON OFF FLEX')
+    .replace(/\bOFFFLEX\b/gi, 'OFF FLEX')
+    .replace(/\bVOLFLEX\b/gi, 'VOL FLEX')
+    .replace(/\bLCDFLEX\b/gi, 'LCD FLEX')
+    .replace(/\bFRONTCAMERA\b/gi, 'FRONT CAMERA')
+    .replace(/\bBACKCAMERA\b/gi, 'BACK CAMERA')
+    .replace(/\bRINGERBOX\b/gi, 'RINGER BOX')
+    .replace(/\bBOARDCON\b/gi, 'BOARD CONN')
     .replace(/\bPANLE\b/gi, 'PANEL')
     .replace(/\bPANAL\b/gi, 'PANEL')
     .replace(/\bPANNEL\b/gi, 'PANEL')
@@ -1137,7 +1151,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     for (const alias of brandAliases) {
       const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       const re = new RegExp(`(^|[^A-Z0-9])${escaped}([^A-Z0-9]|$)`, 'gi')
-      modelText = modelText.replace(re, (_m, prefix, suffix) => `${prefix}${suffix}`.trim())
+      modelText = modelText.replace(re, (_m, prefix, suffix) => `${prefix} ${suffix}`)
     }
 
     modelText = modelText.replace(/\s+/g, ' ').trim()
