@@ -20,6 +20,7 @@ import {
   Banknote,
   X,
   FileSearch,
+  ClipboardList,
 } from 'lucide-react'
 
 // ---------- Types ----------
@@ -408,6 +409,12 @@ export default function Home() {
               label="Sales"
               Icon={ShoppingCart}
               color="indigo"
+            />
+            <ActionTile
+              href="/sales/day"
+              label="Day Sales"
+              Icon={ClipboardList}
+              color="emerald"
             />
 
             <ActionTile

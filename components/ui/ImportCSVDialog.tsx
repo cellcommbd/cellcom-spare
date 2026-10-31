@@ -87,14 +87,41 @@ export function ImportCSVDialog({
       supabase.from('parser_color_aliases').select('csv_text, color_value'),
     ])
 
-    const brandAliases: Record<string, string> = {}
+    const brandAliases: Record<string, string> = {
+      OP: 'OP',
+      RE: 'RE',
+      OPPO: 'OP',
+      REALME: 'RE',
+      SAM: 'SAM',
+      SM: 'SAM',
+      VV: 'VV',
+      VIVO: 'VV',
+      IP: 'IP',
+      IPHONE: 'IP',
+      NK: 'NK',
+      RM: 'RE',
+      MI: 'MI',
+      ONE: 'ONE',
+      REDMI: 'RE',
+      NOKIA: 'NK',
+    }
     for (const r of (brandRes.data as any[]) || []) {
-      brandAliases[String(r.csv_code).toUpperCase()] = String(r.brand_code)
+      const csvCode = String(r.csv_code || '').trim().toUpperCase()
+      if (!csvCode) continue
+      if (csvCode in brandAliases) continue
+      brandAliases[csvCode] = String(r.brand_code)
     }
 
-    const partAliases: Record<string, string> = {}
+    const partAliases: Record<string, string> = {
+      WIRE: 'WIRE',
+      TOOL: 'TOOL',
+      FLEX: 'FLEX',
+    }
     for (const r of (partRes.data as any[]) || []) {
-      partAliases[String(r.csv_text).toUpperCase()] = String(r.part_code)
+      const csvText = String(r.csv_text || '').trim().toUpperCase()
+      if (!csvText) continue
+      if (csvText in partAliases) continue
+      partAliases[csvText] = String(r.part_code)
     }
 
     const colorAliases: Record<string, string> = {}
@@ -271,9 +298,9 @@ export function ImportCSVDialog({
           merged.generatedSku = sku
         }
 
-        if (!merged.brandCode || !merged.modelName || !merged.partCode) {
+        if (!merged.brandCode || !merged.partCode) {
           merged.status = 'error'
-          merged.errorMessage = 'Missing brand, model, or part'
+          merged.errorMessage = 'Missing brand or part'
         } else if (!merged.generatedSku) {
           merged.status = 'error'
           merged.errorMessage = 'Could not build SKU'

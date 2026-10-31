@@ -1,5 +1,5 @@
-// lib/csv-parser.ts
-// v34 — 1+NORD fix, brand-consume fix, curly-brace quality extraction
+// lib/csv-parser.ts — PART 1 OF 3
+// v34.1 — Fix A: dedupe Type of Goods against Description before scan
 
 export type Quality =
   | 'Normal'
@@ -40,35 +40,24 @@ export type AliasMaps = {
 }
 
 const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
-  OP: 'OP',
-  RE: 'RE',
-  OPPO: 'OP',
-  REALME: 'RE',
-  SAM: 'SAM',
-  SM: 'SAM',
-  VV: 'VV',
-  VIVO: 'VV',
-  IP: 'IP',
-  IPHONE: 'IP',
+  OP: 'OP', RE: 'RE', OPPO: 'OP', REALME: 'RE',
+  SAM: 'SAM', SM: 'SAM',
+  VV: 'VV', VIVO: 'VV',
+  IP: 'IP', IPHONE: 'IP',
   NK: 'NK',
-  RM: 'MI',
-  MI: 'MI',
-  REDMI: 'MI',
+  RM: 'MI', MI: 'MI', REDMI: 'MI',
   IQOO: 'IQOO',
   CMF: 'CMF',
-  GGL: 'GGL',
-  GOOGLE: 'GGL',
+  GGL: 'GGL', GOOGLE: 'GGL',
   ONE: 'ONE',
   NOKIA: 'NK',
   GENERIC: 'GEN',
-  '1+': 'ONE',
-  '1PLUS': 'ONE',
+  '1+': 'ONE', '1PLUS': 'ONE',
 }
 
 export function mergeBrandAliases(input?: Record<string, string>): Record<string, string> {
   const merged: Record<string, string> = { ...BUILT_IN_BRAND_ALIASES }
   if (!input) return merged
-
   for (const [key, value] of Object.entries(input)) {
     if (!key || !value) continue
     const upperKey = String(key).trim().toUpperCase()
@@ -76,7 +65,6 @@ export function mergeBrandAliases(input?: Record<string, string>): Record<string
     if (upperKey in merged) continue
     merged[upperKey] = String(value)
   }
-
   return merged
 }
 
@@ -96,10 +84,7 @@ export type ItemLookup = {
 
 let warnedBrandCodes = new Set<string>()
 
-function guardBrandCode(
-  brandCode: string | null,
-  validBrandCodes: string[] | undefined
-): void {
+function guardBrandCode(brandCode: string | null, validBrandCodes: string[] | undefined): void {
   if (!brandCode) return
   if (!validBrandCodes || validBrandCodes.length === 0) return
   const upper = brandCode.toUpperCase()
@@ -113,10 +98,6 @@ function guardBrandCode(
 export function resetBrandCodeWarnings(): void {
   warnedBrandCodes = new Set<string>()
 }
-
-// ============================================================
-// Dictionaries
-// ============================================================
 
 const SIZE_MARKERS: Record<string, string> = {
   '20MM': '20MM', '20 MM': '20MM',
@@ -132,7 +113,7 @@ const SIZE_MARKERS: Record<string, string> = {
   '2 PIN': '2PIN', '2PIN': '2PIN',
 }
 
-const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD)$/i
+const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)$/i
 const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
 
 const COLOR_WORDS = [
@@ -181,14 +162,10 @@ const PART_CODE_MAP: Record<string, string> = {
   EARPIECE: 'ESPK', 'EAR SPEAKER': 'ESPK', 'EAR SPK': 'ESPK',
   ESPKF: 'ESPKF', 'EXX-BEE FLEX': 'ESPKF', 'EARPIECE FLEX': 'ESPKF',
   ESPKFL: 'ESPKFL', 'EXX-BEE ONLY FLEX': 'ESPKFL', 'EARPIECE FLEX ONLY': 'ESPKFL',
-  'SPEAKER FLEX EXX-BEE': 'ESPKF',
-  'SPEAKER FLEX EXX BEE': 'ESPKF',
-  'EXX-BEE SPEAKER FLEX': 'ESPKF',
-  'EXX BEE SPEAKER FLEX': 'ESPKF',
-  'SPEAKER EXX-BEE': 'ESPK',
-  'SPEAKER EXX BEE': 'ESPK',
-  'EXX-BEE SPEAKER': 'ESPK',
-  'EXX BEE SPEAKER': 'ESPK',
+  'SPEAKER FLEX EXX-BEE': 'ESPKF', 'SPEAKER FLEX EXX BEE': 'ESPKF',
+  'EXX-BEE SPEAKER FLEX': 'ESPKF', 'EXX BEE SPEAKER FLEX': 'ESPKF',
+  'SPEAKER EXX-BEE': 'ESPK', 'SPEAKER EXX BEE': 'ESPK',
+  'EXX-BEE SPEAKER': 'ESPK', 'EXX BEE SPEAKER': 'ESPK',
   CG: 'CG', 'CAMERA GLASS': 'CG', CL: 'CL', 'CAMERA LENS': 'CL',
   CAM: 'CAM', CAMERA: 'CAM',
   BCAM: 'BCAM', 'BACK CAMERA': 'BCAM', 'BACK CAM': 'BCAM',
@@ -196,10 +173,8 @@ const PART_CODE_MAP: Record<string, string> = {
   FF: 'FF', 'FLASH FLEX': 'FF', 'TYPE FLASH': 'FF', 'TYPE FLASH FLEX': 'FF',
   ST: 'ST', SIMTRAY: 'ST', 'SIM TRAY': 'ST', 'SIM TRY': 'ST',
   'OUT SIM TRAY': 'ST', 'OUT SIM TRY': 'ST',
-  'GAS KIT FRONT': 'GASKITF',
-  'GAS KIT BACK': 'GASKITB',
-  GASKIT: 'GASKIT',
-  'GAS KIT': 'GASKIT',
+  'GAS KIT FRONT': 'GASKITF', 'GAS KIT BACK': 'GASKITB',
+  GASKIT: 'GASKIT', 'GAS KIT': 'GASKIT',
   OUTKEY: 'OUTKEY', 'OUT KEY': 'OUTKEY',
   MIC: 'MIC', 'CHINA MIC': 'MIC',
   VIB: 'VIB', VIBRATOR: 'VIB',
@@ -216,10 +191,10 @@ const PART_CODE_MAP: Record<string, string> = {
 
 const FLAG_MAP: Record<string, string> = {
   WL: 'WL', 'W/L': 'WL', 'WITH LENS': 'WL', 'WITH LOGO': 'WL',
+  LENS: 'WL', 'WITH LENCE': 'WL',
   FLEX: 'FLEX', SET: 'SET', FRONT: 'FRONT', BACK: 'BACK',
   'W/C': 'WC', WC: 'WC', 'W/C/L': 'WCL', 'W/CL': 'WCL', WCL: 'WCL',
-  COPY: 'COPY',
-  METAL: 'METAL',
+  COPY: 'COPY', METAL: 'METAL', GLASS: 'GLASS',
 }
 
 const PART_CODE_TOKENS = new Set<string>([
@@ -270,10 +245,6 @@ const PART_TYPE_PHRASES: string[] = [
   'B/C', 'MIC', 'BP', 'FH', 'MF', 'MD', 'BK', 'LCD', 'RB', 'SPK',
 ]
 
-// ============================================================
-// CSV utilities
-// ============================================================
-
 export function splitCSVLines(text: string): string[][] {
   const rows: string[][] = []
   const lines = text.split(/\r?\n/)
@@ -307,6 +278,7 @@ export function findColumnIndex(headers: string[], candidates: string[]): number
   }
   return -1
 }
+// PART 2 OF 3
 
 function normalizeTypos(desc: string): string {
   return desc
@@ -318,7 +290,12 @@ function normalizeTypos(desc: string): string {
     .replace(/\bREALME\s*-?\s*POCO\b/gi, 'POCO')
     .replace(/\bRE\s*-?\s*POCO\b/gi, 'POCO')
     .replace(/\bNOTHING\s+CMF\b/gi, 'CMF')
+    .replace(/\b(MIDDLE\s+FRAME|MF)\s+WITH\s+FLEX\b/gi, 'MIDDLE FRAME WITH FLEX')
     .replace(/\bSMA\s*(\d)/gi, 'SAM A$1')
+    .replace(/\bMATEL\b/gi, 'METAL')
+    .replace(/\bLENCE\b/gi, 'LENS')
+    .replace(/\bREMOVE\b/gi, ' ')
+    .replace(/\bOPPO([A-Z0-9])/gi, 'OPPO $1')
     .replace(/\bON\s*OFFFLEX\b/gi, 'ON OFF FLEX')
     .replace(/\bONOFFFLEX\b/gi, 'ON OFF FLEX')
     .replace(/\bOFFFLEX\b/gi, 'OFF FLEX')
@@ -676,7 +653,10 @@ function normalizeModelName(model: string | null): {
     if (letters.toUpperCase() === 'RE') return match
     return letters + digits
   })
-  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, '$1$2')
+  cleaned = cleaned.replace(/\b(\d+)\s+([A-Z]{1,2})\b/g, (match, digits, letters) => {
+    if (letters.toUpperCase() === 'TO') return match
+    return digits + letters
+  })
   cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
 
   if (!cleaned) return { model: null, strippedPart }
@@ -801,10 +781,6 @@ export function groupParsedRows(rows: ParsedRow[]): {
   return { matched, newItems, errors }
 }
 
-// ============================================================
-// extractPartFromDescription — fallback only
-// ============================================================
-
 function extractPartFromDescription(
   desc: string,
   aliases?: AliasMaps
@@ -829,10 +805,7 @@ function extractPartFromDescription(
   }
   return { partText: null, cleanedDesc: desc }
 }
-
-// ============================================================
-// scanDescription — single-pass dictionary-driven scanner
-// ============================================================
+// PART 3 OF 3
 
 type ScanResult = {
   brandCode: string | null
@@ -992,20 +965,22 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
         if (!partCode) {
           partCode = code
           matchedPartPhrase = phrase
+          consume(pos, phrase.length)
+          pos += phrase.length
+          matched = true
+          break
         }
-        consume(pos, phrase.length)
-        pos += phrase.length
-        matched = true
-        break
+        // part already set — skip, let token fall through to flag/variant
       }
     }
     if (matched) continue
 
     const qualityPatterns: { re: RegExp; q: Quality }[] = [
+      { re: /^100\s*%?\s*CARE(?:\s+(?:OG|ORIG|ORIGINAL))?(?![A-Z0-9])/i, q: 'Care OG' },
+      { re: /^CARE(?:\s+(?:OG|ORIG|ORIGINAL))?(?![A-Z0-9])/i, q: 'Care OG' },
       { re: /^100\s*%?\s*(?:OG|ORIG|ORIGINAL)/i, q: '100 OG' },
       { re: /^100\s*%?/i, q: '100 OG' },
       { re: /^CHINA\s*(?:OG|ORIG|ORIGINAL)/i, q: 'China OG' },
-      { re: /^CARE\s*(?:OG|ORIG|ORIGINAL)?/i, q: 'Care OG' },
       { re: /^(?:OG|ORI|ORIG|ORIGINAL|ORG)(?![A-Z0-9])/i, q: 'OG' },
       { re: /^C\+/i, q: 'China OG' },
     ]
@@ -1097,7 +1072,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     const variantMatch = work
       .slice(pos)
       .match(
-        /^(?:BOX\s*PACKING|BOXPACKING|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD)(?![A-Z0-9])/i
+        /^(?:BOX\s*PACKING|BOXPACKING|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
       )
     if (variantMatch && tryMatchAt(pos, variantMatch[0])) {
       const v = variantMatch[0].toUpperCase().replace(/\.$/, '')
@@ -1110,7 +1085,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
 
     // Brand block — do NOT consume if brandCode already set.
-    // The token falls through to model text.
     let brandMatched = false
     for (const phrase of brandPhrases) {
       if (phrase.length < 2) continue
@@ -1122,7 +1096,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
           brandMatched = true
           break
         }
-        // brand already set — skip this match, let the char fall through
       }
     }
     if (brandMatched) continue
@@ -1173,7 +1146,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 }
 
 // ============================================================
-// parseCSV — v34
+// parseCSV — v34.1 (Fix A applied in the else branch)
 // ============================================================
 
 export function parseCSV(
@@ -1324,7 +1297,22 @@ export function parseCSV(
       rawDescription = rawDescFromRow
       rawType = rawTypeFromRow
 
-      let combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
+      // ===== FIX A (v34.2) — dedupe on typo-normalized strings =====
+      // If Type of Goods is already contained in Description (ignoring typos
+      // like CONVETOR vs CONVERTER), drop it from `combined` so the part
+      // phrase only appears once. Prevents the second occurrence from leaking
+      // into model text.
+      const normForCmp = (s: string) =>
+        normalizeTypos(s).toUpperCase().replace(/\s+/g, ' ').trim()
+      const descCmp = normForCmp(rawDescFromRow)
+      const typeCmp = normForCmp(rawTypeFromRow)
+      let combined: string
+      if (typeCmp && descCmp.includes(typeCmp)) {
+        combined = rawDescFromRow
+      } else {
+        combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
+      }
+      // ===== END FIX A =====
 
       // Curly-brace quality extraction — before any strip
       const curlyMatches = combined.match(/\{[^}]*\}/g)
@@ -1360,6 +1348,13 @@ export function parseCSV(
           /^(ORI|ORIG|ORIGINAL|OG|C\+|CARE(?:\s*(?:OG|ORIG|ORIGINAL))?|100\s*%?\s*(?:OG|ORIG|ORIGINAL)?|CHINA\s*(?:OG|ORIG|ORIGINAL))$/i.test(upper)
         )
           return ' ' + inner + ' '
+        if (
+          /\b(100\s*%|OG|ORI|ORIG|ORIGINAL|ORG|CARE|CHINA|W\/C|WC|WCL|WL|WITH|FLEX|SET|GLASS)\b/i.test(inner)
+        ) {
+          let cleaned = inner.replace(/\bWITH\b/gi, ' ').trim()
+          cleaned = cleaned.replace(/\b100\s*%?\s*CARE\b/gi, 'CARE')
+          return ' ' + cleaned + ' '
+        }
         return ' '
       })
 
@@ -1370,8 +1365,6 @@ export function parseCSV(
 
       brandCode = scan.brandCode
       partCode = scan.partCode
-      // Quality precedence: scan quality (from text) OR paren OR curly.
-      // Curly extraction ran before strips, so it's the most explicit.
       if (quality === 'Normal') {
         quality = paren.quality || scan.quality
       }

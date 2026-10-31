@@ -1,52 +1,58 @@
-# CELLCOM SPARE ERP — SESSION HANDOFF (Updated 2026-10-21)
+# CELLCOM SPARE ERP — FULL SESSION HANDOFF (2026-10-25, end-of-day)
 
 ## Stack
-- Next.js 16 (App Router, 'use client' components, no server actions)
+- Next.js 16 (App Router, 'use client', no server actions)
 - Supabase (Postgres + PostgREST + RPC functions)
-- Vercel for deploy (CLI: `vercel --prod` — GitHub auto-deploy connected to `cellcommbd/cellcom-spare` branch `main`, but manual CLI still sometimes needed)
+- Vercel (`vercel --prod`; GitHub auto-deploy flaky, manual CLI sometimes needed)
 - TypeScript
-- Path alias: `@/` maps to project root. Both `@/lib/...` and `../../lib/...` used.
-- Mobile-first responsive is a hard requirement.
-- User is often on phone — keep queries short, one at a time.
-- User's number keys sometimes broken — provide copy-paste-ready SQL, avoid requiring digit typing.
-- User's laptop is temporary — sometimes different hardware with the same disk. Vercel CLI auth can expire; run `vercel login` if "Not authorized".
+- Path alias `@/` → project root. Both `@/lib/...` and `../../lib/...` used.
+- Mobile-first is a hard requirement.
+- User is often on phone — short queries, one at a time.
+- User's number keys sometimes broken — copy-paste-ready SQL only, avoid digit typing.
 
 ## Project directory structure
 cellcomspare/
 ├── app/
 │ ├── brands/page.tsx
 │ ├── categories/page.tsx
-│ ├── expenses/page.tsx (NEW 2026-10-21 — owner-only expense entry)
+│ ├── expenses/page.tsx (owner-only entry form)
 │ ├── find-stock/page.tsx (main staff page)
 │ ├── imports/skipped/page.tsx
 │ ├── items/page.tsx
 │ ├── login/page.tsx
-│ ├── losses/page.tsx (FIXED 2026-10-21 — RPC item search)
+│ ├── losses/page.tsx (RPC item search, no overflow on wrapper)
 │ ├── parties/
-│ │ ├── page.tsx (REBUILT 2026-10-21 — mobile cards, Open/Edit/Delete pads, default filter=Customer)
-│ │ └── [id]/page.tsx (NEW 2026-10-20 — per-customer account view)
-│ ├── payments/page.tsx (REBUILT 2026-10-20 — outstanding bills, receipt after payment)
+│ │ ├── page.tsx (mobile cards, 3 pads per row, default filter Customer)
+│ │ └── [id]/page.tsx (4 tabs, Balance Breakdown)
+│ ├── payments/page.tsx (Suspense wrapper, outstanding + receipt)
 │ ├── pinset/page.tsx
 │ ├── purchase-returns/page.tsx
-│ ├── purchases/page.tsx
-│ ├── purchases/[id]/edit/page.tsx (never audited)
+│ ├── purchases/
+│ │ ├── page.tsx
+│ │ └── [id]/edit/page.tsx (fixed 2026-10-24)
 │ ├── reference/page.tsx
 │ ├── reports/
-│ │ ├── page.tsx (UPDATED 2026-10-21 — Expenses + Profit cards)
+│ │ ├── page.tsx (12 cards, all live, no comingSoon)
 │ │ ├── cost-history/page.tsx
-│ │ ├── expenses/page.tsx (NEW 2026-10-21 — grouped by type, owner-only)
+│ │ ├── dead-stock/page.tsx
+│ │ ├── expenses/page.tsx
+│ │ ├── fast-moving/page.tsx
+│ │ ├── khata-aging/page.tsx (opened to staff 2026-10-25)
 │ │ ├── low-stock/page.tsx
-│ │ ├── dead-stock/page.tsx (RPC-based)
-│ │ ├── profit/page.tsx (NEW 2026-10-21 — P&L, owner-only)
-│ │ └── stock-value/page.tsx (RPC-based)
-│ ├── returns/page.tsx (FIXED 2026-10-21 — detail_id keying, scoped SKU fetch)
-│ ├── sales/page.tsx (UPDATED 2026-10-21 — ?party_id= prefill + item focus)
+│ │ ├── profit/page.tsx
+│ │ ├── profit-per-item/page.tsx
+│ │ ├── recent-activity/page.tsx
+│ │ ├── sales-explorer/page.tsx (NEW 2026-10-25)
+│ │ ├── stock-value/page.tsx
+│ │ └── supplier-prices/page.tsx
+│ ├── returns/page.tsx
+│ ├── sales/page.tsx (edit modal 2026-10-23)
 │ └── statement/page.tsx
 ├── components/ui/
 │ ├── button.tsx
 │ ├── combobox.tsx
-│ ├── date-grouped-list.tsx (NEW 2026-10-20 — shared date-grouped list renderer)
-│ ├── ImportCSVDialog.tsx
+│ ├── date-grouped-list.tsx
+│ ├── ImportCSVDialog.tsx (rewritten 2026-10-25 — scoped SKU lookup)
 │ ├── input-group.tsx
 │ ├── input.tsx
 │ ├── new-item-dialog.tsx
@@ -54,25 +60,26 @@ cellcomspare/
 │ ├── smart-combobox.tsx
 │ └── textarea.tsx
 ├── lib/
-│ ├── auth.ts (local-only role: localStorage)
+│ ├── auth.ts
 │ ├── csv-mapper.ts
-│ ├── csv-parser.ts (v28)
-│ ├── item-search.ts (soft-fail try/catch)
-│ ├── statement-format.ts (shared WhatsApp text builder)
+│ ├── csv-parser.ts (v34)
+│ ├── general-item-parser.ts
+│ ├── item-search.ts (searchItems RPC wrapper)
+│ ├── statement-format.ts
 │ ├── supabase.ts
 │ └── utils.ts
 ├── app/globals.css
 ├── app/layout.tsx
-└── app/page.tsx (REBUILT 2026-10-21 — customer search, today stats, top debtors)
+└── app/page.tsx (home)
 
 text
 
-## Database schema (public)
+## DB schema (public)
 
 ### Core
 - **items** — `item_id` serial PK, `sku` varchar UNIQUE, `brand_id`/`model_id`/`part_id`/`category_id` int FK (NULLABLE), `is_phone_part` bool DEFAULT true, `quality` text (Normal|OG|100 OG|Care OG|China OG), `variant`/`color` text, `cost_price` numeric DEFAULT 0, `selling_price` numeric DEFAULT 0, `current_stock` int DEFAULT 0, `is_active` bool DEFAULT true, `reorder_point` int DEFAULT 0
-- **brands** — `brand_id`, `brand_name`, `brand_code`, `purchase_prefix`
-- **brand_aliases** — `id`, `csv_code`, `brand_code`
+- **brands** — `brand_id`, `brand_code`, `brand_name`, `purchase_prefix`
+- **brand_aliases** — `id`, `csv_code` UNIQUE, `brand_code`
 - **part_types** — `part_id`, `part_code` UNIQUE (constraint `^[A-Z0-9]+$`), `part_name`
 - **part_type_aliases** — `id`, `csv_text` UNIQUE, `part_code`
 - **categories** — `category_id`, `category_code` UNIQUE, `category_name` (TOOL|CLEANING|CONSUMABLE|ACCESSORY|SPRAY|OTHER)
@@ -82,16 +89,47 @@ text
 ### Transactions
 - **purchases** — `purchase_id`, `party_id` int, `invoice_no` varchar(50), `purchase_date` date NOT NULL, `total_amount` numeric, `freight_charges` numeric DEFAULT 0, `cash_paid` numeric DEFAULT 0, `credit_applied` numeric DEFAULT 0, `created_at` timestamptz
 - **purchase_items** — `detail_id` serial PK, `purchase_id` int FK, `item_id` int FK, `quantity` int, `rate` numeric (LANDED, includes freight), `invoice_rate` numeric NULLABLE (RAW, backfilled = rate for old purchases), `amount` numeric
-- **sales** — `sale_id`, `party_id`, `bill_date` date, `entry_date` timestamptz, `total_amount` numeric, `status` varchar (Pending|Partially Paid|Paid), **`paid_amount` numeric DEFAULT 0** (ADDED 2026-10-20)
+- **sales** — `sale_id`, `party_id`, `bill_date` date, `entry_date` timestamptz, `total_amount` numeric, `status` varchar (Pending|Partially Paid|Paid), **`paid_amount` numeric DEFAULT 0** (added 2026-10-20)
 - **sale_items** — `detail_id`, `sale_id`, `item_id`, `quantity`, `rate`, `amount`, `cost_at_sale` (set at sale time), `returned_qty` int (incremented by returns, line is NEVER deleted)
 - **payments** — `payment_id`, `party_id`, `payment_date` date, `amount` numeric, `payment_mode` varchar, `created_at`
 - **parties** — `party_id`, `party_name` varchar, `phone` varchar NULLABLE, `party_type` (Customer|Supplier), `current_balance` numeric, `purchase_prefix` text
 - **returns** — `return_id`, `party_id`, `item_id`, `return_date`, `quantity`, `rate`, `total_amount`, `is_sellable`, `reason`, `return_type` ('Customer'|'Supplier'), `created_at`
 - **losses** — `loss_id`, `item_id`, `loss_date`, `quantity`, `rate` (COST price, not selling), `total_amount` (= qty × cost), `reason`, `notes`, `created_at`
-- **expenses** — `expense_id` serial PK, `expense_date` date NOT NULL, `expense_type` text NOT NULL CHECK (expense_type IN ('Rent','Staff','Kitty','Bill','Others')), `amount` numeric NOT NULL CHECK (amount > 0), `note` text NULLABLE, `created_at` timestamptz DEFAULT now(). Index: `idx_expenses_date` on `expense_date DESC`. (ADDED 2026-10-21)
+- **expenses** — `expense_id` serial PK, `expense_date` date NOT NULL, `expense_type` text NOT NULL CHECK (expense_type IN ('Rent','Staff','Kitty','Bill','Others')), `amount` numeric NOT NULL CHECK (amount > 0), `note` text NULLABLE, `created_at` timestamptz DEFAULT now(). Index: `idx_expenses_date` on `expense_date DESC`. (Added 2026-10-21)
 - **skipped_import_rows**, **settings** — standard. `settings` stores `staff_pin`, `owner_pin`, `pin_version`
 
-## RPC functions
+### Brand landscape (verified 2026-10-25)
+1,SAM,Samsung
+2,OP,Oppo
+3,VV,Vivo
+4,RM,Realme
+5,IP,Apple
+6,MI,Xiaomi (includes Redmi, Poco)
+7,INF,Infinix
+8,TEC,Techno
+9,MT,Moto
+10,HUA,Huawei
+11,ONE,One+
+13,NOTH,Nothing
+16,JIO,Jio
+18,GEN,Generic
+20,NK,Nokia
+21,ITL,Itel
+22,GEN4,Generic 4 Pin
+23,GEN5,Generic 5 Pin
+26,TOOL,TOOL
+
+text
+
+**Clarifications:**
+- `MI` = Xiaomi + Redmi + Poco (all under Xiaomi umbrella)
+- `RM` = Realme (only, not Redmi)
+- No `RE` brand — `RE` is an alias for `RM`
+- No `POCO` brand — Poco items live as `MI-POCO-*` (POCO in model position)
+- `OP RE` in vendor CSVs = Realme, kept as `OP-RE-*` prefix by convention (313 existing items, not migrating)
+- `VV` = Vivo, `OP` = Oppo
+
+### RPC functions
 - **search_items(p_query text, p_limit int DEFAULT 25)** — searches SKU, brand, model, part, quality, variant, color. Token-based AND. Network-aware ranking: for query with 5g → 5G first, null second, 4G third; with 4g → 4G first, null second, 5G third; no network → all networks. ORDER BY uses conditionally-built `order_prefix` variable (fixed 2026-10-19 — bare `0` was being treated as column position).
 - **purchase_line_counts(p_ids int[])**
 - **stock_value_by_brand()**
@@ -143,411 +181,559 @@ text
 
 **Do NOT subtract returns separately** — they're already reflected via `(quantity − returned_qty)`. **Do NOT use `Σ(amount)`** for sales — that's gross, not net of returns.
 
-## lib/csv-parser.ts (v28)
-SKU grammar: `BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]`
-
-Key features:
-- `normalizeTypos` — SAMRT→SMART, BORD→BOARD, CONVETOR→CONVERTER, SILVAR→SILVER
-- `extractPartFromDescription(desc, aliases)` — DB aliases + hardcoded, longest-first
-- Multi-word brand matching, model extraction
-- `normalizeModelName` — strips trailing part codes, quality markers, size markers
-- Spacing rules 1-3: `CE 2 → CE2`, `10 R → 10R`, `11 X → 11X`
-- **v26 fix (PRO+ → PRO PLUS):** `([A-Z])\+` → `$1 PLUS` after digit-plus rule; removed trailing `+` strip in normalizeModelName
-- **v28 fix:** part-strip runs BEFORE spacing rules (prevents 10 CG → 10CG fusion)
-
-## lib/statement-format.ts (shared)
-Functions:
-- `buildStatementText(data: StatementData): string` — WhatsApp-ready text. Uses `*bold*`, `_italic_`, `━━━` dividers, `Rs.` not `₹`. No emoji.
-- `normalizePhoneForWhatsApp(raw): string | null`
-- `buildWhatsAppUrl(phone, message): string | null`
-
-`StatementData`: `{ shopName?, customerName, fromDate, toDate, items[], purchasesTotal, previousBalance, cashPaid, upiPaid, netDue }`
-
-**Shared by:** `/statement`, `/parties/[id]`, `/payments`. Any change affects all three — defer helper changes unless needed in all.
-
-## components/ui/date-grouped-list.tsx (NEW 2026-10-20)
-Generic list renderer that inserts date header bands with day totals between consecutive same-date rows.
-Props: `rows, getDate, getAmount, getKey, renderRow, emptyState, dayTotalLabel, amountPrefix, hideRowCount`.
-Not sticky — flat slate bands. Making it `sticky top-0` requires removing `overflow-hidden` from parent card, which loses rounded corners. Flat is correct for short lists.
-**Used by:** `/sales` report, `/payments` outstanding bills, `/parties/[id]` Purchases/Payments/Ledger tabs.
-
-## Session 2026-10-19 additions
-- Parser v28: part-strip BEFORE spacing rules (prevents 10 CG → 10CG fusion)
-- Search network-aware ranking (5g/4g priority)
-- search_items RPC ORDER BY bug fixed — bare `0` was treated as column position, replaced with `order_prefix` variable
-- Data cleanup: all Nord duplicates merged (7 pairs); MI 11X, RM 14PRO, SAM S21FE, TEC KE5, VV V50E merged; 0 normalized duplicates; GEN-TOOL-OG removed; 0 orphaned FKs
-
-## Session 2026-10-20 additions
-- **`sales.paid_amount`** column added, backfilled (Paid→total, Pending→0, Partially Paid reconciled manually: sale 56 Anas ₹3,000 of ₹4,300; sale 83 Counter Sale was actually paid). Anas (party 9) current_balance fixed to ₹1,300 (was ₹1,500, ₹200 drift).
-- **Counter Sale:** always walk-in, cash-and-carry in the physical shop, BUT can also be "known person, pays later." No special code path — treats like any customer.
-- **`applyFIFO` in `/payments`** rewritten — reads `paid_amount` per bill, writes back `paid_amount` + derived `status`. Oldest-first allocation preserved.
-- **`/payments` rebuilt:**
-  - Outstanding bills list (all bills with `paid_amount < total_amount`, oldest first, days-old coloring)
-  - Last-payment banner (amount + date + N days ago)
-  - "All clear" green card when nothing outstanding
-  - Statement card + Copy + WhatsApp available **without saving first**
-  - **Receipt after payment** — statement switches to receipt shape after save (paid X, due Y, itemizes just-touched bills)
-  - `?party_id=` prefill via `useSearchParams` (requires `<Suspense>` wrapper — `PaymentsPageInner()` + default export `PaymentsPage()` with Suspense)
-- **`/parties` rebuilt:** mobile cards, no whole-row click, three explicit 44px pads per row (Open ›/Edit/Delete), search, balance-sorted, Opening Balance removed from add form, Enter-to-save, cursor returns to Name after save. Default filter = Customer (2026-10-21).
-- **`/parties/[id]` (NEW):** per-customer account view. Balance chip, Copy + WhatsApp, date range with quick buttons, 4 tabs (Summary/Purchases/Payments/Ledger). Ledger opening balance = `current_balance − Σ(sales ≥ fromDate) + Σ(payments ≥ fromDate)` — correct for any range, not just "today."
-- **`/sales` `?party_id=` prefill:** reads `searchParams`, preselects shop, focuses item field. **Critical:** `loadData`'s Counter Sale default must be guarded with `&& !prefillPartyId` — otherwise `loadData` overwrites URL selection (race). Focus requires explicit `document.querySelectorAll('input[data-row-item="row-1"]')` + `offsetParent !== null` + 50/150/300ms retries (mobile + desktop DOM duplication).
-
-## Session 2026-10-21 additions
-
-### `/expenses` (NEW)
-- Owner-only entry form. Date, Type (5-option dropdown), Amount, optional Note.
-- Enter saves. After save: keeps date + type, clears amount + note, refocuses amount.
-- This-month list below with per-row delete. Month summary card at top showing total + per-type breakdown.
-
-### `/reports/expenses` (NEW)
-- Owner-only. Grouped by expense_type, from/to defaulting to month-start → today.
-- Quick buttons: Today / This Month / Last Month.
-- Grand total card (rose gradient). Each type row: count, total, percentage bar, expandable to show individual entries.
-- Zero-count types still shown (dimmed).
-
-### `/reports/profit` (NEW)
-- Owner-only. From/to defaulting to month-start → today.
-- Uses the PROVEN formula above.
-- Net Profit hero card (green if profit, rose if loss). Shows margin % + bill count.
-- Two warning cards:
-  - "No expenses recorded" — if expenses table empty for range
-  - "N lines have no cost" — if `cost_at_sale = 0` on sale lines
-- P&L breakdown: Sales (net of returns) → COGS → Gross Profit (with margin) → Losses → Operating Expenses (with per-type breakdown) → Net Profit.
-
-### `/reports` (UPDATED)
-- Two new cards: Expenses by Type (amber, Wallet icon), Profit Report (indigo, BarChart3 icon — was TrendingDown, changed because downward arrow implies "profit falling").
-- Removed old "Monthly P&L" card pointing to non-existent `/reports/monthly-pnl`. New `/reports/profit` replaces it.
-
-### `/` home (REBUILT)
-- **Customer search** at top — type 2+ chars, debounced 250ms, dropdown, tap → `/parties/[id]`. Outside-click closes. Clear button.
-- **Today at a glance** — Sales / Cash In / Pending Khata (3 numbers), plus **Purchases** for owner only (4th number). Gradient indigo card.
-- **Quick Actions** — 6 tiles: Sales, Payments, Find Stock, Purchases, Returns, Reports.
-- **Recent Sales** — last 5 bills, tappable → party account.
-- **Top Debtors** — top 10 positive-balance customers, sorted by biggest owed, each with `Open ›` → party account.
-- **Removed:** date range bar, 4 big stat cards (Sales/Payments/Purchases/Gross Profit), 4 mini stats (Khata/Payable/Losses/Low Stock), Top Shops list, Recent Purchases list. **No profit anywhere on home** — lives in `/reports/profit`.
-
-### `/returns` (FIXED — real bugs)
-- **Bug 1:** Was loading ALL items via `supabase.from('items').select(...)` with no filter → hit PostgREST 1000-row cap → SKU showed `'—'` for items beyond row 1000 (like SAM-TEST1-BP at item_id 2723).
-- **Bug 2:** `checkedItemIds` and `rows` were keyed on `item_id` instead of `detail_id` → two lines of same SKU shared a checkbox, unchecking one removed both.
-- **Fix:** removed full items load; `loadSaleItems` now fetches SKUs scoped to the bill's `item_id`s via `.in('item_id', itemIds)`. All state keyed on `detail_id` (`checkedDetailIds`).
-- Save logic unchanged — insert returns, increment `returned_qty`, reduce khata.
-
-### `/losses` (FIXED — same class of bug)
-- Was loading ALL items with no limit → same 1000-row truncation → SKU search couldn't find items beyond row 1000.
-- **Fix:** item search now uses `searchItemsShared` (RPC) via SmartCombobox `onSearch`. `todayItems` fetched scoped to today's loss rows via `.in('item_id', itemIds)`. `handleItemSelect` fetches `cost_price` reliably for auto-filling rate.
-- Removed `overflow-x-auto` from table wrapper — it was clipping the combobox dropdown and creating a horizontal scrollbar. **Rule: never put `overflow-*` on a wrapper containing SmartCombobox.**
-
-### End-to-end test cycle (2026-10-21)
-Ran a full test cycle to prove the returns/losses/profit model:
-1. Purchased 10 × SAM-TEST1-BP @ 100 → stock 10, cost 100 ✅
-2. Sold 4 @ 150 to Anas → stock 6, Anas +600 ✅
-3. Returned 1 @ 150 → stock 7, Anas −150, `returned_qty` = 1 ✅
-4. Lost 2 (broken) @ cost 100 → stock 5, losses 200 ✅
-5. Cleaned up all test data, Anas reset to 1300, item deleted, purchase deleted ✅
-
-**Lessons from cleanup:**
-- Delete test rows by `item_id` + date range, NOT by note text (notes may not match)
-- Delete triggers fire and restore stock — verify stock after each delete, adjust at the end if needed
-- Test item itself + its purchase must be deleted too if the item was phantom
-
-### `expenses` table (CREATED 2026-10-21)
-```sql
-CREATE TABLE expenses (
-  expense_id serial PRIMARY KEY,
-  expense_date date NOT NULL,
-  expense_type text NOT NULL
-    CHECK (expense_type IN ('Rent','Staff','Kitty','Bill','Others')),
-  amount numeric NOT NULL CHECK (amount > 0),
-  note text,
-  created_at timestamptz DEFAULT now()
-);
-CREATE INDEX idx_expenses_date ON expenses (expense_date DESC);
-Note: table was initially created with different columns (category, description, no CHECK constraint, no index), then dropped and recreated cleanly. No migration file exists in the repo — schema is only in Supabase. Worth adding db/2026-10-21_expenses.sql for documentation.
-
-Standing rules for AI assistant
-Never guess at code you haven't seen. Ask for the file.
-
-Never delete or rename items without checking purchase_items, sale_items, returns, losses for references first.
-
-Full files, one per message. No fragments. No ... placeholders. Split into 2-3 parts only if file exceeds ~800 lines, and clearly label "Part 1 of 2" / "Part 2 of 2".
-
-Mobile-first for every UI change.
-
-Ask for SQL output / raw data before proposing fixes.
-
-Same 6-column CSV header for purchases and returns: Description of Goods,Type of Goods,Quality,Quantity,Price,Unit
-
-One CSV per source invoice.
-
-User is often on phone — keep queries short, one at a time.
-
-When user says "give me csv" — they mean the full CSV content to paste into import dialog, not SQL.
-
-Stock/cost changes are handled by DB triggers — do NOT add app-level stock updates.
-
-Real production data — no destructive SQL without first showing SELECT COUNT(*) with the same WHERE and getting explicit confirmation.
-
-User's number keys sometimes broken — provide copy-paste-ready SQL, avoid requiring digit typing.
-
-PostgREST caps responses at 1000 rows by default. Any query fetching full items table must use RPC aggregation OR scoped .in('item_id', ids) filtering, NOT client-side array search. This bit twice on /returns and /losses — always scope item fetches.
-
-Verify writes: after a save, refetch and confirm the value persisted. Never say "saved" unless it landed.
-
-Party creation modal flow: staff types new name → SmartCombobox reports isNew = true → parent opens NewPartyDialog → on OK, insert with title case, duplicate check, verify, append to list.
-
-NEVER put overflow-* on a wrapper containing a SmartCombobox — clips the dropdown.
-
-Prefill from URL requires disabling competing defaults — any loadData/useEffect setting a "default selection" must check the query param and bail (&& !prefillPartyId).
-
-Compute due from total_amount − paid_amount, never trust current_balance alone. current_balance can drift (Anas had ₹200 drift). Bills are truth for per-bill dues.
-
-Profit formula uses (quantity − returned_qty) — never amount directly.
-
-Test data cleanup: delete by item_id + date range, not by note text. Verify stock/khata after. Delete triggers fire.
-
-Known open items (parked)
-Auto-deploy: Vercel connected but pushes don't always trigger. Manual vercel --prod if needed.
-
-Junk models cleanup — trailing quotes, quality words in names, part codes stuck in models.
-
-Unique constraints on models(brand_id, model_name, network) and part_types(part_code) — need dup check first.
-
-Historical invoice_rate — old purchases have invoice_rate = rate (backfilled). New purchases correct.
-
-UTC date default bug — toISOString().slice(0,10) shows previous day 00:00-05:30 IST. User doesn't care — parked.
-
-app/purchases/[id]/edit/page.tsx — never audited.
-
-update_purchase RPC — not updated for invoice_rate.
-
-Post-dialog autofocus — tries selector input[data-row-item="row-1"] but sales page has mobile + desktop copies; focus lands on hidden one. Non-blocking (the 2026-10-20 prefill fix added retries + offsetParent !== null, so mostly resolved).
-
-Form B SKU migration — dash-everything SKU (e.g. RM-NOTE-12-PRO-BP-5G-BLACK). Deferred 2026-10-19. Scope: rewrite normalizeModelName (~40 lines), bulk items.sku UPDATE, optional models.model_name UPDATE. No other file changes needed. Before committing: run collision-check SQL (normalize model_name, group, count dups >1). If near zero, defer indefinitely. Form B is layer 1 of 3; still needs alias tables + Levenshtein warning.
-
-Coming-soon reports — supplier-prices, fast-moving, profit-per-item, khata-aging, recent-activity (all still marked comingSoon in /reports). Verify page file exists before removing comingSoon: true.
-
-/parties/[id] per-bill paid/due display — Purchases tab shows status pill only, not "₹3,000 paid / ₹1,300 due." /payments shows this clearly, so info isn't missing from the app. Parked: not urgent.
-
-Statement post-payment receipt shape — /payments switches to receipt after save. But statement detail could be richer. Parked.
-
-Migration file for expenses — schema exists in Supabase only, not in repo. Worth db/2026-10-21_expenses.sql for documentation.
-
-Working state at end of 2026-10-21
-Anas (party 9): current_balance = 1300 (one partial bill: sale 56, ₹4,300 total, ₹3,000 paid, ₹1,300 due)
-
-Counter Sale (party 3): balance ₹0, all historical sales marked Paid
-
-All other customers: ₹0
-
-Test item SAM-TEST1-BP: deleted (item, purchase 41, purchase line 3117 all gone)
-
-expenses table: 1 real entry (₹6,000 Staff)
-
-sale_items.cost_at_sale: 917 lines, 0 with zero cost — COGS is accurate
-
-Profit report: works, verified against real data
-
-Useful shortcuts
-Item count: SELECT COUNT(*) FROM items;
-
-Recent purchases: SELECT purchase_id, invoice_no, total_amount FROM purchases ORDER BY purchase_id DESC LIMIT 10;
-
-Recent sales: SELECT sale_id, bill_date, total_amount FROM sales ORDER BY sale_id DESC LIMIT 10;
-
-Zero-cost sale lines: SELECT COUNT(*) FROM sale_items WHERE cost_at_sale = 0 OR cost_at_sale IS NULL;
-
-Expense totals by type this month: SELECT expense_type, COUNT(*), SUM(amount) FROM expenses WHERE expense_date >= date_trunc('month', CURRENT_DATE) GROUP BY expense_type;
-
-Recent commit history (approximate)
-2026-10-19: parser v28, network-aware search ranking, search_items ORDER BY fix, data cleanup
-
-2026-10-20: sales.paid_amount migration, /payments rebuild (outstanding bills + receipt), /parties rebuild, /parties/[id] new, /sales prefill
-
-2026-10-21: /expenses new, /reports/expenses new, /reports/profit new, /reports updated, home rebuilt, /returns + /losses fixed, /parties default filte
-- **Do NOT subtract returns separately** — already reflected via `(quantity − returned_qty)`
-- **Do NOT use `Σ(amount)`** for sales — that's gross, not net of returns
-
-## Allocation model (payments)
+## Payment allocation
 - `applyFIFO` in `/payments` applies payments to bills **oldest-first**
 - Reads `paid_amount` per bill, writes back `paid_amount` + derived `status`
-- **Decision 2026-10-22:** keep oldest-first. Oldest debt gets cleared first, prevents "old ₹500 sits forever" problem. If customer asks "which bill does my balance come from?", answer is via **Balance Breakdown** on `/parties/[id]` Summary tab (added 2026-10-21).
+- **Decision 2026-10-22:** keep oldest-first. Oldest debt gets cleared first, prevents "old ₹500 sits forever" problem. If customer asks "which bill does my balance come from?", answer via **Balance Breakdown** on `/parties/[id]` Summary tab.
 - **Counter Sale** behaves like any customer — sale inserts `Pending`, `paid_amount = 0`, balance increments, payment clears. No special code path.
 
-## lib/csv-parser.ts (v28)
-SKU grammar: `BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]`
+## lib/csv-parser.ts — v34 (CURRENT)
 
-Key features:
-- `normalizeTypos` — SAMRT→SMART, BORD→BOARD, CONVETOR→CONVERTER, SILVAR→SILVER
-- `extractPartFromDescription(desc, aliases)` — DB aliases + hardcoded, longest-first
-- Multi-word brand matching, model extraction
-- `normalizeModelName` — strips trailing part codes, quality markers, size markers
-- Spacing rules 1-3: `CE 2 → CE2`, `10 R → 10R`, `11 X → 11X`
-- **v26 fix (PRO+ → PRO PLUS):** `([A-Z])\+` → `$1 PLUS` after digit-plus rule
-- **v28 fix:** part-strip runs BEFORE spacing rules (prevents 10 CG → 10CG fusion)
+### Signature
+- `parseCSV(text: string, aliases: AliasMaps, items: ItemLookup[] = []): ParsedRow[]`
+- `items` optional (default `[]`) — dialog does scoped SKU lookup after parse
+- Exports: `parseCSV`, `generateSku`, `flagDuplicates`, `groupParsedRows`, `resetBrandCodeWarnings`, `findColumnIndex`, `splitCSVLines`, types `Quality`, `ParsedRow`, `AliasMaps`, `ItemLookup`
 
-## lib/statement-format.ts (shared)
-- `buildStatementText(data: StatementData): string` — WhatsApp text. `*bold*`, `_italic_`, `━━━` dividers, `Rs.` not `₹`. No emoji.
-- `normalizePhoneForWhatsApp(raw): string | null`
-- `buildWhatsAppUrl(phone, message): string | null`
-- `StatementData`: `{ shopName?, customerName, fromDate, toDate, items[], purchasesTotal, previousBalance, cashPaid, upiPaid, netDue }`
-- **Shared by:** `/statement`, `/parties/[id]`, `/payments`. Any change affects all three.
+### SKU grammar
+BRAND - MODEL - PART - [YEAR] - [VARIANT] - [NETWORK] - [FLAG] - [COLOR] - [QUALITY]
 
-## components/ui/date-grouped-list.tsx
-Generic list renderer that inserts date header bands with day totals between consecutive same-date rows.
-Props: `rows, getDate, getAmount, getKey, renderRow, emptyState, dayTotalLabel, amountPrefix, hideRowCount`.
-Not sticky — flat slate bands. **Rule: never put `overflow-*` on a wrapper containing SmartCombobox** (clips dropdown).
+text
 
-## Reports (all 11 built and live as of 2026-10-22)
+### v34 fixes applied (2026-10-25)
+1. **`1+NORD` bug** — `normalizeTypos` splits `1+` from following letter, skips `1+` in PLUS conversion. `1+NORD` → `1+ NORD` → brand `ONE`.
+   ```ts
+   .replace(/\b1\s*\+\s*(?=[A-Z])/gi, '1+ ')
+   .replace(/(\d)\+/g, (m, d) => (d === '1' ? m : d + ' PLUS'))
+Brand-consume bug — scanDescription's brand loop doesn't consume brand token when brandCode is already set. So OP RE RINGER → OP brand, RE stays in model → OP-RE-RB.
+
+ts
+if (!brandCode) { brandCode = ...; consume(...); }
+// else: skip, don't consume
+Curly-brace quality — parseCSV extracts quality from {...} blocks explicitly before [...] strip. {CARE}, {OG}, {100% OG}, {CHINA OG} all picked up.
+
+Square-bracket quality regex extended — includes CARE, 100% OG, CHINA OG so [...] quality isn't dropped.
+
+Glued-brand split — normalizeTypos rule:
+
+ts
+.replace(/\b(SAM|MI|IP|VV|OP|RM|NK|TEC|INF|HUA|ITL|JIO|MT|NOTH|ONE)([A-Z])(\d)/g, '$1 $2$3')
+SAMA23 → SAM A23, VVY20 → VV Y20, MIA1 → MI A1
+
+IPHONE (no digit after H) → no match ✅
+
+SAMSUNG (letter after SAM) → no match ✅
+
+OPPO (letter after OP) → no match ✅
+
+Architecture: scanDescription (single-pass dictionary scanner)
+Walks left-to-right, tries at each position in priority order:
+
+Part phrase (longest first, from aliases.partAliases + PART_TYPE_PHRASES)
+Quality (100% OG, 100%, CHINA OG, CARE, OG, C+)
+Network (4G / 5G)
+Year (19xx / 20xx)
+Size markers (20MM, 4PIN, BIG, SMALL, MEDIUM, 3 PIN, 4 PIN)
+Flag (WL, WC, WCL, FLEX, SET, COPY, METAL)
+Color (from COLOR_WORDS + aliases)
+Variant (MAIN, OCTA, BOX PACKING, NEW, DAMD, DISPLAY, FOR, MAINBOARD)
+Brand phrase (longest first, from aliases.brandAliases)
+Advance 1 char
+Word-boundary enforced in tryMatchAt — BK never matches inside BLACK, MF never inside MIDFRAME
+
+Longest phrase wins — MIDDLE FRAME WITH FLEX before MIDDLE FRAME before MF
+
+Matches consumed — never re-scanned
+
+Leftover unconsumed tokens = model text, then normalizeModelName
+
+normalizePartCode rejects strings >10 chars (prevents BACKPANELOGBLACK mangles)
+
+extendColor absorbs one adjacent alpha token for multi-word colors (BUBBLEGUM BLUE, BLACK VELVET, SUNSET GOLD, DUSK PINK, NATURAL TITANIUM)
+
+Fusion rule (in normalizeModelName)
+1–2 letter tokens + digit fuse: CE 3 → CE3, 9 A → 9A, 11 X → 11X, 15 T → 15T
+
+Longer tokens keep dashes: NOTE 12 → NOTE-12, 11 PRO → 11-PRO
+
+Why fusion exists: prevents 20 MM → 20-MM (wire length should stay 20MM), CE 3 → CE-3 (real model is CE3), and prevents duplicate SKUs when vendor writes both CE3 and CE 3 for the same part
+
+Do NOT remove fusion — would break existing catalog SKUs and requires mass migration
+
+normalizeTypos current rules
+1+NORD → 1+ NORD split (before PLUS rule)
+
+1+ NOT converted to 1 PLUS (only 2+–99+ converted)
+
+OPPO - REALME / OPPO-REALME → REALME
+
+Glued brand split: SAMA23 → SAM A23, etc.
+
+Typos: SAMRT→SMART, BORD→BOARD, CONVETOR/CONNVETOR→CONVERTER, COVERT→CONVERT, SILVAR→SILVER, VOLLUME→VOLUME, EXXBEE/EXX BEE/EXX-BEE→EXX-BEE, PANLE/PANAL/PANNEL/PAANEL→PANEL, HOUSIG→HOUSING, BOX PECKING→BOX PACKING, C/C→CC, OUT SIM TRY→OUT SIM TRAY, SIM TRY→SIM TRAY, B/C CONN→B/C CONN
+
+Strips * ' " backtick to spaces; collapses ### to space; collapses whitespace
+
+Known remaining parser quirks (accepted, not bugs)
+OP RE → OP-RE-* (compromise, not RM-*) — matches 313 existing items, decision 2026-10-24
+
+part_type_aliases has 2 PIN/3 PIN/4 PIN → ONOFFSWITCH — intentional. All pins = on-off switch specs. Do NOT delete.
+
+Vendor junk like OPPO - VIVO 4 PIN ON OFF SWITCH [ SMALL EXX - BEE] → OP-VIVO-ONOFFSWITCH-SMALL — secondary part dropped, ambiguity not resolvable from description
+
+{BARCODE} — not a flag, falls into model or discarded. Confirmed junk (2026-10-25).
+
+New vendor typos will surface — add to normalizeTypos as they appear
+
+Not applied (parked)
+Reading Quality column from CSV directly (currently inferred from {...} and [...] in description — works for current CSVs)
+
+Form B SKU migration (dash-everything) — deferred since 2026-10-19
+
+Parser test results (2026-10-25)
+Input	Output
+NK 5200 RINGER {CARE}	NK-5200-RB-CARE ✅
+SM A50 RINGER {OG}	SAM-A50-RB-OG ✅
+OP RE RINGER {100% OG}	OP-RE-RB-100OG ✅
+1+NORD CE 3 LITE LCD FLEX	ONE-NORD-CE3-LITE-LCD ✅
+SAMA23 5G OUT SIM TRAY	SAM-A23-ST-5G ✅ (was GEN-SAMA23-ST-5G)
+IPHONE - 14+ SPEAKER [100% OG]	IP-14-PLUS-SPK-100OG ✅
+OPPO - REALME 5 OUT SIM TRAY	RM-5-ST ✅
+lib/statement-format.ts (shared)
+buildStatementText(data: StatementData): string — WhatsApp-ready. *bold*, _italic_, ━━━ dividers, Rs. not ₹. No emoji.
+
+normalizePhoneForWhatsApp(raw): string | null
+
+buildWhatsAppUrl(phone, message): string | null
+
+StatementData: { shopName?, customerName, fromDate, toDate, items[], purchasesTotal, previousBalance, cashPaid, upiPaid, netDue }
+
+Shared by: /statement, /parties/[id], /payments. Any change affects all three.
+
+lib/item-search.ts
+searchItems(query): Promise<SearchItemResult[]> — thin wrapper around search_items RPC
+
+Soft-fail on error (returns [])
+
+Minimum query length 2
+
+Imported as searchItemsShared in some pages
+
+components/ui/date-grouped-list.tsx
+Generic list renderer, inserts date header bands with day totals between consecutive same-date rows
+
+Props: rows, getDate, getAmount, getKey, renderRow, emptyState, dayTotalLabel, amountPrefix, hideRowCount
+
+Not sticky — flat slate bands
+
+Used by: /sales report, /payments outstanding, /parties/[id] Purchases/Payments/Ledger
+
+text
+
+**End of Part 1.** Say "go" for Part 2 (pages, sessions, rules, open items, SQL shortcuts).
+---
+
+## components/ui/ImportCSVDialog.tsx — rewritten 2026-10-25
+
+### Key change
+- **Removed full-table `items` load.** Old code paginated 1000 rows at a time with `break` on any error, silently truncating at 20000 rows → false NEW for items past the truncation. Caught row 522, 525, 527, 530 as "new" despite existing.
+- **Added `lookupItemsBySku(skus: string[]): Promise<ItemLookup[]>`** — scoped `.in('sku', slice)` lookups, chunked at 500 to stay within PostgREST query-string limits. Throws on error instead of returning partial.
+- **Added `reclassify(rows: ParsedRow[]): Promise<ParsedRow[]>`** — after parse, fetch real DB state via scoped lookup and flip `matched`/`new` per row.
+- **`handleParseAuto` and `handleParseManual` became async** — call `reclassify` before `setParsedRows`.
+- **Parser called with empty `items` array** — `parseCSV(csvText, aliases, [])`, `parseGeneralCSV(csvText, [])`, `applyMapping(csvText, mapping, aliases, [])`. Parser marks everything as `'new'`, then reclassify fixes.
+- **Errors in lookup throw** — no silent "everything is NEW". User sees error message.
+- **`updateRow`** (manual edit) clears `matchedItemId`/`matchedItemSku` and marks `'new'` — reclassify will be triggered by re-parse if user saves with edits.
+
+### Unchanged
+- Skip/unskip rows (persists to `/imports/skipped` via `onSkipRows` prop)
+- `EditRowPanel` for manual per-row edits (brand, model, part, year, variant, network, flag, color, quality, qty, rate, live SKU preview)
+- Manual mapping mode
+- Margin input
+- All UI/sorting/grouping (errors first, then new, then matched)
+- `flagDuplicates` for duplicate SKU detection across parsed rows
+
+### Why this matters
+- No more silent false NEW
+- Fast (2-3 queries per import instead of 20-page pagination)
+- Scales to any catalog size
+- Fails loudly on error
+
+---
+
+## Key pages
+
+### `/sales`
+- Shop picker (Counter Sale default), item rows via `searchItems` RPC, focus chain, Enter-to-save
+- `?party_id=` prefill (guarded `&& !prefillPartyId` — CRITICAL race fix), `?prefill_item_id=` prefill
+- **Edit modal** (built 2026-10-23): pencil icon on today's sales rows, editable customer/date/qty/rate/items, balance adjusts by delta, `paid_amount` untouched (guard: block if new total < paid_amount), status recomputed from new total vs paid_amount
+- **Today's Sales** section grouped by customer, collapsible, grand total
+- **Sales report at bottom** — filters by `bill_date` (not `entry_date`)
+- Focus retries at 50/150/300ms with `offsetParent !== null` check (mobile + desktop DOM duplication)
+
+### `/payments`
+- Cash/Online toggle, UPI split (2 rows on save), `applyFIFO` (returns touched sale_ids)
+- Receipt after save; statement available without save (`outstandingBills.length > 0 || success`)
+- **Outstanding grouped by day**: date · item count · day total · day paid · day due · days-old
+- Tap day → expands to flat items list
+- Last-payment banner (amount + date + N days ago)
+- "All clear" green card when nothing outstanding
+- `?party_id=` prefill requires `<Suspense>` (`PaymentsPageInner()` + default export wraps in Suspense)
+- Shop balances table when no shop picked
+
+### `/parties`
+- Mobile cards, no whole-row click
+- 3 pads per row (44px): `Open ›` (→ `/parties/[id]`), Edit, Delete (confirm)
+- No Opening Balance field (defaults 0)
+- Phone `type="tel" inputMode="numeric"`
+- Enter saves, cursor returns to Name
+- Search client-side, sorted by balance desc
+- Default filter = Customer
+
+### `/parties/[id]`
+- Balance chip (solid color: rose owed / emerald credit / slate settled)
+- Copy + WhatsApp under balance
+- **Balance Breakdown** in Summary tab — outstanding days oldest-first, aging badge, expandable items. Answers "why do I owe ₹500?" without changing FIFO.
+- Date range with Today/Yesterday/Week/Month quick buttons
+- 4 tabs: Summary, Purchases (day-grouped), Payments, Ledger (chronological)
+- Ledger opening balance = `current_balance − Σ(sales ≥ fromDate) + Σ(payments ≥ fromDate)`
+- Sticky mobile bottom: New Sale, New Payment (links to `/sales?party_id=X`, `/payments?party_id=X`)
+
+### `/purchases/[id]/edit`
+- **Fixed 2026-10-24** — detail not captured, verify before relying
+- RPC search (`searchItems`), `fallbackLabel` on both SmartComboboxes
+- Scoped `.in('item_id', lineItemIds)` load (NOT full table)
+- `rowItemCache` + `itemOptionsFor(rowId)` combines selected + search results
+
+### `/losses`
+- Item search via `searchItems` RPC
+- `todayItems` scoped to today's rows via `.in('item_id', itemIds)`
+- NO `overflow-x-auto` on table wrapper (clips combobox dropdown)
+
+### `/returns`
+- SKUs scoped to bill's `item_id`s via `.in('item_id', itemIds)`
+- All state keyed on `detail_id` (not `item_id`)
+
+### `/expenses` (owner-only)
+- Date, Type (Rent|Staff|Kitty|Bill|Others), Amount, Note
+- Enter saves; after save keeps date + type, clears amount + note, refocuses amount
+- Month summary card (total + per-type breakdown)
+- This-month list with per-row delete
+
+### Home `/`
+- Customer search (2+ chars, debounced 250ms, dropdown → `/parties/[id]`, outside-click closes, clear button)
+- Today at a glance: Sales / Cash In / Pending Khata (+ Purchases for owner)
+- 9 Quick Actions (3×3): Sales, Payments, Find Stock, Parties, Returns, Reports, Purchases, Purchase Returns (`PackageX` icon), Expenses
+- Recent Sales (5, tappable → party account)
+- Top Debtors (10, `Open ›`)
+- No profit anywhere on home (lives in `/reports/profit`)
+
+### `/reports` (index)
+- 12 cards all live, no `comingSoon` logic
+- Owner-only cards hidden via `getRole()`
+- Tighter UI: icon in rounded square, hover lift, active scale
+- Sales Explorer card between Fast-Moving and Dead Stock (visible to all)
+
+### Reports (12)
 
 | Report | Route | Owner-only | Default range | Notes |
 |---|---|---|---|---|
-| Cost Change Tracker | `/reports/cost-history` | No | — | Rate history per SKU |
-| Supplier Price Comparison | `/reports/supplier-prices` | Yes | Last 90 days | Only SKUs from 2+ suppliers; cheapest highlighted; savings potential card |
-| Fast-Moving Items | `/reports/fast-moving` | No | This Month | Sort units/revenue; top 50 + show all |
-| Dead Stock | `/reports/dead-stock` | No | — | RPC-based |
-| Profit per Item | `/reports/profit-per-item` | Yes | This Month | `(qty−returned)×rate` vs `(qty−returned)×cost_at_sale`; sort profit/margin/revenue |
-| Khata Aging | `/reports/khata-aging` | Yes | none (ages as of today) | 4 buckets: 0-30/31-60/61-90/90+; customer can appear in multiple buckets |
-| Expenses by Type | `/reports/expenses` | Yes | This Month | Grouped by category, expandable, percentage bars |
-| Profit Report (P&L) | `/reports/profit` | Yes | This Month | Warnings if no expenses, if cost_at_sale=0 on lines |
-| Low Stock & Reorder | `/reports/low-stock` | No | — | Threshold-based |
-| Stock Value | `/reports/stock-value` | Yes | — | RPC-based brand aggregation |
-| Recent Activity | `/reports/recent-activity` | No | This Month | Unified timeline of sales/payments/purchases/returns/losses; filter pills; 200-row cap |
+| Cost Change Tracker | `/reports/cost-history` | No | — | Rate history per SKU, dual Inv/Landed cols, CSV export |
+| Supplier Price Comparison | `/reports/supplier-prices` | Yes | 90 days | Only SKUs from 2+ suppliers, cheapest highlighted, savings potential |
+| Fast-Moving Items | `/reports/fast-moving` | No | This Month | Sort units/revenue, top 50 + show all |
+| **Sales Explorer** | `/reports/sales-explorer` | **No** | **30 days** | **NEW 2026-10-25** |
+| Dead Stock | `/reports/dead-stock` | No | — | RPC-based, 2 tabs |
+| Profit per Item | `/reports/profit-per-item` | Yes | This Month | sort profit/margin/revenue |
+| Khata Aging | `/reports/khata-aging` | **No (was Yes)** | — (as of today) | 4 buckets 0-30/31-60/61-90/90+; **opened to staff 2026-10-25** |
+| Expenses by Type | `/reports/expenses` | Yes | This Month | Grouped, expandable, % bars |
+| Profit Report (P&L) | `/reports/profit` | Yes | This Month | Warnings if no expenses / zero-cost lines |
+| Low Stock & Reorder | `/reports/low-stock` | No | — | Threshold, quick-picks, copy list |
+| Stock Value | `/reports/stock-value` | Yes | — | RPC brand aggregation |
+| Recent Activity | `/reports/recent-activity` | No | This Month | Unified timeline 5 types, filter pills, 200-row cap |
+
+### `/reports/sales-explorer` — new page (2026-10-25)
+- **Default view: `line` group mode** — flat table: Date · Party · SKU · Qty · Rate · Amount
+- **Group modes:** `line` (default) / `day` / `party` / `item` / `bill`
+- **Sort modes:** `date` (default) / `entry` / `qty` / `amount`
+- **Filters:**
+  - Date range (default last 30 days) + **Bill/Entry toggle** — filter by `bill_date` or `entry_date::date`
+  - Party SmartCombobox (load all customers once at mount, client-side filter)
+  - Item search via `searchItems` RPC
+  - Counter Sale checkbox
+- **Summary card** with Lines · Qty · Total · Paid · Due · Bills
+- **Copy** button for summary text
+- **`Open ›` links** only on `party` group (→ `/parties/[id]`); removed from `bill` group
+- **`entry` sort** shows entry time under date in flat view (for backfilling historical sales: "what did I last enter for date X")
+- Uses `toLocaleDateString('en-CA')` for default dates — IST-safe
+- Data flow:
+  1. Fetch `sales` in date window (filtered by party/counter if set)
+  2. Fetch `sale_items` scoped `.in('sale_id', ids)`
+  3. Fetch `items` scoped `.in('item_id', ids)` for SKUs
+  4. Aggregate or flat per group mode
+
+---
+
+## Session 2026-10-25 additions
+
+### Sales Explorer page (new)
+- `app/reports/sales-explorer/page.tsx` created
+- `app/reports/page.tsx` — added 12th card (Sales Explorer, `Search` icon, `slate` color, not owner-only), placed between Fast-Moving and Dead Stock
+
+### Khata Aging opened to staff
+- `app/reports/khata-aging/page.tsx` — removed `if (roleChecked && !isOwner)` gate block, removed `isOwner`/`roleChecked` state, removed `getRole` import, removed `AlertCircle` import, changed `useEffect` to always `loadReport()`
+- `app/reports/page.tsx` — removed `ownerOnly: true` from Khata Aging card
+- Staff now see card and full page (customer names, phones, dues — already visible via `/parties`)
+
+### Parser v34 fixes
+- Curly-brace quality extraction
+- `1+NORD` split fix
+- Brand-consume fix
+- Glued-brand split (`SAMA23` → `SAM A23`)
+- All tested against real vendor CSV rows
+
+### ImportCSVDialog rewrite
+- Scoped SKU lookup — no more full-table load
+- Reclassify pass after parse
+- No more false NEW for items beyond 1000-row cap
+
+### Data investigation (2026-10-25)
+- **Brand landscape confirmed:**
+  - `MI` (id 6) = Xiaomi + Redmi + Poco
+  - `RM` (id 4) = Realme only
+  - No `RE` brand (alias only)
+  - No `POCO` brand (items live as `MI-POCO-*`)
+  - `OP RE` = Realme but kept as `OP-RE-*` prefix convention
+- **`part_type_aliases` investigation:**
+  - Found rows: `2 PIN`/`3 PIN`/`4 PIN`/`2 PIN SMALL`/`2 PIN BIG`/`4 PIN BIG` → `ONOFFSWITCH`
+  - Confirmed intentional (all pins = on-off switch specs)
+  - Do NOT delete
+  - Means synthetic test row `GEN 4 PIN BP` → `GEN-ONOFFSWITCH` (correct per current rules, but not a real vendor pattern)
+
+### Purchase 45 phantom item (2026-10-24, continued)
+- Item 2777 `IP-14-SPK-100OG` deleted
+- Line re-pointed to item 486 `IP-14-PLUS-SPK-100OG`
+- Stock 2→4 on item 486
+- Parser fix: `(\d)\+` → `$1 PLUS`
+
+### Test data results (2026-10-25)
+Tested 16-row synthetic CSV with years, 2/3/4 PIN, and quality markers. Results:
+
+| Row | Input | Output | Status |
+|---|---|---|---|
+| 1 | `GEN CHARGING FLEX 2PIN {CARE}` | `GEN-CCFLEX-2PIN-CARE` | ✅ |
+| 2 | `GEN CC FLEX 3 PIN {OG}` | `GEN-ONOFFSWITCH-OG` (was `GEN-CCFLEX-OG`) | ⚠️ `3 PIN` → ONOFFSWITCH alias consumed it |
+| 3 | `GEN ON OFF SWITCH 4PIN {100% OG}` | `GEN-ONOFFSWITCH-4PIN-100OG` | ✅ |
+| 4 | `GEN ON OFF FLEX 4 PIN {100%}` | `GEN-ONOFF-100OG` (was missing `4PIN`) | ⚠️ 4 PIN alias consumed, size lost |
+| 5-16 | (various with years) | all produced reasonable SKUs | ✅ |
+
+**Row 2 and 4 confirmed the `X PIN` alias behavior** — intentional, per your confirmation that `2 PIN`/`3 PIN`/`4 PIN` are always ONOFFSWITCH specs.
+
+---
+
+## Session 2026-10-24 additions
+- **Purchase 45 (SelfSide SS-13, 2026-10-23)** saved — 9 lines, **₹3,262.50**:
+  1. `GEN-SPKJ-OG` 230 @ 3.61 = 830.45
+  2. `SAM-A21S-SPK-OG` 25 @ 13.41 = 335.28
+  3. `SAM-B310-SPK-OG` 25 @ 8.25 = 206.32
+  4. `SAM-J7-PRIME-SPK-OG` 25 @ 8.77 = 219.22
+  5. `GEN-RB-20MM-CARE` 10 @ 6.19 = 61.90
+  6. `MI-8A-SPK-OG` 30 @ 11.35 = 340.43
+  7. `GEN-MIC` 100 @ 1.44 = 144.43
+  8. `IP-14-ESPKF` 3 @ 154.74 = 464.23
+  9. `IP-14-PLUS-SPK-100OG` 2 @ 330.12 = 660.24
+- **Phantom item `IP-14-SPK-100OG` (item 2777)** — `14+` not → `14 PLUS`. Deleted phantom line, re-pointed to item 486 (`IP-14-PLUS-SPK-100OG`), stock 2→4, item 2777 deleted
+- **Parser fix:** `(\d)\+` → `$1 PLUS` in `normalizeTypos`
+- **Parser tested on SelfSide 242-line CSV:** 226 matched / ~10–15 new (was 183/59 before fixes)
+- **Catalog inconsistencies documented** (not migrated): 313 `OP-RE-*` mis-branded, Poco MI/RM split, 7 phantom `-SPEAKER-ESPK`, 5 phantom `-ONLY`, `OP-VIVO-4-PIN-ONOFFSWITCH-SMALL`
+
+## Session 2026-10-23 additions
+- `/sales` edit modal built (see `/sales` above)
 
 ## Session 2026-10-22 additions
-- Built 5 new reports: fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity
-- `/reports/page.tsx` cleaned up — removed `comingSoon` logic entirely, all cards `<Link>`, no "Soon" badge, tighter UI (icon in rounded square, hover lift, active scale)
-- Home Quick Actions: 6 tiles → **9 tiles (3×3)**: Sales, Payments, Find Stock, Parties, Returns, Reports, Purchases, Purchase Returns, Expenses. Both roles see all 9 (staff can't use CSV import anyway, harmless)
-- `PackageX` icon for Purchase Returns (distinct from `RotateCcw` for customer returns)
-- **Import path bug fixed** — supplier-prices page got pasted into `/reports/page.tsx` (2-level file) causing "Cannot find module" — index page correctly uses `'../../lib/auth'`, report pages use `'../../../lib/...'`
-- Supabase auth issue on `errfactor99@gmail.com` — resolved
+- 5 new reports: fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity
+- `/reports/page.tsx` cleaned — removed `comingSoon` entirely, tighter UI
+- Home Quick Actions → 9 tiles (3×3)
+- `PackageX` icon for Purchase Returns
+- Import path depth bug fixed (report page pasted into `/reports/page.tsx` at wrong depth → "Cannot find module")
 
 ## Session 2026-10-21 additions
-- **`/expenses`** — owner-only entry form (date, type, amount, note). 5 types: Rent / Staff / Kitty / Bill / Others. Month summary card at top. After save: keeps date+type, clears amount+note, refocuses amount.
-- **`/reports/expenses`** — grouped by type, from/to default month-start → today, expandable per type, percentage bars
-- **`/reports/profit`** — P&L using proven formula. Net Profit hero (green/rose), warnings for empty expenses + zero-cost lines
-- **`/reports`** — added two cards (Expenses, Profit)
-- **`/returns` fixed** — was loading full `items` table (hit 1000-row cap, SKU showed `'—'` for items beyond row 1000 like SAM-TEST1-BP item_id 2723); keying was on `item_id` instead of `detail_id` (two lines of same SKU shared checkbox). Fixed: scoped `.in('item_id', itemIds)` fetch, all state keyed on `detail_id`.
-- **`/losses` fixed** — same class of bug. Item search now uses `searchItemsShared` RPC. `todayItems` fetched scoped to today's loss rows.
-- **Removed `overflow-x-auto` from losses table wrapper** — was clipping the SmartCombobox dropdown and creating horizontal scrollbar
-- **End-to-end test cycle** — purchased 10 × SAM-TEST1-BP @ 100, sold 4 @ 150 to Anas, returned 1, lost 2. Verified: returns use `returned_qty`, losses are cost-valued, profit formula. Cleaned up all test data (item, purchase 41, line 3117 all deleted).
-- **`/parties/[id]` Balance Breakdown** — added to Summary tab. Lists outstanding days oldest-first with aging badge, total/paid/due, expandable to show items. Answers "why do I owe ₹500?" without changing FIFO.
+- `/expenses`, `/reports/expenses`, `/reports/profit` new
+- `/returns` + `/losses` fixed (1000-row cap + detail_id keying)
+- `/parties` default filter = Customer
+- `/parties/[id]` Balance Breakdown added
+- End-to-end test cycle proved returns/losses/profit model
 
 ## Session 2026-10-20 additions
-- **`sales.paid_amount`** column added, backfilled (Paid→total, Pending→0, Partially Paid reconciled manually: sale 56 Anas ₹3,000 of ₹4,300; sale 83 Counter Sale actually paid). Anas (party 9) `current_balance` fixed to ₹1,300 (was ₹1,500, ₹200 drift).
-- **`applyFIFO` in `/payments`** rewritten — reads `paid_amount`, writes back `paid_amount` + derived `status`. Oldest-first preserved.
-- **`/payments` rebuilt:**
-  - Outstanding bills list (all bills with `paid_amount < total_amount`)
-  - **Day grouping** — one row per day with item count + day total + day due + aging; tap → expands to flat items list
-  - Last-payment banner (amount + date + N days ago)
-  - "All clear" green card when nothing outstanding
-  - Statement card + Copy + WhatsApp **available without saving first** (gate: `outstandingBills.length > 0 || success`)
-  - **Receipt after payment** — statement switches to receipt shape (paid X, due Y, itemizes just-touched bills)
-  - `?party_id=` prefill via `useSearchParams` — **requires `<Suspense>` wrapper** (`PaymentsPageInner()` + default export `PaymentsPage()` with Suspense)
-- **`/parties` rebuilt:** mobile cards, no whole-row click, three explicit 44px pads per row (Open ›/Edit/Delete), search, balance-sorted, Opening Balance removed from add form, Enter-to-save, cursor returns to Name after save. Default filter = Customer.
-- **`/parties/[id]` (new):** per-customer account view. Balance chip, Copy + WhatsApp, date range with quick buttons, 4 tabs (Summary/Purchases/Payments/Ledger). Ledger opening balance = `current_balance − Σ(sales ≥ fromDate) + Σ(payments ≥ fromDate)` — correct for any range. Purchases tab now day-grouped.
-- **`/sales` `?party_id=` prefill:** reads `searchParams`, preselects shop, focuses item field. **CRITICAL:** `loadData`'s Counter Sale default must be guarded with `&& !prefillPartyId` — otherwise `loadData` overwrites URL selection (race). Focus requires explicit `document.querySelectorAll('input[data-row-item="row-1"]')` + `offsetParent !== null` + 50/150/300ms retries (mobile + desktop DOM duplication).
+- `sales.paid_amount` added + backfilled (Paid→total, Pending→0, Partially Paid reconciled manually)
+- Anas (party 9) `current_balance` fixed to ₹1,300 (was ₹1,500, ₹200 drift)
+- `/payments` rebuilt (outstanding + receipt + Suspense prefill)
+- `/parties` rebuilt (mobile cards, 3 pads)
+- `/parties/[id]` new
+- `/sales` `?party_id=` prefill with race guard
 
 ## Session 2026-10-19 additions
-- Parser v28: part-strip BEFORE spacing rules (prevents 10 CG → 10CG fusion)
-- Search network-aware ranking (5g/4g priority)
-- `search_items` RPC ORDER BY bug fixed — bare `0` was treated as column position, replaced with `order_prefix` variable
-- Data cleanup: Nord duplicates merged (7 pairs); MI 11X, RM 14PRO, SAM S21FE, TEC KE5, VV V50E merged; 0 normalized duplicates; GEN-TOOL-OG removed; 0 orphaned FKs
-- **Form B SKU migration deferred** — dash-everything SKU (e.g. `RM-NOTE-12-PRO-BP-5G-BLACK`). Scope: rewrite `normalizeModelName` (~40 lines), bulk `items.sku` UPDATE, optional `models.model_name` UPDATE. No other file changes needed. **Before committing:** run collision-check SQL (normalize model_name, group, count dups >1). If near zero, defer indefinitely. Form B is layer 1 of 3; still needs alias tables + Levenshtein warning.
+- Parser v28: part-strip BEFORE spacing rules (prevents `10 CG → 10CG` fusion)
+- Network-aware search ranking (5g/4g priority)
+- `search_items` ORDER BY bug fixed (`order_prefix` var, not bare `0`)
+- Data cleanup: Nord dupes merged (7 pairs), MI 11X / RM 14PRO / SAM S21FE / TEC KE5 / VV V50E merged, GEN-TOOL-OG removed, 0 orphaned FKs
+
+---
 
 ## Standing rules for AI assistant
-1. **Never guess at code you haven't seen. Ask for the file.**
-2. **Never delete or rename items without checking `purchase_items`, `sale_items`, `returns`, `losses` for references first.**
-3. **Full files, one per message. No fragments. No `...` placeholders.** Split into 2-3 parts only if file exceeds ~800 lines, clearly labeled "Part 1 of 2" / "Part 2 of 2".
-4. **Mobile-first for every UI change.**
-5. **Ask for SQL output / raw data before proposing fixes.**
-6. **Same 6-column CSV header** for purchases and returns: `Description of Goods,Type of Goods,Quality,Quantity,Price,Unit`
-7. **One CSV per source invoice.**
-8. **User is often on phone** — keep queries short, one at a time.
-9. **"give me csv"** = full CSV content to paste into import dialog, not SQL.
-10. **Stock/cost changes handled by DB triggers — do NOT add app-level stock updates.**
-11. **Real production data — no destructive SQL without first showing SELECT COUNT(*) with the same WHERE and getting explicit confirmation.**
-12. **User's number keys sometimes broken — provide copy-paste-ready SQL, avoid requiring digit typing.**
-13. **PostgREST caps responses at 1000 rows.** Any query fetching full `items` table must use RPC aggregation OR scoped `.in('item_id', ids)` filtering. **This bit twice on `/returns` and `/losses` — always scope item fetches.**
-14. **Verify writes: after a save, refetch and confirm the value persisted. Never say "saved" unless it landed.**
-15. **Party creation modal flow:** staff types new name → SmartCombobox reports `isNew = true` → parent opens NewPartyDialog → on OK, insert with title case, duplicate check, verify, append to list.
+1. Never guess at code you haven't seen. Ask for the file.
+2. Never delete/rename items without checking `purchase_items`, `sale_items`, `returns`, `losses` for references first.
+3. Full files, one per message. No fragments, no `...` placeholders. Split into 2–3 parts only if >800 lines, clearly labeled "Part 1 of 2".
+4. Mobile-first for every UI change.
+5. Ask for SQL output / raw data before proposing fixes.
+6. CSV header (purchases + returns): `Description of Goods,Type of Goods,Quality,Quantity,Price,Unit`
+7. One CSV per source invoice.
+8. User is often on phone — short queries, one at a time.
+9. "give me csv" = full CSV content to paste into import dialog, not SQL.
+10. Stock/cost changes handled by DB triggers — do NOT add app-level stock updates.
+11. Real production data — no destructive SQL without first showing `SELECT COUNT(*)` with the same WHERE and getting explicit confirmation.
+12. User's number keys sometimes broken — provide copy-paste-ready SQL, avoid requiring digit typing.
+13. **PostgREST caps responses at 1000 rows.** Any query fetching full `items` table must use RPC aggregation OR scoped `.in('item_id', ids)` / `.in('sku', ...)` filtering, NOT client-side array search. Bit 3 times now (`/returns`, `/losses`, `ImportCSVDialog`) — always scope.
+14. Verify writes: after a save, refetch and confirm the value persisted. Never say "saved" unless it landed.
+15. Party creation modal flow: staff types new name → SmartCombobox reports `isNew = true` → parent opens NewPartyDialog → on OK, insert with title case, duplicate check, verify, append to list.
 16. **NEVER put `overflow-*` on a wrapper containing a `SmartCombobox`** — clips the dropdown.
 17. **Prefill from URL requires disabling competing defaults** — any `loadData`/`useEffect` setting a "default selection" must check the query param and bail (`&& !prefillPartyId`).
-18. **Compute due from `total_amount − paid_amount`, never trust `current_balance` alone.** `current_balance` can drift (Anas had ₹200 drift). Bills are truth for per-bill dues.
+18. **Compute due from `total_amount − paid_amount`, never trust `current_balance` alone.** `current_balance` can drift.
 19. **Profit formula uses `(quantity − returned_qty)` — never `amount` directly.**
 20. **Test data cleanup:** delete by `item_id` + date range, NOT by note text. Verify stock/khata after. Delete triggers fire.
-21. **Import path depth matters** — see "Import path depth" section. A report page pasted into `/reports/page.tsx` (wrong depth) causes "Cannot find module". Index page has no `supabase` import.
-22. **`useSearchParams` requires `<Suspense>` boundary** in Next.js App Router — pattern: rename default export to `Inner()`, add `export default function Page() { return <Suspense fallback={...}><Inner/></Suspense> }`. Used in `/payments`, `/sales`.
-23. **`localStorage` state changes require hard reload** (Ctrl+Shift+R) to see — Next.js preserves component state across client-side nav. Changing `useState` initial values only takes effect on fresh mount.
-24. **One file per message** when sending code. No clustering.
+21. **Import path depth matters** — index pages use `'../../lib/...'`, report pages use `'../../../lib/...'`.
+22. **`useSearchParams` requires `<Suspense>` boundary** — `Inner()` + default export wraps in Suspense. Used in `/payments`, `/sales`.
+23. **`localStorage` changes require hard reload** (Ctrl+Shift+R) to see.
+24. One file per message.
+25. **`tryMatchAt` boundary check prevents partial brand match when brand is glued to model.** Fixed for `SAMA23` via `normalizeTypos` pre-split rule. Real vendor CSVs may surface more cases.
+26. **Fusion rule is intentional** — 1–2 letter tokens + digit fuse (`CE 3 → CE3`, `9 A → 9A`). Longer tokens keep dashes (`NOTE 12 → NOTE-12`). Do NOT remove without mass migration.
+
+---
+
+## Working state (end 2026-10-25)
+- Anas (party 9): `current_balance = 1300` (sale 56: ₹4,300 total, ₹3,000 paid, ₹1,300 due)
+- Counter Sale (party 3): ₹0
+- All other customers: ₹0
+- `expenses`: 1 real entry (₹6,000 Staff)
+- `sale_items.cost_at_sale`: 917 lines, 0 zero-cost
+- Purchase 45: 9 lines, ₹3,262.50, clean
+- Item 486 `IP-14-PLUS-SPK-100OG` stock = 4
+- Items 466 (`IP-XS-SPKF-OG`) and 544 (`IP-XS-SPKF`) — renamed 2026-10-25, quality set correctly
+- Parser v34 shipped
+- All 12 reports working
+- Khata Aging visible to staff
+- No test data
+
+---
 
 ## Known open items (parked)
-- **Auto-deploy:** Vercel connected but pushes don't always trigger. Manual `vercel --prod` if needed.
-- **Junk models cleanup** — trailing quotes, quality words in names, part codes stuck in models.
-- **Unique constraints** on `models(brand_id, model_name, network)` and `part_types(part_code)` — need dup check first.
-- **Historical `invoice_rate`** — old purchases have `invoice_rate = rate` (backfilled). New purchases correct.
-- **UTC date default bug** — `toISOString().slice(0,10)` shows previous day 00:00-05:30 IST. User doesn't care — parked.
-- **`app/purchases/[id]/edit/page.tsx`** — never audited.
-- **`update_purchase` RPC** — not updated for `invoice_rate`.
-- **Form B SKU migration** — deferred. See 2026-10-19 section.
-- **Migration file for `expenses` table** — schema exists in Supabase only, no `db/2026-10-21_expenses.sql` in repo. Worth adding for documentation.
-- **Migration files for `sales.paid_amount`** — same, no file in repo.
-- **Backups** — not automated. DB loss = unrecoverable except what's in code.
-- **Vercel Hobby is technically non-commercial** — $20/month if you want to be clean. Runs fine, terms say shouldn't.
-- **Supabase 7-day pause** on free tier if inactive — free uptime monitor fixes it.
 
-## Working state at end of 2026-10-22
-- Anas (party 9): `current_balance = 1300` (one partial bill: sale 56, ₹4,300 total, ₹3,000 paid, ₹1,300 due)
-- Counter Sale (party 3): balance ₹0
-- All other customers: ₹0
-- `expenses` table: 1 real entry (₹6,000 Staff)
-- `sale_items.cost_at_sale`: 917 lines, 0 with zero cost — COGS is accurate
-- All 11 reports working
-- No test data (SAM-TEST1-BP fully deleted, purchase 41 gone)
+### Data migrations (deferred)
+- **313 `OP-RE-*` → `RM-*`** — decision 2026-10-25: keep as-is. `OP-RE-*` prefix accepted as historical convention.
+- **Poco MI/RM split** (~22 items) — leave under MI as `MI-POCO-*`
+- **7 phantom `-SPEAKER-ESPK` items** (0 stock) — safe delete after ref-check
+- **5 phantom `-ONLY` items** — items 466, 544 renamed 2026-10-25; check others with:
+  ```sql
+  SELECT item_id, sku, quality, current_stock, cost_price FROM items WHERE sku LIKE '%-ONLY';
+OP-VIVO-4-PIN-ONOFFSWITCH-SMALL — weird combo SKU from old import
 
-## Useful shortcuts
-- Item count: `SELECT COUNT(*) FROM items;`
-- Recent purchases: `SELECT purchase_id, invoice_no, total_amount FROM purchases ORDER BY purchase_id DESC LIMIT 10;`
-- Recent sales: `SELECT sale_id, bill_date, total_amount FROM sales ORDER BY sale_id DESC LIMIT 10;`
-- Zero-cost sale lines: `SELECT COUNT(*) FROM sale_items WHERE cost_at_sale = 0 OR cost_at_sale IS NULL;`
-- Expense totals by type this month: `SELECT expense_type, COUNT(*), SUM(amount) FROM expenses WHERE expense_date >= date_trunc('month', CURRENT_DATE) GROUP BY expense_type;`
-- Check outstanding balance per customer: `SELECT party_id, party_name, current_balance FROM parties WHERE party_type = 'Customer' AND current_balance > 0 ORDER BY current_balance DESC;`
+Junk models cleanup — trailing quotes, quality words, part codes in names
 
-## Recent commit history (approximate)
-- 2026-10-19: parser v28, network-aware search, search_items ORDER BY fix, data cleanup
-- 2026-10-20: `sales.paid_amount` migration, `/payments` rebuild (outstanding + receipt), `/parties` rebuild, `/parties/[id]` new, `/sales` prefill
-- 2026-10-21: `/expenses`, `/reports/expenses`, `/reports/profit`, `/reports` updated, home rebuilt, `/returns` + `/losses` fixed, `/parties` default filter, balance breakdown
-- 2026-10-22: 5 new reports (fast-moving, supplier-prices, profit-per-item, khata-aging, recent-activity), `/reports` index cleaned up (all live), home 9 quick action tiles
-## Session 2026-10-22 — Parser v31 + Purchase Edit Fix
+Form B SKU migration (dash-everything) — deferred, would break existing fused SKUs
 
-**Code changes this session:** major parser rewrite (`lib/csv-parser.ts`), purchase edit page fixed (`app/purchases/[id]/edit/page.tsx`), `ImportCSVDialog.tsx` uses `generateSku` from parser. Data reconciliation done (no schema changes).
+Code
+update_purchase RPC — not updated for invoice_rate
 
-### `lib/csv-parser.ts` — rewritten parser (v29 → v31)
+Historical invoice_rate — old purchases have invoice_rate = rate (backfilled). New purchases correct.
 
-**Architecture change: single-pass dictionary scanner.**
+UTC date default bug — toISOString().slice(0,10) shows previous day 00:00–05:30 IST. Sales Explorer uses toLocaleDateString('en-CA') to avoid; other pages may still have the bug. Parked.
 
-Replaced the old step-by-step extraction (part → quality → color → brand, each running separately and greedily consuming tokens) with a single left-to-right scan that classifies each token exactly once:
+Unique constraints on models(brand_id, model_name, network) and part_types(part_code) — need dup check first
 
-1. At each position, try to match (in priority order): part phrase (longest first, from `brand_aliases` + `part_type_aliases` + `PART_TYPE_PHRASES`) → quality marker → network → year → size → flag → color → variant keyword → brand.
-2. **Word-boundary enforced** — `BK` never matches inside `BLACK`, `MF` never inside `MIDFRAME`.
-3. **Longest phrase wins** — `MIDDLE FRAME WITH FLEX` before `MIDDLE FRAME` before `MF`.
-4. Matches are **consumed** (never re-scanned).
-5. **Leftover unconsumed tokens = model name**, then run through `normalizeModelName` (spacing rules, part-strip, quality strip).
+Infrastructure
+Auto-deploy flaky — vercel --prod when needed
 
-**`normalizePartCode` — reject long strings (v29):**
+Missing migration files in repo: expenses, sales.paid_amount — worth db/ folder
 
-Old behavior: `normalizePartCode('BACK PANEL (OG) (BLACK)')` → `'BACKPANELOGBLACK'` (became part code, wrong).
+Backups — not automated. DB loss = unrecoverable except what's in code.
 
-New behavior: after stripping to bare alnum, if length > 10 → return `null`. Row errors out cleanly instead of producing a mangled part. Only short bare codes (`BP`, `CG`, `LCD`, `SENSORSIDE`, etc.) pass through.
+Vercel Hobby non-commercial — terms say shouldn't, runs fine
 
-**`extendColor` helper (v29):**
+Supabase 7-day pause on free tier if inactive — uptime monitor fixes it
 
-When a color word matches, tries to absorb **one** adjacent unconsumed alpha token (length ≥ 4, not a variant/size/flag/color keyword). Handles:
-- `BUBBLEGUM BLUE` → color `BUBBLEGUM BLUE` (absorb backward)
-- `BLACK VELVET` → color `BLACK VELVET` (absorb forward)
-- `SUNSET GOLD`, `DUSK PINK`, `NATURAL TITANIUM`, etc.
+Parser quirks (not bugs)
+part_type_aliases has 2 PIN, 3 PIN, 4 PIN → ONOFFSWITCH — intentional. Means CHARGING FLEX 2 PIN (if it ever appears) would consume 2 PIN as part before size marker — but CCFLEX doesn't have pin variants in real data, so this doesn't occur.
 
-**`normalizeTypos` — new rule (v31):**
+OP RE → OP-RE-* — accepted convention
 
-```ts
-.replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
+{BARCODE} — not a flag, falls into model or is discarded. Confirmed junk.
+
+Useful SQL shortcuts
+sql
+-- Item count
+SELECT COUNT(*) FROM items;
+
+-- Recent purchases
+SELECT purchase_id, invoice_no, total_amount FROM purchases ORDER BY purchase_id DESC LIMIT 10;
+
+-- Recent sales
+SELECT sale_id, bill_date, total_amount FROM sales ORDER BY sale_id DESC LIMIT 10;
+
+-- Zero-cost sale lines
+SELECT COUNT(*) FROM sale_items WHERE cost_at_sale = 0 OR cost_at_sale IS NULL;
+
+-- Expense totals by type this month
+SELECT expense_type, COUNT(*), SUM(amount) FROM expenses WHERE expense_date >= date_trunc('month', CURRENT_DATE) GROUP BY expense_type;
+
+-- Outstanding balance per customer
+SELECT party_id, party_name, current_balance FROM parties WHERE party_type = 'Customer' AND current_balance > 0 ORDER BY current_balance DESC;
+
+-- Brand aliases
+SELECT csv_code, brand_code FROM brand_aliases ORDER BY csv_code;
+
+-- Brands table
+SELECT brand_id, brand_code, brand_name FROM brands ORDER BY brand_code;
+
+-- Suspicious part aliases (pins mapping to ONOFFSWITCH is expected)
+SELECT csv_text, part_code FROM part_type_aliases WHERE csv_text LIKE '%PIN%' OR csv_text LIKE '%MM%';
+
+-- Items with a given SKU
+SELECT item_id, sku, quality, current_stock, cost_price FROM items WHERE sku IN ('...');
+
+-- Last item entered on a given date (IST window)
+SELECT s.entry_date, s.sale_id, p.party_name, i.sku, si.quantity, si.rate, si.detail_id
+FROM sales s
+JOIN sale_items si ON si.sale_id = s.sale_id
+JOIN parties p ON p.party_id = s.party_id
+JOIN items i ON i.item_id = si.item_id
+WHERE s.entry_date >= '2026-10-20 00:00:00+05:30'::timestamptz
+  AND s.entry_date <  '2026-10-21 00:00:00+05:30'::timestamptz
+ORDER BY s.entry_date DESC, si.detail_id DESC
+LIMIT 20;
+
+-- Ref-check before deleting item (replace X)
+SELECT 'purchase_items' AS src, COUNT(*) FROM purchase_items WHERE item_id = X
+UNION ALL SELECT 'sale_items', COUNT(*) FROM sale_items WHERE item_id = X
+UNION ALL SELECT 'returns', COUNT(*) FROM returns WHERE item_id = X
+UNION ALL SELECT 'losses', COUNT(*) FROM losses WHERE item_id = X;
+Push command (current)
+bash
+git add lib/csv-parser.ts app/reports/sales-explorer/page.tsx app/reports/page.tsx app/reports/khata-aging/page.tsx components/ui/ImportCSVDialog.tsx
+git commit -m "Parser v34 (1+NORD, brand-consume, curly quality, glued brand); Sales Explorer; Khata Aging for staff; scoped SKU lookup in import"
+git push
+If Vercel auto-deploy doesn't fire:
+
+bash
+vercel --prod
+Recent commit history
+2026-10-19: parser v28, network-aware search, search_items ORDER BY fix, data cleanup
+
+2026-10-20: sales.paid_amount, /payments rebuild, /parties rebuild, /parties/[id] new, /sales prefill
+
+2026-10-21: /expenses, /reports/expenses, /reports/profit, home rebuild, /returns + /losses fixes, /parties filter, balance breakdown
+
+2026-10-22: 5 reports, /reports cleanup, 9 quick actions, import path fix
+
+2026-10-23: /sales edit modal
+
+2026-10-24: purchase 45, phantom IP-14-SPK-100OG fix, parser 14+ fix
+
+2026-10-25: parser v34, Sales Explorer, Khata Aging staff, ImportCSVDialog scoped lookup
+
 End of handoff.
