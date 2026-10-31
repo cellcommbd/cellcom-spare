@@ -154,6 +154,10 @@ export default function DaySalesPage() {
 
   const [connected, setConnected] = useState(false)
   const [syncError, setSyncError] = useState('')
+  const [unclosedDays, setUnclosedDays] = useState<
+    { bill_date: string; item_count: number }[]
+  >([])
+  const [closingUnclosed, setClosingUnclosed] = useState<string | null>(null)
 
   const nextRowIdRef = useRef(1)
 
@@ -279,6 +283,23 @@ export default function DaySalesPage() {
         .eq('bill_date', billDate)
         .order('id')
       setPayments((paymentsData as DayPayment[]) || [])
+
+      // Check for unclosed previous days
+      const { data: unclosedData } = await supabase
+        .from('day_sales_items')
+        .select('bill_date')
+        .lt('bill_date', billDate)
+      
+      if (unclosedData) {
+        const grouped: Record<string, number> = {}
+        for (const r of unclosedData as { bill_date: string }[]) {
+          grouped[r.bill_date] = (grouped[r.bill_date] || 0) + 1
+        }
+        const days = Object.entries(grouped)
+          .map(([bill_date, item_count]) => ({ bill_date, item_count }))
+          .sort((a, b) => b.bill_date.localeCompare(a.bill_date))
+        setUnclosedDays(days)
+      }
     }
     init()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -834,6 +855,57 @@ export default function DaySalesPage() {
             </div>
           </div>
         </div>
+
+        {unclosedDays.length > 0 && (
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-semibold text-amber-900">
+                  Unclosed day{unclosedDays.length > 1 ? 's' : ''}
+                </div>
+                <div className="mt-1 space-y-1.5">
+                  {unclosedDays.map((d) => (
+                    <div
+                      key={d.bill_date}
+                      className="flex items-center justify-between gap-2 text-xs bg-white border border-amber-200 rounded px-2 py-1.5"
+                    >
+                      <span className="text-amber-900">
+                        {formatDateLong(d.bill_date)} — {d.item_count} item
+                        {d.item_count === 1 ? '' : 's'}
+                      </span>
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Close ${formatDateLong(d.bill_date)}?`)) return
+                          setClosingUnclosed(d.bill_date)
+                          const { error } = await supabase.rpc('close_day_sales', {
+                            p_bill_date: d.bill_date,
+                          })
+                          if (error) {
+                            alert('Failed: ' + error.message)
+                          } else {
+                            setUnclosedDays((prev) =>
+                              prev.filter((x) => x.bill_date !== d.bill_date)
+                            )
+                            alert('Closed successfully')
+                          }
+                          setClosingUnclosed(null)
+                        }}
+                        disabled={closingUnclosed === d.bill_date}
+                        className="text-[11px] font-semibold text-white bg-amber-700 hover:bg-amber-800 px-2 py-1 rounded disabled:opacity-50 shrink-0"
+                      >
+                        {closingUnclosed === d.bill_date ? 'Closing…' : 'Close'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="text-[11px] text-amber-700 mt-1.5">
+                  Close these days to make them appear as bills.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {syncError && (
           <div className="bg-rose-50 border border-rose-200 rounded-xl p-3 mb-3 flex items-start gap-2">
