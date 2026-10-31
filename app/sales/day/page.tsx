@@ -139,7 +139,7 @@ export default function DaySalesPage() {
   const [payments, setPayments] = useState<DayPayment[]>([])
   const [lastPartyId, setLastPartyId] = useState<number | null>(null)
 
-  const [addOpen, setAddOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(true)
   const [editingRowId, setEditingRowId] = useState<number | null>(null)
   const [pendingNewParty, setPendingNewParty] = useState<string | null>(null)
   const [collectingPartyId, setCollectingPartyId] = useState<number | null>(
@@ -1444,7 +1444,17 @@ function AddRowPanel({
         )}
 
         {pickedItem && (
-          <div ref={partyWrapRef}>
+          <div
+            ref={partyWrapRef}
+            onKeyDown={(e) => {
+              if (e.key === 'Tab' && !e.shiftKey) {
+                e.preventDefault()
+                e.stopPropagation()
+                handleSubmit()
+                setTimeout(() => skuRef.current?.focus(), 100)
+              }
+            }}
+          >
             <label className="block text-[11px] font-medium text-slate-700 mb-1">
               Party
             </label>
@@ -1461,9 +1471,6 @@ function AddRowPanel({
               placeholder="Select party..."
               allowCreate={true}
               inputDataAttr="day-add-party"
-              onTabKey={() => {
-                setTimeout(() => handleSubmit(), 10)
-              }}
             />
           </div>
         )}
