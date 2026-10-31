@@ -987,6 +987,9 @@ function PartyGroupSection({
     upi: number
   ) => Promise<{ ok: boolean; error?: string }>
 }) {
+  const payAmountRef = useRef<HTMLInputElement>(null)
+  const upiAmountRef = useRef<HTMLInputElement>(null)
+
   const [payAmount, setPayAmount] = useState('')
   const [mode, setMode] = useState<'Cash' | 'Online'>('Cash')
   const [upiAmount, setUpiAmount] = useState('')
@@ -1009,6 +1012,16 @@ function PartyGroupSection({
     setMode('Cash')
     setPayError('')
   }
+
+  useEffect(() => {
+    if (collecting) {
+      setTimeout(() => {
+        payAmountRef.current?.focus()
+        payAmountRef.current?.select()
+      }, 100)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [collecting])
 
   async function handleRecord() {
     if (totalAmt <= 0) {
@@ -1104,6 +1117,7 @@ function PartyGroupSection({
 
           <div className="flex gap-2 mb-2">
             <input
+              ref={payAmountRef}
               type="number"
               inputMode="numeric"
               placeholder="0"
@@ -1112,6 +1126,7 @@ function PartyGroupSection({
                 setPayAmount(e.target.value)
                 setPayError('')
               }}
+              onFocus={(e) => e.target.select()}
               className="flex-1 h-11 px-3 text-base text-right font-semibold border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             />
             <button
@@ -1141,6 +1156,10 @@ function PartyGroupSection({
               onClick={() => {
                 setMode('Online')
                 setUpiAmount(payAmount || '')
+                setTimeout(() => {
+                  upiAmountRef.current?.focus()
+                  upiAmountRef.current?.select()
+                }, 100)
               }}
               className={`h-10 text-sm font-semibold rounded-lg border-2 flex items-center justify-center gap-1.5 transition-colors ${
                 mode === 'Online'
@@ -1162,6 +1181,7 @@ function PartyGroupSection({
                 </span>
               </label>
               <input
+                ref={upiAmountRef}
                 type="number"
                 inputMode="numeric"
                 placeholder="0"
@@ -1170,6 +1190,7 @@ function PartyGroupSection({
                   setUpiAmount(e.target.value)
                   setPayError('')
                 }}
+                onFocus={(e) => e.target.select()}
                 className="w-full h-10 px-3 text-sm text-right font-semibold border border-blue-300 bg-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
               {totalAmt > 0 && (
