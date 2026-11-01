@@ -204,6 +204,8 @@ export default function DaySalesPage() {
         )
         const prev = currentBalance + paid
         const balance = prev + today - paid
+        // Most recent row's rowId for sorting (higher = newer)
+        const latestRowId = Math.max(...partyRows.map((r) => r.rowId))
         return {
           partyId,
           rows: partyRows,
@@ -211,9 +213,11 @@ export default function DaySalesPage() {
           paid,
           prev,
           balance,
+          latestRowId,
         }
       })
-      .reverse()
+      // Sort by most recently added row (newest group at top)
+      .sort((a, b) => b.latestRowId - a.latestRowId)
   }, [activeRows, payments, partiesById])
 
   // ============================================================

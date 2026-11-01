@@ -21,35 +21,38 @@ import {
   LogOut,
   Menu,
   X,
+  ClipboardList,
+  FileSearch,
+  Receipt,
 } from 'lucide-react'
 import './globals.css'
 
-const ownerNav = [
+const dailyNav = [
   { href: '/', label: 'Home', Icon: Home },
-  { href: '/sales', label: 'Sales', Icon: ShoppingCart },
-  { href: '/find-stock', label: 'Find Stock', Icon: Search },
-  { href: '/returns', label: 'Returns', Icon: RotateCcw },
-  { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
+  { href: '/sales/day', label: 'Day Sales', Icon: ClipboardList },
   { href: '/payments', label: 'Payments', Icon: Wallet },
   { href: '/purchases', label: 'Purchases', Icon: ShoppingBag },
-  { href: '/items', label: 'Items', Icon: Package },
-  { href: '/brands', label: 'Brands', Icon: Tag },
-  { href: '/reference', label: 'Reference', Icon: BookOpen },
-  { href: '/parties', label: 'Parties', Icon: Users },
-  { href: '/losses', label: 'Losses', Icon: AlertTriangle },
+  { href: '/returns', label: 'Returns', Icon: RotateCcw },
+  { href: '/sales', label: 'Sales', Icon: ShoppingCart },
+  { href: '/sales/find', label: 'Find Sale', Icon: FileSearch },
+  { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
 ]
 
-const staffNav = [
-  { href: '/', label: 'Home', Icon: Home },
-  { href: '/sales', label: 'Sales', Icon: ShoppingCart },
-  { href: '/find-stock', label: 'Find Stock', Icon: Search },
-  { href: '/returns', label: 'Returns', Icon: RotateCcw },
+const adminNav = [
+  { href: '/parties', label: 'Parties', Icon: Users },
   { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
-  { href: '/payments', label: 'Payments', Icon: Wallet },
+  { href: '/expenses', label: 'Expenses', Icon: Receipt },
+  { href: '/losses', label: 'Losses', Icon: AlertTriangle },
+  { href: '/items', label: 'Items', Icon: Package },
+  { href: '/brands', label: 'Brands', Icon: Tag },
+  { href: '/categories', label: 'Categories', Icon: Tag },
   { href: '/reference', label: 'Reference', Icon: BookOpen },
-  { href: '/reports', label: 'Reports', Icon: BarChart3 },
 ]
+
+const ownerNav = dailyNav
+
+const staffNav = dailyNav
 
 export default function RootLayout({
   children,
@@ -61,8 +64,10 @@ export default function RootLayout({
   const [role, setRoleState] = useState<Role>(null)
   const [mounted, setMounted] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [adminOpen, setAdminOpen] = useState(false)
   const lastCheckRef = useRef<number>(0)
   const menuRef = useRef<HTMLDivElement>(null)
+  const adminRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setRoleState(getRole())
@@ -71,18 +76,21 @@ export default function RootLayout({
 
   useEffect(() => {
     setMenuOpen(false)
+    setAdminOpen(false)
   }, [pathname])
 
   useEffect(() => {
     function onDoc(e: MouseEvent) {
-      if (!menuOpen) return
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (menuOpen && menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setMenuOpen(false)
+      }
+      if (adminOpen && adminRef.current && !adminRef.current.contains(e.target as Node)) {
+        setAdminOpen(false)
       }
     }
     document.addEventListener('mousedown', onDoc)
     return () => document.removeEventListener('mousedown', onDoc)
-  }, [menuOpen])
+  }, [menuOpen, adminOpen])
 
   useEffect(() => {
     let cancelled = false
@@ -172,6 +180,43 @@ export default function RootLayout({
                       </Link>
                     )
                   })}
+
+                  {role === 'owner' && (
+                    <div ref={adminRef} className="relative">
+                      <button
+                        onClick={() => setAdminOpen((o) => !o)}
+                        className={`flex items-center gap-1 text-[13px] px-2 py-1.5 rounded-md whitespace-nowrap transition-colors ${
+                          adminNav.some((a) => isActive(a.href))
+                            ? 'bg-indigo-600 text-white shadow-sm'
+                            : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                        }`}
+                      >
+                        <span>Admin</span>
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                      </button>
+                      {adminOpen && (
+                        <div className="absolute left-0 top-[calc(100%+4px)] w-56 bg-slate-900 border border-slate-700 rounded-lg shadow-2xl p-1 z-50">
+                          {adminNav.map((item) => {
+                            const active = isActive(item.href)
+                            return (
+                              <Link
+                                key={item.href}
+                                href={item.href}
+                                className={`flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] transition-colors ${
+                                  active
+                                    ? 'bg-indigo-600 text-white'
+                                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                                }`}
+                              >
+                                <item.Icon className="w-4 h-4 shrink-0" />
+                                <span className="truncate">{item.label}</span>
+                              </Link>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
@@ -229,6 +274,31 @@ export default function RootLayout({
                     )
                   })}
                 </div>
+
+                {role === 'owner' && (
+                  <div className="mt-2 pt-2 border-t border-slate-800">
+                    <div className="text-[10px] uppercase tracking-wide text-slate-500 px-2 mb-1">Admin</div>
+                    <div className="grid grid-cols-2 gap-1">
+                      {adminNav.map((item) => {
+                        const active = isActive(item.href)
+                        return (
+                          <Link
+                            key={item.href}
+                            href={item.href}
+                            className={`flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] transition-colors ${
+                              active
+                                ? 'bg-indigo-600 text-white'
+                                : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                            }`}
+                          >
+                            <item.Icon className="w-4 h-4 shrink-0" />
+                            <span className="truncate">{item.label}</span>
+                          </Link>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
                 <div className="border-t border-slate-800 mt-1.5 pt-1.5">
                   <button
                     onClick={logout}
