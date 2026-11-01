@@ -1479,6 +1479,12 @@ function AddRowPanel({
     setTimeout(() => skuRef.current?.focus(), 150)
   }, [])
 
+  useEffect(() => {
+    setPartyId(defaultPartyId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultPartyId])
+
+ 
   async function handleSearch(q: string) {
     if (!q || q.trim().length < 2) {
       setSearchResults([])
