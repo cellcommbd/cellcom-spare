@@ -151,6 +151,13 @@ export default function DaySalesPage() {
   >('adding')
   const [closeError, setCloseError] = useState('')
   const [closeResult, setCloseResult] = useState<CloseResult[] | null>(null)
+  const [showCloseDialog, setShowCloseDialog] = useState(false)
+  const [dialogData, setDialogData] = useState<{
+    totalSales: number
+    alreadyCash: number
+    alreadyUpi: number
+    counterSaleTotal: number
+  } | null>(null)
 
   const [connected, setConnected] = useState(false)
   const [syncError, setSyncError] = useState('')
@@ -691,6 +698,7 @@ export default function DaySalesPage() {
   // CLOSE DAY
   // ============================================================
 
+  // Opens the Close Day dialog — fetches current payment totals first
   const handleCloseDayClick = useCallback(async () => {
     setCloseError('')
     if (activeRows.length === 0) {
@@ -698,35 +706,102 @@ export default function DaySalesPage() {
       return
     }
 
-    const groupCount = new Set(activeRows.map((r) => r.party_id)).size
-    const confirmed = window.confirm(
-      `Close day — ${formatDateLong(billDate)}\n\n` +
-        `${activeRows.length} item${activeRows.length > 1 ? 's' : ''} ` +
-        `across ${groupCount} part${groupCount > 1 ? 'ies' : 'y'}.\n\n` +
-        `Subtotal: ${formatCurrency(subtotal)}\n\n` +
-        `Bills will be created in the database. Continue?`
-    )
-    if (!confirmed) return
+    // Fetch today's already-recorded payments (Cash + UPI)
+    const { data: payData } = await supabase
+      .from('payments')
+      .select('amount, payment_mode')
+      .eq('payment_date', billDate)
 
-    setCloseState('closing')
-    try {
-      const { data, error } = await supabase.rpc('close_day_sales', {
-        p_bill_date: billDate,
-      })
-      if (error) throw new Error(error.message)
+    const rows = (payData || []) as { amount: number; payment_mode: string }[]
+    const alreadyCash = rows
+      .filter((p) => p.payment_mode === 'Cash')
+      .reduce((s, p) => s + Number(p.amount), 0)
+    const alreadyUpi = rows
+      .filter((p) => p.payment_mode === 'UPI')
+      .reduce((s, p) => s + Number(p.amount), 0)
 
-      const results = (data as CloseResult[]) || []
-      setCloseResult(results)
-      setRows([])
-      setPayments([])
-      setCloseState('closed')
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Close failed'
-      setCloseState('error')
-      setCloseError(msg)
-    }
+    // Counter Sale total (party 3)
+    const counterSaleTotal = activeRows
+      .filter((r) => r.party_id === COUNTER_SALE_PARTY_ID)
+      .reduce((s, r) => s + r.amount, 0)
+
+    setDialogData({
+      totalSales: subtotal,
+      alreadyCash,
+      alreadyUpi,
+      counterSaleTotal,
+    })
+    setShowCloseDialog(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRows, subtotal, billDate])
+
+  // Actual close — called from the dialog after staff confirms UPI
+  const performCloseDay = useCallback(
+    async (totalUpiToday: number) => {
+      setCloseState('closing')
+      setShowCloseDialog(false)
+      try {
+        // 1. Run the close RPC (creates bills, clears day_sales_items)
+        const { data, error } = await supabase.rpc('close_day_sales', {
+          p_bill_date: billDate,
+        })
+        if (error) throw new Error(error.message)
+
+        // 2. Insert Counter Sale payment rows based on UPI reconciliation
+        if (dialogData && dialogData.counterSaleTotal > 0) {
+          const deltaUpi = Math.max(0, totalUpiToday - dialogData.alreadyUpi)
+          const counterSaleUpi = Math.min(
+            deltaUpi,
+            dialogData.counterSaleTotal
+          )
+          const counterSaleCash = Math.max(
+            0,
+            dialogData.counterSaleTotal - counterSaleUpi
+          )
+
+          const counterInserts: {
+            party_id: number
+            payment_date: string
+            amount: number
+            payment_mode: string
+          }[] = []
+          if (counterSaleCash > 0.01) {
+            counterInserts.push({
+              party_id: COUNTER_SALE_PARTY_ID,
+              payment_date: billDate,
+              amount: counterSaleCash,
+              payment_mode: 'Cash',
+            })
+          }
+          if (counterSaleUpi > 0.01) {
+            counterInserts.push({
+              party_id: COUNTER_SALE_PARTY_ID,
+              payment_date: billDate,
+              amount: counterSaleUpi,
+              payment_mode: 'UPI',
+            })
+          }
+          if (counterInserts.length > 0) {
+            await supabase.from('payments').insert(counterInserts)
+          }
+        }
+
+        const results = (data as CloseResult[]) || []
+        setCloseResult(results)
+        setRows([])
+        setPayments([])
+        setDialogData(null)
+        setCloseState('closed')
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : 'Close failed'
+        setCloseState('error')
+        setCloseError(msg)
+        setShowCloseDialog(false)
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [billDate, dialogData]
+  )
 
   // ============================================================
   // END OF PART 2 — continue with Part 3
@@ -1019,6 +1094,18 @@ export default function DaySalesPage() {
         onClose={() => setPendingNewParty(null)}
         onCreated={handleNewPartyCreated}
       />
+
+      {showCloseDialog && dialogData && (
+        <CloseDayDialog
+          billDate={billDate}
+          totalSales={dialogData.totalSales}
+          alreadyCash={dialogData.alreadyCash}
+          alreadyUpi={dialogData.alreadyUpi}
+          counterSaleTotal={dialogData.counterSaleTotal}
+          onCancel={() => setShowCloseDialog(false)}
+          onConfirm={performCloseDay}
+        />
+      )}
     </div>
   )
 }
@@ -1130,7 +1217,7 @@ function PartyGroupSection({
             {displayName}
           </span>
         </div>
-        {!collecting && (
+        {!collecting && party?.party_id !== 3 && (
           <button
             onClick={onCollect}
             className="h-7 px-2.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md hover:bg-emerald-100 active:bg-emerald-200 shrink-0"
@@ -1192,7 +1279,7 @@ function PartyGroupSection({
               ref={payAmountRef}
               type="number"
               inputMode="numeric"
-              placeholder="0"
+              placeholder="Enter amount"
               value={payAmount}
               onChange={(e) => {
                 setPayAmount(e.target.value)
@@ -1847,6 +1934,221 @@ function CloseSummary({
           >
             <Check className="w-4 h-4" />
             Start New Day
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+  // ============================================================
+// CloseDayDialog — reconciliation before close
+// ============================================================
+
+function CloseDayDialog({
+  billDate,
+  totalSales,
+  alreadyCash,
+  alreadyUpi,
+  counterSaleTotal,
+  onCancel,
+  onConfirm,
+}: {
+  billDate: string
+  totalSales: number
+  alreadyCash: number
+  alreadyUpi: number
+  counterSaleTotal: number
+  onCancel: () => void
+  onConfirm: (totalUpiToday: number) => Promise<void>
+}) {
+  const [upiInput, setUpiInput] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState('')
+
+  const enteredUpi = upiInput.trim() === '' ? alreadyUpi : parseFloat(upiInput)
+  const validUpi = !isNaN(enteredUpi) && enteredUpi >= 0
+
+  const deltaUpi = validUpi ? Math.max(0, enteredUpi - alreadyUpi) : 0
+  const counterSaleUpi = Math.min(deltaUpi, counterSaleTotal)
+  const counterSaleCash = Math.max(0, counterSaleTotal - counterSaleUpi)
+
+  const totalUpiToday = alreadyUpi + counterSaleUpi
+  const totalCashToday = alreadyCash + counterSaleCash
+
+  async function handleConfirm() {
+    if (!validUpi) {
+      setError('Enter a valid UPI amount (or leave empty for all cash)')
+      return
+    }
+    if (enteredUpi < alreadyUpi - 0.01) {
+      setError(
+        `Total UPI (₹${enteredUpi.toFixed(2)}) cannot be less than already recorded (₹${alreadyUpi.toFixed(2)}). Correct via /payments first.`
+      )
+      return
+    }
+    setSubmitting(true)
+    setError('')
+    try {
+      await onConfirm(enteredUpi)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Close failed'
+      setError(msg)
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="w-full sm:max-w-md bg-white rounded-t-2xl sm:rounded-2xl max-h-[90vh] flex flex-col">
+        <div className="px-4 py-3 border-b border-slate-200">
+          <div className="text-base font-bold text-slate-900">Close Day</div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            {formatDateLong(billDate)}
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-3">
+          {/* Sales total */}
+          <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-600">Total sales today</span>
+              <span className="text-sm font-bold text-slate-900">
+                {formatCurrency(totalSales)}
+              </span>
+            </div>
+          </div>
+
+          {/* Already recorded */}
+          <div>
+            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+              Recorded during day
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1.5">
+                <div className="text-[10px] text-emerald-700 uppercase tracking-wide">
+                  Cash
+                </div>
+                <div className="text-sm font-bold text-emerald-800 mt-0.5">
+                  {formatCurrency(alreadyCash)}
+                </div>
+              </div>
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-2 py-1.5">
+                <div className="text-[10px] text-blue-700 uppercase tracking-wide">
+                  UPI
+                </div>
+                <div className="text-sm font-bold text-blue-800 mt-0.5">
+                  {formatCurrency(alreadyUpi)}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Counter Sale section */}
+          {counterSaleTotal > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              <div className="text-xs text-amber-800">
+                Counter Sale (not yet recorded):
+                <span className="font-bold ml-1">
+                  {formatCurrency(counterSaleTotal)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* UPI input */}
+          <div>
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Total UPI received today
+              <span className="text-slate-400 ml-1">
+                (leave empty for all cash)
+              </span>
+            </label>
+            <input
+              type="number"
+              inputMode="numeric"
+              placeholder={alreadyUpi > 0 ? `Total (already ₹${alreadyUpi.toFixed(2)})` : '0 (all cash)'}
+              value={upiInput}
+              onChange={(e) => {
+                setUpiInput(e.target.value)
+                setError('')
+              }}
+              className="w-full h-11 px-3 text-base text-right font-semibold border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          {/* Preview */}
+          {counterSaleTotal > 0 && validUpi && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 space-y-1">
+              <div className="text-[11px] font-semibold text-blue-900 mb-1">
+                Counter Sale will be split as:
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">UPI</span>
+                <span className="font-semibold text-slate-900">
+                  {formatCurrency(counterSaleUpi)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Cash</span>
+                <span className="font-semibold text-slate-900">
+                  {formatCurrency(counterSaleCash)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Totals preview */}
+          {validUpi && (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+              <div className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-1">
+                Day total
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">Cash</span>
+                <span className="font-semibold text-slate-900">
+                  {formatCurrency(totalCashToday)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-600">UPI</span>
+                <span className="font-semibold text-slate-900">
+                  {formatCurrency(totalUpiToday)}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1.5">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t border-slate-200 p-3 flex gap-2 bg-slate-50">
+          <button
+            onClick={onCancel}
+            disabled={submitting}
+            className="h-11 px-4 text-sm font-medium text-slate-700 border border-slate-300 bg-white rounded-lg hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleConfirm}
+            disabled={submitting}
+            className="flex-1 h-11 text-sm font-semibold text-white bg-emerald-600 rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+          >
+            {submitting ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Closing…
+              </>
+            ) : (
+              <>
+                <Check className="w-4 h-4" />
+                Close Day
+              </>
+            )}
           </button>
         </div>
       </div>
