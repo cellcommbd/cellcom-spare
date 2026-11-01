@@ -193,25 +193,27 @@ export default function DaySalesPage() {
       }
       map[r.party_id].push(r)
     }
-    return order.map((partyId) => {
-      const partyRows = map[partyId]
-      const today = partyRows.reduce((s, r) => s + r.amount, 0)
-      const partyPayments = payments.filter((p) => p.party_id === partyId)
-      const paid = partyPayments.reduce((s, p) => s + p.cash + p.upi, 0)
-      const currentBalance = Number(
-        partiesById[partyId]?.current_balance || 0
-      )
-      const prev = currentBalance + paid
-      const balance = prev + today - paid
-      return {
-        partyId,
-        rows: partyRows,
-        today,
-        paid,
-        prev,
-        balance,
-      }
-    })
+    return order
+      .map((partyId) => {
+        const partyRows = [...map[partyId]].reverse()
+        const today = partyRows.reduce((s, r) => s + r.amount, 0)
+        const partyPayments = payments.filter((p) => p.party_id === partyId)
+        const paid = partyPayments.reduce((s, p) => s + p.cash + p.upi, 0)
+        const currentBalance = Number(
+          partiesById[partyId]?.current_balance || 0
+        )
+        const prev = currentBalance + paid
+        const balance = prev + today - paid
+        return {
+          partyId,
+          rows: partyRows,
+          today,
+          paid,
+          prev,
+          balance,
+        }
+      })
+      .reverse()
   }, [activeRows, payments, partiesById])
 
   // ============================================================
@@ -1007,37 +1009,6 @@ export default function DaySalesPage() {
             </button>
           </div>
         )}
-
-        {/* PARTY GROUPS */}
-        <div className="space-y-2 mb-3">
-          {rowsByParty.length === 0 && !addOpen && (
-            <div className="bg-white border border-dashed border-slate-300 rounded-xl py-8 px-4 text-center">
-              <div className="text-sm text-slate-500 mb-1">No items yet</div>
-              <div className="text-xs text-slate-400">
-                Tap “Add Item” to start today’s entries.
-              </div>
-            </div>
-          )}
-
-          {rowsByParty.map((group) => (
-            <PartyGroupSection
-              key={group.partyId}
-              group={group}
-              party={partiesById[group.partyId]}
-              onEditRow={(rowId) => setEditingRowId(rowId)}
-              onDeleteRow={(rowId) => deleteRow(rowId)}
-              collecting={collectingPartyId === group.partyId}
-              onCollect={() => setCollectingPartyId(group.partyId)}
-              onCancelCollect={() => setCollectingPartyId(null)}
-              onRecordPayment={async (cash, upi) => {
-                const res = await collectPayment(group.partyId, cash, upi)
-                if (res.ok) setCollectingPartyId(null)
-                return res
-              }}
-            />
-          ))}
-        </div>
-
         {/* ADD BUTTON / PANEL */}
         {!addOpen && (
           <button
@@ -1062,6 +1033,38 @@ export default function DaySalesPage() {
             setItemsCache={setItemsCache}
           />
         )}
+        {/* PARTY GROUPS */}
+        <div className="space-y-2 mb-3">
+          {rowsByParty.length === 0 && !addOpen && (
+            <div className="bg-white border border-dashed border-slate-300 rounded-xl py-8 px-4 text-center">
+              <div className="text-sm text-slate-500 mb-1">No items yet</div>
+              <div className="text-xs text-slate-400">
+                Tap “Add Item” to start today’s entries.
+              </div>
+            </div>
+          )}
+
+          {rowsByParty.map((group) => (
+            <div key={group.partyId} data-party-group={group.partyId}>
+              <PartyGroupSection
+                group={group}
+                party={partiesById[group.partyId]}
+                onEditRow={(rowId) => setEditingRowId(rowId)}
+                onDeleteRow={(rowId) => deleteRow(rowId)}
+                collecting={collectingPartyId === group.partyId}
+                onCollect={() => setCollectingPartyId(group.partyId)}
+                onCancelCollect={() => setCollectingPartyId(null)}
+                onRecordPayment={async (cash, upi) => {
+                  const res = await collectPayment(group.partyId, cash, upi)
+                  if (res.ok) setCollectingPartyId(null)
+                  return res
+                }}
+              />
+            </div>
+          ))}
+        </div>
+
+
       </div>
 
       {/* EDIT MODAL */}
@@ -1525,7 +1528,17 @@ function AddRowPanel({
     setRate('')
     setSearchResults([])
     setError('')
-    setTimeout(() => skuRef.current?.focus(), 100)
+    setTimeout(() => {
+      skuRef.current?.focus()
+      // Scroll so the last party group is roughly upper-mid viewport
+      const groups = document.querySelectorAll('[data-party-group]')
+      if (groups.length > 0) {
+        const newestGroup = groups[0] as HTMLElement
+        const rect = newestGroup.getBoundingClientRect()
+        const targetY = window.scrollY + rect.top - 320
+        window.scrollTo({ top: Math.max(0, targetY), behavior: 'smooth' })
+      }
+    }, 100)
   }
 
   const itemOptions = searchResults.map((it) => ({
@@ -1617,11 +1630,11 @@ function AddRowPanel({
                     handleSubmit()
                   }
                 }}
-                className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
               />
             </div>
           </div>
-        )}
+        )}                
 
         {pickedItem && (
           <div
@@ -1631,7 +1644,6 @@ function AddRowPanel({
                 e.preventDefault()
                 e.stopPropagation()
                 handleSubmit()
-                setTimeout(() => skuRef.current?.focus(), 100)
               }
             }}
           >
