@@ -103,9 +103,10 @@ export default function SalesReturnPage() {
   }, [])
 
   useEffect(() => {
+    if (parties.length === 0) return
     // eslint-disable-next-line react-hooks/exhaustive-deps
     search()
-  }, [fromDate, toDate, partyId, itemId])
+  }, [fromDate, toDate, partyId, itemId, parties.length])
 
   async function loadBase() {
     const today = todayStr()
@@ -146,6 +147,7 @@ export default function SalesReturnPage() {
 
     if (!fromDate || !toDate) {
       setMatchingSales([])
+      
       setLoading(false)
       return
     }
@@ -176,10 +178,18 @@ export default function SalesReturnPage() {
     // Fetch sale_items for all in-range sales
     let itemsMap: Record<number, SaleItem[]> = {}
     if (saleIds.length > 0) {
-      const { data: linesData } = await supabase
-        .from('sale_items')
-        .select('detail_id, sale_id, item_id, quantity, rate, amount, returned_qty')
-        .in('sale_id', saleIds)
+      // Chunk saleIds to stay under PostgREST URL limit (~100 at a time)
+      const CHUNK = 80
+      let allLines: any[] = []
+      for (let i = 0; i < saleIds.length; i += CHUNK) {
+        const slice = saleIds.slice(i, i + CHUNK)
+        const { data: chunkData } = await supabase
+          .from('sale_items')
+          .select('detail_id, sale_id, item_id, quantity, rate, amount, returned_qty')
+          .in('sale_id', slice)
+        if (chunkData) allLines = allLines.concat(chunkData)
+      }
+      const linesData = allLines
 
       const lines = (linesData as any[]) || []
       const itemIds = Array.from(new Set(lines.map((l) => l.item_id).filter(Boolean))) as number[]
@@ -194,10 +204,11 @@ export default function SalesReturnPage() {
       }
 
       for (const l of lines) {
-        if (!itemsMap[l.sale_id]) itemsMap[l.sale_id] = []
-        itemsMap[l.sale_id].push({
+        const sid = Number(l.sale_id)
+        if (!itemsMap[sid]) itemsMap[sid] = []
+        itemsMap[sid].push({
           detail_id: l.detail_id,
-          sale_id: l.sale_id,
+          sale_id: sid,
           item_id: l.item_id,
           quantity: Number(l.quantity),
           rate: Number(l.rate),
@@ -222,7 +233,7 @@ export default function SalesReturnPage() {
     for (const p of parties) partyMap[p.party_id] = p.party_name
 
     const enriched: SaleHeader[] = salesList.map((s) => ({
-      sale_id: s.sale_id,
+      sale_id: Number(s.sale_id),
       party_id: s.party_id,
       bill_date: s.bill_date,
       total_amount: Number(s.total_amount),
@@ -231,6 +242,7 @@ export default function SalesReturnPage() {
     }))
 
     setMatchingSales(enriched)
+  
     setItemsBySale(itemsMap)
     setLoading(false)
   }
@@ -480,7 +492,7 @@ export default function SalesReturnPage() {
             <div className="divide-y divide-slate-100">
               {matchingSales.map((s) => {
                 const isExpanded = expandedSaleId === s.sale_id
-                const lines = itemsBySale[s.sale_id] || []
+                const lines = itemsBySale[Number(s.sale_id)] || []
                 return (
                   <div key={s.sale_id}>
                     <button onClick={() => toggleSaleExpand(s.sale_id)}
