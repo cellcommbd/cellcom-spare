@@ -124,9 +124,10 @@ export default function SalesExplorerPage() {
   }, [])
 
   useEffect(() => {
+    if (parties.length === 0) return
     loadReport()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, dateMode, partyId, counterOnly, itemId])
+  }, [fromDate, toDate, dateMode, partyId, counterOnly, itemId, parties.length])
 
   async function loadReport() {
     setLoading(true)
@@ -199,12 +200,16 @@ export default function SalesExplorerPage() {
       const itemIds = Array.from(
         new Set(rawLines.map((l) => l.item_id).filter(Boolean))
       ) as number[]
-      const { data: itemRows } = await supabase
-        .from('items')
-        .select('item_id, sku')
-        .in('item_id', itemIds)
       const skuMap: Record<number, string> = {}
-      for (const it of itemRows || []) skuMap[it.item_id] = it.sku
+      const CHUNK = 80
+      for (let i = 0; i < itemIds.length; i += CHUNK) {
+        const slice = itemIds.slice(i, i + CHUNK)
+        const { data: itemRows } = await supabase
+          .from('items')
+          .select('item_id, sku')
+          .in('item_id', slice)
+        for (const it of itemRows || []) skuMap[it.item_id] = it.sku
+      }
 
       linesList = rawLines.map((l) => ({
         sale_id: l.sale_id,
@@ -440,9 +445,57 @@ export default function SalesExplorerPage() {
     const copy = [...aggregated]
     if (sortBy === 'qty') copy.sort((a, b) => b.qty - a.qty)
     else if (sortBy === 'amount') copy.sort((a, b) => b.amount - a.amount)
-    else copy.sort((a, b) => (a.date < b.date ? 1 : -1))
+    else if (sortBy === 'entry') {
+      // Sort by latest entry time within each group
+      const latestEntry: Record<string, string> = {}
+      for (const s of sales) {
+        const saleLines = linesBySale[s.sale_id] || []
+        if (saleLines.length === 0) continue
+        const entry = s.entry_date || ''
+        // For bill mode: key is `bill-${sale_id}`
+        const billKey = `bill-${s.sale_id}`
+        if (!latestEntry[billKey] || latestEntry[billKey] < entry) {
+          latestEntry[billKey] = entry
+        }
+        // For day mode: key is `day-${bill_date}`
+        const dayKey = `day-${s.bill_date}`
+        if (!latestEntry[dayKey] || latestEntry[dayKey] < entry) {
+          latestEntry[dayKey] = entry
+        }
+        // For party mode: key is `party-${party_id}`
+        const partyKey = `party-${s.party_id}`
+        if (!latestEntry[partyKey] || latestEntry[partyKey] < entry) {
+          latestEntry[partyKey] = entry
+        }
+      }
+      // For item mode: fall back to sale_id max
+      const itemLatest: Record<number, number> = {}
+      for (const l of lines) {
+        const s = sales.find((x) => x.sale_id === l.sale_id)
+        if (!s?.entry_date) continue
+        const time = new Date(s.entry_date).getTime()
+        if (!itemLatest[l.item_id] || itemLatest[l.item_id] < time) {
+          itemLatest[l.item_id] = time
+        }
+      }
+      copy.sort((a, b) => {
+        const ea = latestEntry[a.key] || ''
+        const eb = latestEntry[b.key] || ''
+        if (ea !== eb) return ea < eb ? 1 : -1
+        if (a.key.startsWith('item-')) {
+          const itemId = Number(a.key.replace('item-', ''))
+          const timeA = itemLatest[itemId] || 0
+          const itemIdB = Number(b.key.replace('item-', ''))
+          const timeB = itemLatest[itemIdB] || 0
+          return timeB - timeA
+        }
+        return 0
+      })
+    } else {
+      copy.sort((a, b) => (a.date < b.date ? 1 : -1))
+    }
     return copy
-  }, [aggregated, sortBy])
+  }, [aggregated, sortBy, sales, lines, linesBySale])
 
   const totals = useMemo(() => {
     if (groupBy === 'line') {
@@ -933,6 +986,20 @@ export default function SalesExplorerPage() {
                           {a.sublabel && (
                             <div className="text-[11px] text-slate-500">
                               {a.sublabel}
+                            </div>
+                          )}
+                          {sortBy === 'entry' && groupBy === 'bill' && (
+                            <div className="text-[10px] text-slate-400">
+                              {(() => {
+                                const bill = sales.find(
+                                  (s) => `bill-${s.sale_id}` === a.key
+                                )
+                                if (!bill?.entry_date) return null
+                                return new Date(bill.entry_date).toLocaleTimeString(
+                                  'en-IN',
+                                  { hour: '2-digit', minute: '2-digit' }
+                                )
+                              })()}
                             </div>
                           )}
                           <div className="sm:hidden text-[11px] text-slate-500 mt-0.5">

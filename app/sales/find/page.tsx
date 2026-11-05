@@ -14,11 +14,23 @@ import {
   User,
   Package,
   X,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react'
 
 type Party = {
   party_id: number
   party_name: string
+}
+
+type SaleLine = {
+  detail_id: number
+  item_id: number
+  sku: string
+  quantity: number
+  rate: number
+  amount: number
+  returned_qty: number
 }
 
 type SaleRow = {
@@ -31,6 +43,7 @@ type SaleRow = {
   status: string
   item_count: number
   items_preview: string
+  lines: SaleLine[]
 }
 
 function todayStr() {
@@ -68,6 +81,7 @@ export default function FindSalePage() {
   const [sales, setSales] = useState<SaleRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [expandedSaleId, setExpandedSaleId] = useState<number | null>(null)
 
   const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
@@ -83,9 +97,10 @@ export default function FindSalePage() {
   }, [])
 
   useEffect(() => {
-    search()
+    if (parties.length === 0) return
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fromDate, toDate, partyId, itemId])
+    search()
+  }, [fromDate, toDate, partyId, itemId, parties.length])
 
   async function handleItemSearch(q: string) {
     if (q.trim().length < 2) {
@@ -111,7 +126,6 @@ export default function FindSalePage() {
       return
     }
 
-    // 1. Fetch sales in range (filtered by party if set)
     let salesQuery = supabase
       .from('sales')
       .select(
@@ -135,36 +149,20 @@ export default function FindSalePage() {
 
     let salesList = (salesData as any[]) || []
 
-    // 2. If item filter set, restrict to sales that contain this item
-    if (itemId && salesList.length > 0) {
-      const saleIds = salesList.map((s) => s.sale_id)
-      const { data: matching } = await supabase
-        .from('sale_items')
-        .select('sale_id')
-        .in('sale_id', saleIds)
-        .eq('item_id', Number(itemId))
-
-      const matchingSaleIds = new Set(
-        (matching || []).map((m: any) => m.sale_id)
-      )
-      salesList = salesList.filter((s) => matchingSaleIds.has(s.sale_id))
-    }
-
-    // 3. For each sale, get item count + first-3 SKUs preview
     const saleIds = salesList.map((s) => s.sale_id)
-    const itemsBySale: Record<
-      number,
-      { count: number; skus: string[] }
-    > = {}
+
+    // Fetch all line items upfront (scoped)
+    let linesBySale: Record<number, SaleLine[]> = {}
+    let itemIds: number[] = []
 
     if (saleIds.length > 0) {
       const { data: linesData } = await supabase
         .from('sale_items')
-        .select('sale_id, item_id, quantity')
+        .select('detail_id, sale_id, item_id, quantity, rate, amount, returned_qty')
         .in('sale_id', saleIds)
 
       const rawLines = (linesData as any[]) || []
-      const itemIds = Array.from(
+      itemIds = Array.from(
         new Set(rawLines.map((l) => l.item_id).filter(Boolean))
       ) as number[]
 
@@ -178,23 +176,36 @@ export default function FindSalePage() {
       }
 
       for (const l of rawLines) {
-        if (!itemsBySale[l.sale_id]) {
-          itemsBySale[l.sale_id] = { count: 0, skus: [] }
-        }
-        itemsBySale[l.sale_id].count += Number(l.quantity || 0)
-        if (itemsBySale[l.sale_id].skus.length < 3) {
-          const sku = skuMap[l.item_id]
-          if (sku) itemsBySale[l.sale_id].skus.push(sku)
-        }
+        if (!linesBySale[l.sale_id]) linesBySale[l.sale_id] = []
+        linesBySale[l.sale_id].push({
+          detail_id: l.detail_id,
+          item_id: l.item_id,
+          sku: skuMap[l.item_id] || `Item #${l.item_id}`,
+          quantity: Number(l.quantity || 0),
+          rate: Number(l.rate || 0),
+          amount: Number(l.amount || 0),
+          returned_qty: Number(l.returned_qty || 0),
+        })
       }
     }
 
-    // 4. Party name lookup
+    // Item filter — restrict to sales containing this item
+    if (itemId && salesList.length > 0) {
+      const itemIdNum = Number(itemId)
+      salesList = salesList.filter((s) => {
+        const lines = linesBySale[s.sale_id] || []
+        return lines.some((l) => l.item_id === itemIdNum)
+      })
+    }
+
+    // Party name lookup
     const partyMap: Record<number, string> = {}
     for (const p of parties) partyMap[p.party_id] = p.party_name
 
     const enriched: SaleRow[] = salesList.map((s) => {
-      const info = itemsBySale[s.sale_id] || { count: 0, skus: [] }
+      const lines = linesBySale[s.sale_id] || []
+      const itemCount = lines.reduce((sum, l) => sum + l.quantity, 0)
+      const preview = lines.slice(0, 3).map((l) => l.sku).join(', ')
       return {
         sale_id: s.sale_id,
         bill_date: s.bill_date,
@@ -203,8 +214,9 @@ export default function FindSalePage() {
         total_amount: Number(s.total_amount),
         paid_amount: Number(s.paid_amount || 0),
         status: s.status,
-        item_count: info.count,
-        items_preview: info.skus.join(', '),
+        item_count: itemCount,
+        items_preview: preview,
+        lines,
       }
     })
 
@@ -252,12 +264,20 @@ export default function FindSalePage() {
     setItemOptions([])
   }
 
+  function toggleExpand(saleId: number) {
+    setExpandedSaleId(expandedSaleId === saleId ? null : saleId)
+  }
+
   const totalAmount = useMemo(
     () => sales.reduce((s, r) => s + r.total_amount, 0),
     [sales]
   )
   const totalDue = useMemo(
-    () => sales.reduce((s, r) => s + Math.max(0, r.total_amount - r.paid_amount), 0),
+    () =>
+      sales.reduce(
+        (s, r) => s + Math.max(0, r.total_amount - r.paid_amount),
+        0
+      ),
     [sales]
   )
 
@@ -280,7 +300,7 @@ export default function FindSalePage() {
             </h1>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Search by date, customer, or item to edit any bill.
+            Search by date, customer, or item. Tap any bill to expand.
           </p>
         </div>
 
@@ -453,56 +473,122 @@ export default function FindSalePage() {
             <div className="divide-y divide-slate-100">
               {sales.map((s) => {
                 const due = Math.max(0, s.total_amount - s.paid_amount)
+                const isExpanded = expandedSaleId === s.sale_id
                 return (
-                  <button
-                    key={s.sale_id}
-                    onClick={() => setEditingSaleId(s.sale_id)}
-                    className="w-full text-left px-3 sm:px-4 py-3 hover:bg-slate-50 flex items-start gap-3"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <div className="text-sm font-semibold text-slate-900">
-                          {formatDate(s.bill_date)}
-                        </div>
-                        <div className="text-xs text-slate-500 flex items-center gap-1">
-                          <User className="w-3 h-3" />
-                          {s.party_name}
-                        </div>
-                        <span
-                          className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide ${
-                            s.status === 'Paid'
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : s.status === 'Partially Paid'
-                              ? 'bg-amber-100 text-amber-700'
-                              : 'bg-rose-100 text-rose-700'
-                          }`}
-                        >
-                          {s.status}
-                        </span>
+                  <div key={s.sale_id}>
+                    {/* Bill header row — tap to expand */}
+                    <div
+                      className="px-3 sm:px-4 py-3 hover:bg-slate-50 flex items-start gap-3 cursor-pointer"
+                      onClick={() => toggleExpand(s.sale_id)}
+                    >
+                      <div className="shrink-0 text-slate-400 self-center">
+                        {isExpanded ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
                       </div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        {s.item_count} item
-                        {s.item_count === 1 ? '' : 's'} ·{' '}
-                        <span className="font-mono text-[11px]">
-                          {s.items_preview}
-                          {s.item_count > 3 && '…'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div className="text-sm font-bold text-slate-900">
-                        {money(s.total_amount)}
-                      </div>
-                      {due > 0 && (
-                        <div className="text-[10px] text-rose-700 font-medium">
-                          {money(due)} due
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <div className="text-sm font-semibold text-slate-900">
+                            {formatDate(s.bill_date)}
+                          </div>
+                          <div className="text-xs text-slate-500 flex items-center gap-1">
+                            <User className="w-3 h-3" />
+                            {s.party_name}
+                          </div>
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide ${
+                              s.status === 'Paid'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : s.status === 'Partially Paid'
+                                ? 'bg-amber-100 text-amber-700'
+                                : 'bg-rose-100 text-rose-700'
+                            }`}
+                          >
+                            {s.status}
+                          </span>
                         </div>
-                      )}
+                        <div className="text-xs text-slate-500 mt-0.5">
+                          {s.item_count} item
+                          {s.item_count === 1 ? '' : 's'} ·{' '}
+                          <span className="font-mono text-[11px]">
+                            {s.items_preview}
+                            {s.lines.length > 3 && '…'}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-sm font-bold text-slate-900">
+                          {money(s.total_amount)}
+                        </div>
+                        {due > 0 && (
+                          <div className="text-[10px] text-rose-700 font-medium">
+                            {money(due)} due
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditingSaleId(s.sale_id)
+                        }}
+                        className="shrink-0 p-2 -m-1 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded self-center"
+                        title="Edit bill"
+                      >
+                        <Pencil className="w-4 h-4" />
+                      </button>
                     </div>
-                    <div className="shrink-0 text-slate-400 hover:text-blue-700 flex items-center self-center">
-                      <Pencil className="w-4 h-4" />
-                    </div>
-                  </button>
+
+                    {/* Expanded item list */}
+                    {isExpanded && (
+                      <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                        <div className="text-[10px] uppercase text-slate-500 font-semibold mb-2 tracking-wide">
+                          Items in this bill
+                        </div>
+                        <div className="space-y-1.5">
+                          {s.lines.map((l) => {
+                            const netQty = l.quantity - l.returned_qty
+                            return (
+                              <div
+                                key={l.detail_id}
+                                className="bg-white border border-slate-200 rounded-lg px-2.5 py-2 flex items-start gap-2"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <div className="font-mono text-[11px] text-slate-800 break-all">
+                                    {l.sku}
+                                  </div>
+                                  <div className="text-[10px] text-slate-500 mt-0.5">
+                                    Qty {l.quantity}
+                                    {l.returned_qty > 0 && (
+                                      <span className="text-amber-700 ml-1">
+                                        (returned {l.returned_qty}, net {netQty})
+                                      </span>
+                                    )}
+                                    {' · '}Rate {money(l.rate)}
+                                  </div>
+                                </div>
+                                <div className="text-right shrink-0">
+                                  <div className="text-xs font-semibold text-slate-900">
+                                    {money(l.amount)}
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                          <span className="text-slate-500">
+                            {s.lines.length} line
+                            {s.lines.length === 1 ? '' : 's'}
+                          </span>
+                          <span className="font-bold text-slate-900">
+                            Total {money(s.total_amount)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )
               })}
             </div>
