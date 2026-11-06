@@ -6,6 +6,7 @@ import { SmartCombobox } from './smart-combobox'
 import { searchItems } from '@/lib/item-search'
 import { X, Plus, Trash2, Save } from 'lucide-react'
 import { getRole } from '@/lib/auth'
+import { recomputePartyBalance } from '@/lib/balance'
 
 type Party = {
   party_id: number
@@ -103,7 +104,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     // Fetch sale_items
     const { data: lineData, error: lineErr } = await supabase
       .from('sale_items')
-      .select('detail_id, item_id, quantity, rate, amount, cost_at_sale')
+      .select('detail_id, item_id, quantity, rate, amount, cost_at_sale, returned_qty')
       .eq('sale_id', saleId)
       .order('detail_id')
 
@@ -114,6 +115,11 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     }
 
     const lines = (lineData || []) as any[]
+    if (lines.some((l: any) => Number(l.returned_qty || 0) > 0)) {
+  alert('This sale has returns. Cannot edit.')
+  onClose()
+  return
+}
     const itemIds = Array.from(
       new Set(lines.map((l) => l.item_id).filter(Boolean))
     ) as number[]
@@ -370,54 +376,10 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       return
     }
 
-    // 4. Balance adjustments
-    if (originalPartyId === partyId) {
-      const delta = newTotal - originalTotal
-      if (Math.abs(delta) > 0.001) {
-        const { data: p } = await supabase
-          .from('parties')
-          .select('current_balance')
-          .eq('party_id', partyId)
-          .single()
-        if (p) {
-          await supabase
-            .from('parties')
-            .update({
-              current_balance: Number(p.current_balance) + delta,
-            })
-            .eq('party_id', partyId)
-        }
-      }
-    } else {
-      if (originalPartyId) {
-        const { data: oldP } = await supabase
-          .from('parties')
-          .select('current_balance')
-          .eq('party_id', originalPartyId)
-          .single()
-        if (oldP) {
-          await supabase
-            .from('parties')
-            .update({
-              current_balance:
-                Number(oldP.current_balance) - originalTotal,
-            })
-            .eq('party_id', originalPartyId)
-        }
-      }
-      const { data: newP } = await supabase
-        .from('parties')
-        .select('current_balance')
-        .eq('party_id', partyId)
-        .single()
-      if (newP) {
-        await supabase
-          .from('parties')
-          .update({
-            current_balance: Number(newP.current_balance) + newTotal,
-          })
-          .eq('party_id', partyId)
-      }
+    // 4. Balance: recompute for affected parties (self-healing)
+    await recomputePartyBalance(partyId)
+    if (originalPartyId && originalPartyId !== partyId) {
+      await recomputePartyBalance(originalPartyId)
     }
 
     setSaving(false)
@@ -436,23 +398,6 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
 
     setSaving(true)
 
-    // Adjust customer balance
-    if (originalPartyId) {
-      const { data: p } = await supabase
-        .from('parties')
-        .select('current_balance')
-        .eq('party_id', originalPartyId)
-        .single()
-      if (p) {
-        await supabase
-          .from('parties')
-          .update({
-            current_balance: Number(p.current_balance) - originalTotal,
-          })
-          .eq('party_id', originalPartyId)
-      }
-    }
-
     // Delete lines (trigger restores stock)
     await supabase.from('sale_items').delete().eq('sale_id', saleId)
 
@@ -466,6 +411,11 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     if (error) {
       setMessage('Delete failed: ' + error.message)
       return
+    }
+
+    // Recompute balance (self-healing)
+    if (originalPartyId) {
+      await recomputePartyBalance(originalPartyId)
     }
 
     if (onSaved) onSaved()

@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
+import { recomputePartyBalance } from '../../lib/balance'
 
 type Party = {
   party_id: number
@@ -624,13 +625,17 @@ function SalesEntryPage() {
       return
     }
 
+    const isCounterSale =
+      shops.find((s) => s.party_id === shopId)?.party_name === COUNTER_SALE_NAME
+
     const { data: saleData, error: saleError } = await supabase
       .from('sales')
       .insert({
         party_id: shopId,
         bill_date: billDate,
         total_amount: subtotal,
-        status: 'Pending',
+        status: isCounterSale ? 'Paid' : 'Pending',
+        paid_amount: isCounterSale ? subtotal : 0,
       })
       .select()
       .single()
@@ -663,10 +668,11 @@ function SalesEntryPage() {
       return
     }
 
-    await supabase
-      .from('parties')
-      .update({ current_balance: prevBalance + subtotal })
-      .eq('party_id', shopId)
+    // Counter Sale: no balance impact (already paid)
+    // Others: recompute from sales + returns (self-healing)
+    if (!isCounterSale) {
+      await recomputePartyBalance(shopId)
+    }
 
     setMessage(`Saved sale #${saleId}. Stock decreased.`)
 
@@ -711,25 +717,22 @@ function SalesEntryPage() {
     if (!confirm(`Delete sale #${id}? Stock will go back up.`)) return
 
     const sale = todaySales.find((s) => s.sale_id === id)
-    if (sale) {
-      const shop = shops.find((s) => s.party_id === sale.party_id)
-      if (shop) {
-        await supabase
-          .from('parties')
-          .update({ current_balance: shop.current_balance - sale.total_amount })
-          .eq('party_id', shop.party_id)
-      }
-    }
 
     await supabase.from('sale_items').delete().eq('sale_id', id)
     const { error } = await supabase.from('sales').delete().eq('sale_id', id)
 
-    if (error) setMessage('Delete error: ' + error.message)
-    else {
-      setMessage('Deleted sale #' + id)
-      await loadData()
-      await loadReport()
+    if (error) {
+      setMessage('Delete error: ' + error.message)
+      return
     }
+
+    if (sale) {
+      await recomputePartyBalance(sale.party_id)
+    }
+
+    setMessage('Deleted sale #' + id)
+    await loadData()
+    await loadReport()
   }
 
   // ============ EDIT MODAL HANDLERS ============
@@ -982,10 +985,13 @@ function SalesEntryPage() {
     const newPartyId = editState.party_id
 
     // 1. Update sales header — recompute status from new total vs paid_amount
+    const isCounterSaleEdit =
+      shops.find((s) => s.party_id === newPartyId)?.party_name === COUNTER_SALE_NAME
+    const effectivePaid = isCounterSaleEdit ? newTotal : editState.paid_amount
     const newStatus =
-      newTotal <= editState.paid_amount
+      newTotal <= effectivePaid
         ? 'Paid'
-        : editState.paid_amount > 0
+        : effectivePaid > 0
         ? 'Partially Paid'
         : 'Pending'
 
@@ -996,6 +1002,7 @@ function SalesEntryPage() {
         bill_date: editState.bill_date,
         total_amount: newTotal,
         status: newStatus,
+        paid_amount: effectivePaid,
       })
       .eq('sale_id', editState.sale_id)
 
@@ -1036,38 +1043,10 @@ function SalesEntryPage() {
       return
     }
 
-    // 3. Balance adjustments
-    if (oldPartyId === newPartyId) {
-      const delta = newTotal - oldTotal
-      if (Math.abs(delta) > 0.001) {
-        const shop = shops.find((s) => s.party_id === newPartyId)
-        if (shop) {
-          await supabase
-            .from('parties')
-            .update({ current_balance: Number(shop.current_balance) + delta })
-            .eq('party_id', newPartyId)
-        }
-      }
-    } else {
-      // Old party loses old_total, new party gains new_total
-      const oldShop = shops.find((s) => s.party_id === oldPartyId)
-      const newShop = shops.find((s) => s.party_id === newPartyId)
-      if (oldShop) {
-        await supabase
-          .from('parties')
-          .update({
-            current_balance: Number(oldShop.current_balance) - oldTotal,
-          })
-          .eq('party_id', oldPartyId)
-      }
-      if (newShop) {
-        await supabase
-          .from('parties')
-          .update({
-            current_balance: Number(newShop.current_balance) + newTotal,
-          })
-          .eq('party_id', newPartyId)
-      }
+    // 3. Balance: recompute for both parties (self-healing)
+    await recomputePartyBalance(newPartyId)
+    if (oldPartyId !== newPartyId) {
+      await recomputePartyBalance(oldPartyId)
     }
 
     await loadData()

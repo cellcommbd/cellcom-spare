@@ -5,6 +5,7 @@ import { supabase } from '../../lib/supabase'
 import { SmartCombobox } from '../../components/ui/smart-combobox'
 import { searchItems, SearchItemResult } from '../../lib/item-search'
 import { Save, X, Search, Calendar, ChevronDown, ChevronRight } from 'lucide-react'
+import { recomputePartyBalance } from '../../lib/balance'
 
 type Party = {
   party_id: number
@@ -359,14 +360,8 @@ export default function SalesReturnPage() {
         .eq('detail_id', r.detail_id)
     }
 
-    // Reduce party balance
-    const shop = parties.find((s) => s.party_id === returnPartyId)
-    if (shop) {
-      await supabase
-        .from('parties')
-        .update({ current_balance: Number(shop.current_balance) - totalReturnValue })
-        .eq('party_id', returnPartyId)
-    }
+    // Recompute balance (self-healing)
+    await recomputePartyBalance(returnPartyId)
 
     setMessage(`Saved return of ₹${totalReturnValue.toFixed(2)}.`)
     setCheckedDetailIds([])

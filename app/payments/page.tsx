@@ -25,6 +25,8 @@ import {
 } from '../../lib/statement-format'
 import { SaleEditModal } from '../../components/ui/sale-edit-modal'
 import { applyFIFO } from '../../lib/fifo'
+import { recomputePartyBalance, reverseFIFO } from '../../lib/balance'
+
 
 // ---------- Types ----------
 type Party = {
@@ -512,41 +514,20 @@ function PaymentsPageInner() {
 
     const previousBalance = currentBalance
 
-    const { error: balErr } = await supabase
-      .from('parties')
-      .update({ current_balance: newBalance })
-      .eq('party_id', pickedShop.id)
-
-    if (balErr) {
-      setMessage('Payment saved but balance update failed: ' + balErr.message)
-      setSaving(false)
-      return
-    }
-
     const touchedSaleIds = await applyFIFO(pickedShop.id, paymentAmt)
 
-    const { data: verify } = await supabase
-      .from('parties')
-      .select('current_balance')
-      .eq('party_id', pickedShop.id)
-      .single()
+    const correctBalance = await recomputePartyBalance(pickedShop.id)
 
-    if (Number(verify?.current_balance) !== newBalance) {
-      setMessage(
-        'Warning: balance verification mismatch. Check customer record.'
-      )
-    } else {
-      setMessage(
-        `Saved ₹${paymentAmt.toFixed(2)} from ${pickedShop.label}. New balance: ₹${newBalance.toFixed(2)}.`
-      )
-    }
+    setMessage(
+      `Saved ₹${paymentAmt.toFixed(2)} from ${pickedShop.label}. New balance: ₹${correctBalance.toFixed(2)}.`
+    )
 
     setReceipt({
       previousBalance,
       amountPaid: paymentAmt,
       cashPaid: payMode === 'Online' ? splitCash : paymentAmt,
       upiPaid: payMode === 'Online' ? splitUpi : 0,
-      newBalance,
+      newBalance: correctBalance,
       touchedSaleIds,
       paymentDate,
     })
@@ -590,26 +571,20 @@ function PaymentsPageInner() {
     const p = todayPayments.find((x) => x.payment_id === id)
     if (!p) return
 
-    const shop = shops.find((s) => s.party_id === p.party_id)
-    if (shop) {
-      await supabase
-        .from('parties')
-        .update({
-          current_balance: Number(shop.current_balance) + Number(p.amount),
-        })
-        .eq('party_id', p.party_id)
-    }
-
     const { error } = await supabase
       .from('payments')
       .delete()
       .eq('payment_id', id)
 
-    if (error) setMessage('Delete error: ' + error.message)
-    else {
-      setMessage('Deleted payment #' + id)
-      await loadData()
+    if (error) {
+      setMessage('Delete error: ' + error.message)
+      return
     }
+
+    await recomputePartyBalance(p.party_id)
+
+    setMessage('Deleted payment #' + id)
+    await loadData()
   }
 
   const shopName = (id: number) =>

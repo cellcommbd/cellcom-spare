@@ -6,6 +6,7 @@ import { supabase } from '../../../lib/supabase'
 import { SmartCombobox } from '../../../components/ui/smart-combobox'
 import { NewPartyDialog } from '../../../components/ui/new-party-dialog'
 import { applyFIFO } from '../../../lib/fifo'
+import { recomputePartyBalance } from '../../../lib/balance'
 import {
   buildStatementText,
   buildWhatsAppUrl,
@@ -665,33 +666,18 @@ export default function DaySalesPage() {
         .insert(inserts)
       if (payErr) throw new Error(payErr.message)
 
-      // 3. Update party balance
-      const { data: party } = await supabase
-        .from('parties')
-        .select('current_balance')
-        .eq('party_id', partyId)
-        .single()
-      if (party) {
-        await supabase
-          .from('parties')
-          .update({
-            current_balance: Number(party.current_balance) - total,
-          })
-          .eq('party_id', partyId)
-        setParties((prev) =>
-          prev.map((p) =>
-            p.party_id === partyId
-              ? {
-                  ...p,
-                  current_balance: Number(party.current_balance) - total,
-                }
-              : p
-          )
-        )
-      }
-
-      // 4. Apply FIFO to outstanding bills
+      // 3. Apply FIFO to outstanding bills
       await applyFIFO(partyId, total)
+
+      // 4. Recompute balance (self-healing)
+      const correctBalance = await recomputePartyBalance(partyId)
+      setParties((prev) =>
+        prev.map((p) =>
+          p.party_id === partyId
+            ? { ...p, current_balance: correctBalance }
+            : p
+        )
+      )
 
       return { ok: true }
     } catch (e: unknown) {
@@ -740,7 +726,116 @@ export default function DaySalesPage() {
     setShowCloseDialog(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRows, subtotal, billDate])
+  // ---- Past day close ----
+  const [pastDayData, setPastDayData] = useState<{
+    bill_date: string
+    totalSales: number
+    alreadyCash: number
+    alreadyUpi: number
+    counterSaleTotal: number
+    items: any[]
+  } | null>(null)
 
+  async function openPastDayClose(dayDate: string) {
+    const { data: itemsData, error: itemsErr } = await supabase
+      .rpc('get_day_items', { p_bill_date: dayDate })
+    if (itemsErr) {
+      alert('Failed to load items: ' + itemsErr.message)
+      return
+    }
+
+    const items = (itemsData as any[]) || []
+    if (items.length === 0) {
+      alert('No items found for that day.')
+      return
+    }
+
+    const itemIds = Array.from(new Set(items.map((i) => i.item_id))) as number[]
+    const { data: itemRows } = await supabase
+      .from('items')
+      .select('item_id, sku')
+      .in('item_id', itemIds)
+    const skuMap: Record<number, string> = {}
+    for (const it of itemRows || []) skuMap[it.item_id] = it.sku
+
+    const enriched = items.map((i) => ({
+      ...i,
+      sku: skuMap[i.item_id] || `Item #${i.item_id}`,
+    }))
+
+    const totalSales = items.reduce((s, i) => s + Number(i.amount), 0)
+    const counterSaleTotal = items
+      .filter((i) => Number(i.party_id) === COUNTER_SALE_PARTY_ID)
+      .reduce((s, i) => s + Number(i.amount), 0)
+
+    const { data: payData } = await supabase
+      .from('payments')
+      .select('amount, payment_mode')
+      .eq('payment_date', dayDate)
+    const payRows = (payData || []) as { amount: number; payment_mode: string }[]
+    const alreadyCash = payRows
+      .filter((p) => p.payment_mode === 'Cash')
+      .reduce((s, p) => s + Number(p.amount), 0)
+    const alreadyUpi = payRows
+      .filter((p) => p.payment_mode === 'UPI')
+      .reduce((s, p) => s + Number(p.amount), 0)
+
+    setPastDayData({
+      bill_date: dayDate,
+      totalSales,
+      alreadyCash,
+      alreadyUpi,
+      counterSaleTotal,
+      items: enriched,
+    })
+  }
+
+  async function performPastDayClose(totalUpiToday: number) {
+    if (!pastDayData) return
+    setClosingUnclosed(pastDayData.bill_date)
+    const dayDate = pastDayData.bill_date
+
+    const { error } = await supabase.rpc('close_day_sales', {
+      p_bill_date: dayDate,
+    })
+    if (error) {
+      alert('Close failed: ' + error.message)
+      setClosingUnclosed(null)
+      return
+    }
+
+    if (pastDayData.counterSaleTotal > 0) {
+      const deltaUpi = Math.max(0, totalUpiToday - pastDayData.alreadyUpi)
+      const counterSaleUpi = Math.min(deltaUpi, pastDayData.counterSaleTotal)
+      const counterSaleCash = Math.max(0, pastDayData.counterSaleTotal - counterSaleUpi)
+
+      const inserts: any[] = []
+      if (counterSaleCash > 0.01) {
+        inserts.push({
+          party_id: COUNTER_SALE_PARTY_ID,
+          payment_date: dayDate,
+          amount: counterSaleCash,
+          payment_mode: 'Cash',
+        })
+      }
+      if (counterSaleUpi > 0.01) {
+        inserts.push({
+          party_id: COUNTER_SALE_PARTY_ID,
+          payment_date: dayDate,
+          amount: counterSaleUpi,
+          payment_mode: 'UPI',
+        })
+      }
+      if (inserts.length > 0) {
+        await supabase.from('payments').insert(inserts)
+      }
+    }
+
+    setUnclosedDays((prev) => prev.filter((x) => x.bill_date !== dayDate))
+    setPastDayData(null)
+    setClosingUnclosed(null)
+    alert('Day closed successfully.')
+  }
   // Actual close — called from the dialog after staff confirms UPI
   const performCloseDay = useCallback(
     async (totalUpiToday: number) => {
@@ -956,26 +1051,11 @@ export default function DaySalesPage() {
                         {d.item_count === 1 ? '' : 's'}
                       </span>
                       <button
-                        onClick={async () => {
-                          if (!confirm(`Close ${formatDateLong(d.bill_date)}?`)) return
-                          setClosingUnclosed(d.bill_date)
-                          const { error } = await supabase.rpc('close_day_sales', {
-                            p_bill_date: d.bill_date,
-                          })
-                          if (error) {
-                            alert('Failed: ' + error.message)
-                          } else {
-                            setUnclosedDays((prev) =>
-                              prev.filter((x) => x.bill_date !== d.bill_date)
-                            )
-                            alert('Closed successfully')
-                          }
-                          setClosingUnclosed(null)
-                        }}
+                        onClick={() => openPastDayClose(d.bill_date)}
                         disabled={closingUnclosed === d.bill_date}
                         className="text-[11px] font-semibold text-white bg-amber-700 hover:bg-amber-800 px-2 py-1 rounded disabled:opacity-50 shrink-0"
                       >
-                        {closingUnclosed === d.bill_date ? 'Closing…' : 'Close'}
+                        {closingUnclosed === d.bill_date ? 'Closing…' : 'Review & Close'}
                       </button>
                     </div>
                   ))}
@@ -1111,6 +1191,17 @@ export default function DaySalesPage() {
           counterSaleTotal={dialogData.counterSaleTotal}
           onCancel={() => setShowCloseDialog(false)}
           onConfirm={performCloseDay}
+        />
+      )}
+            {pastDayData && (
+        <CloseDayDialog
+          billDate={pastDayData.bill_date}
+          totalSales={pastDayData.totalSales}
+          alreadyCash={pastDayData.alreadyCash}
+          alreadyUpi={pastDayData.alreadyUpi}
+          counterSaleTotal={pastDayData.counterSaleTotal}
+          onCancel={() => setPastDayData(null)}
+          onConfirm={performPastDayClose}
         />
       )}
     </div>
