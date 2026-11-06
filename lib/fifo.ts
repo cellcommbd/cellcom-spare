@@ -2,15 +2,13 @@ import { supabase } from './supabase'
 
 /**
  * Apply a payment amount to outstanding bills oldest-first.
- * Reads paid_amount per bill, writes back paid_amount + derived status.
+ * If `paymentId` provided, writes an allocation row per bill touched.
  * Returns touched sale_ids.
- *
- * Extracted 2026-10-31 from app/payments/page.tsx so /sales/day can reuse.
- * If you change this, verify /payments still works.
  */
 export async function applyFIFO(
   shopId: number,
-  paymentAmount: number
+  paymentAmount: number,
+  paymentId?: number
 ): Promise<number[]> {
   let remaining = paymentAmount
   const touched: number[] = []
@@ -42,6 +40,20 @@ export async function applyFIFO(
       .from('sales')
       .update({ paid_amount: newPaid, status: newStatus })
       .eq('sale_id', sale.sale_id)
+
+    // Record allocation if payment_id given
+    if (paymentId) {
+      supabase
+        .from('payment_allocations')
+        .insert({
+          payment_id: paymentId,
+          sale_id: sale.sale_id,
+          amount: Number(applied.toFixed(2)),
+        })
+        .then(({ error }) => {
+          if (error) console.warn('allocation insert failed:', error.message)
+        })
+    }
 
     touched.push(sale.sale_id)
     remaining -= applied

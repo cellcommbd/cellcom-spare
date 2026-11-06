@@ -661,13 +661,18 @@ export default function DaySalesPage() {
           payment_mode: 'UPI',
         })
       }
-      const { error: payErr } = await supabase
+      const { data: insertedPayments, error: payErr } = await supabase
         .from('payments')
         .insert(inserts)
-      if (payErr) throw new Error(payErr.message)
+        .select('payment_id, amount')
+      if (payErr || !insertedPayments) {
+        throw new Error(payErr?.message || 'Payment insert failed')
+      }
 
-      // 3. Apply FIFO to outstanding bills
-      await applyFIFO(partyId, total)
+      // 3. Apply FIFO to outstanding bills (per payment row, with allocation)
+      for (const p of insertedPayments) {
+        await applyFIFO(partyId, Number(p.amount), p.payment_id)
+      }
 
       // 4. Recompute balance (self-healing)
       const correctBalance = await recomputePartyBalance(partyId)

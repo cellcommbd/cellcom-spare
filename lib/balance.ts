@@ -12,6 +12,11 @@ export async function recomputePartyBalance(partyId: number): Promise<number> {
     .eq('party_id', partyId)
     .eq('return_type', 'Customer')
 
+  const { data: payments } = await supabase
+    .from('payments')
+    .select('amount')
+    .eq('party_id', partyId)
+
   const unpaid = (sales || []).reduce(
     (s, x) => s + (Number(x.total_amount) - Number(x.paid_amount || 0)),
     0
@@ -20,7 +25,17 @@ export async function recomputePartyBalance(partyId: number): Promise<number> {
     (s, x) => s + Number(x.total_amount),
     0
   )
-  const correct = Math.round((unpaid - returned) * 100) / 100
+  const totalPayments = (payments || []).reduce(
+    (s, x) => s + Number(x.amount),
+    0
+  )
+  const totalApplied = (sales || []).reduce(
+    (s, x) => s + Number(x.paid_amount || 0),
+    0
+  )
+  const overpaid = Math.max(0, totalPayments - totalApplied)
+
+  const correct = Math.round((unpaid - returned - overpaid) * 100) / 100
 
   await supabase
     .from('parties')

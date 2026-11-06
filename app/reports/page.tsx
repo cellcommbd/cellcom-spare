@@ -17,6 +17,7 @@ import {
   CalendarClock,
   Wallet,
   Search,
+  Receipt,
 } from 'lucide-react'
 
 type ReportCard = {
@@ -130,6 +131,14 @@ const REPORTS: ReportCard[] = [
       'Latest sales, purchases, payments, and returns in one list.',
     Icon: CalendarClock,
     color: 'blue',
+  },
+  {
+    href: '/reports/payments',
+    title: 'Payments Report',
+    description:
+      'Every payment received, and the bills it cleared. Filter by customer and mode.',
+    Icon: Receipt,
+    color: 'green',
   },
 ]
 

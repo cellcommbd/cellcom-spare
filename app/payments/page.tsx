@@ -502,19 +502,30 @@ function PaymentsPageInner() {
       })
     }
 
-    const { error: insertErr } = await supabase
+    const { data: insertedPayments, error: insertErr } = await supabase
       .from('payments')
       .insert(rows)
+      .select('payment_id, amount')
 
-    if (insertErr) {
-      setMessage('Save error: ' + insertErr.message)
+    if (insertErr || !insertedPayments) {
+      setMessage('Save error: ' + (insertErr?.message || 'unknown'))
       setSaving(false)
       return
     }
 
     const previousBalance = currentBalance
 
-    const touchedSaleIds = await applyFIFO(pickedShop.id, paymentAmt)
+    // Apply FIFO per payment row, so allocations trace back to each payment
+    const allTouched: number[] = []
+    for (const p of insertedPayments) {
+      const subTouched = await applyFIFO(
+        pickedShop.id,
+        Number(p.amount),
+        p.payment_id
+      )
+      allTouched.push(...subTouched)
+    }
+    const touchedSaleIds = Array.from(new Set(allTouched))
 
     const correctBalance = await recomputePartyBalance(pickedShop.id)
 
