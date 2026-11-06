@@ -24,6 +24,8 @@ import {
   ClipboardList,
   FileSearch,
   Receipt,
+  Wrench,
+  Hammer,
 } from 'lucide-react'
 import './globals.css'
 
@@ -38,16 +40,21 @@ const dailyNav = [
   { href: '/sales/find', label: 'Find Sale', Icon: FileSearch },
   { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
+  { href: '/parties', label: 'Parties', Icon: Users },
+  
+  { href: '/brands', label: 'Brands', Icon: Tag },
+  { href: '/reference', label: 'Reference', Icon: BookOpen },
 ]
 
 const adminNav = [
-  { href: '/parties', label: 'Parties', Icon: Users },
-  { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/expenses', label: 'Expenses', Icon: Receipt },
+  { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/items', label: 'Items', Icon: Package },
-  { href: '/brands', label: 'Brands', Icon: Tag },
   { href: '/categories', label: 'Categories', Icon: Tag },
-  { href: '/reference', label: 'Reference', Icon: BookOpen },
+  { href: '/admin', label: 'Admin Home', Icon: Hammer },
+  { href: '/admin/repair', label: 'Fix & Repair', Icon: Hammer },
+  { href: '/admin/aliases', label: 'Aliases', Icon: BookOpen },
+  { href: '/admin/balance-check', label: 'Balance Check', Icon: Wrench },
 ]
 
 const ownerNav = dailyNav

@@ -113,9 +113,27 @@ const SIZE_MARKERS: Record<string, string> = {
   '2 PIN': '2PIN', '2PIN': '2PIN',
 }
 
-const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)$/i
+const VARIANT_KEYWORDS = /^(MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX|SMB)$/i
 const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
-
+const COMPOUND_COLORS = [
+  'TOPAZ-BLUE', 'GLAMOUR-RED', 'OCEAN-BLUE', 'MIST-PURPLE',
+  'LIME-GREEN', 'MIDNIGHT-BLACK', 'ROYAL-BLUE', 'GALACTIC-SILVER',
+  'SONIC-BLACK', 'MAJESTIC-RED', 'HIMALAYAN-BLUE', 'NEBULA-BLUE',
+  'NEBULA-PURPLE', 'OBSIDIAN-BLACK', 'DREAMY-PURPLE', 'CORAL-GREEN',
+  'TITAN-BLACK', 'SPECTRE-BLUE', 'ARTISTIC-BLUE', 'ARTISTIC-RED',
+  'SUNRISE-BEIGE', 'NAVIGATOR-BEIGE', 'JADE-GREEN', 'FOREST-GREEN',
+  'STARRY-BLACK', 'LUMINOUS-BLACK', 'DAWN-WHITE', 'MIRROR-BLACK',
+  'SPACE-BLACK', 'ONYX-GRAY', 'TROPICAL-GREEN',
+  'COOL-BLUE', 'COOL-GREY', 'COOL-GRAY',  'DESERT-TITANIUM',
+    'CRYSTAL-BLACK', 'GLITTERY-WHITE', 'AWESOME-BLACK', 'AWESOME-BLUE',
+  'AWESOME-VOILET', 'AWESOME-WHITE', 'SUN-SHOWER', 'DIAMOND-RED',
+  'DYNAMIC-BLACK', 'RADIANT-BLUE', 'COBALT-BLUE', 'OLIVE-GREEN',
+  'RAINFOREST', 'MIRROR-BLACK', 'OXYGEN-GREEN', 'PHANTOM-BLACK',
+  'GRAY-SHADOW', 'LAKE-GREEN', 'METALLIC-BLUE', 'MIDNIGHT-BLUE',
+  'DIAMOND-GLOW', 'FOREST-GREEN', 'POWER-BLACK', 'METEORITE-BLACK',
+  'BLUE-MARBLE', 'GRAY-ONYX', 'GLOWING-BLACK', 'OCEAN-BLUE',
+  'SUNSET-ORANGE', 'PACIFIC-BLUE', 'BLUE-TIDE',
+]
 const COLOR_WORDS = [
   'BLACK', 'WHITE', 'BLUE', 'RED', 'GOLD', 'GREEN', 'PURPLE', 'SILVER',
   'GREY', 'GRAY', 'YELLOW', 'PINK', 'ORANGE', 'BROWN', 'BRONZE', 'BEIGE',
@@ -124,6 +142,12 @@ const COLOR_WORDS = [
   'ONYX', 'COPPER', 'CHAMPAGNE', 'IVORY', 'CREAM', 'SAND', 'GOLDEN',
   'ROSE', 'VIOLET', 'MAGENTA', 'TURQUOISE', 'INDIGO', 'MAROON',
   'BURGUNDY', 'BLUSH', 'NEON', 'CHROME', 'GRAPHITE', 'MATTE',
+    // Compound color modifiers (prefixes used with base colors)
+  'TOPAZ', 'GLAMOUR', 'OCEAN', 'MIST', 'LIME', 'MIDNIGHT', 'ROYAL',
+  'GALACTIC', 'SONIC', 'MAJESTIC', 'HIMALAYAN', 'NEBULA', 'OBSIDIAN',
+  'DREAMY', 'CORAL', 'TITAN', 'SPECTRE', 'ARTISTIC', 'SUNRISE',
+  'NAVIGATOR', 'JADE', 'FOREST', 'STARRY', 'LUMINOUS', 'DAWN',
+    'VOILET', 'VIOLET', 'STARLIGHT', 'DESERT',
 ]
 
 const PART_CODE_MAP: Record<string, string> = {
@@ -195,6 +219,7 @@ const FLAG_MAP: Record<string, string> = {
   FLEX: 'FLEX', SET: 'SET', FRONT: 'FRONT', BACK: 'BACK',
   'W/C': 'WC', WC: 'WC', 'W/C/L': 'WCL', 'W/CL': 'WCL', WCL: 'WCL',
   COPY: 'COPY', METAL: 'METAL', GLASS: 'GLASS',
+  NFC: 'NFC', SVC: 'SVC',
 }
 
 const PART_CODE_TOKENS = new Set<string>([
@@ -323,6 +348,7 @@ function normalizeTypos(desc: string): string {
     .replace(/\bEXX\s*-\s*BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXX\s+BEE\b/gi, 'EXX-BEE')
     .replace(/\bEXXBEE\b/gi, 'EXX-BEE')
+    .replace(/\bBEE\s*EXX\b/gi, 'EXX-BEE')
     .replace(/\bB\s*\/\s*C\b/gi, 'B/C')
     .replace(/\bB\s*\/\s*C\s+CONN\.?/gi, 'B/C CONN')
     .replace(/([A-Z])B\/C\b/gi, '$1 B/C')
@@ -851,6 +877,9 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   for (const c of COLOR_WORDS) {
     if (!colorPhraseMap[c]) colorPhraseMap[c] = c
   }
+  for (const c of COMPOUND_COLORS) {
+    if (!colorPhraseMap[c]) colorPhraseMap[c] = c
+  }
   const colorPhrases = Object.keys(colorPhraseMap).sort((a, b) => b.length - a.length)
 
   let brandCode: string | null = strongestBrand.brandCode
@@ -898,6 +927,12 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
       if (SIZE_MARKERS[w]) return false
       if (FLAG_MAP[w]) return false
       if (COLOR_WORDS.includes(w)) return false
+      if (['LITE', 'PRO', 'MAX', 'PLUS', 'MINI', 'NEO', 'SE'].includes(w)) return false
+      if (['LITE', 'PRO', 'MAX', 'PLUS', 'MINI', 'NEO', 'SE'].includes(w)) return false
+      // Reject if this word begins a multi-word part phrase (e.g. MIDDLE FRAME, BACK PANEL)
+      for (const pp of partPhrases) {
+        if (pp.startsWith(w + ' ')) return false
+      }
       for (let i = ws; i < we; i++) if (consumed[i]) return false
       return true
     }
@@ -946,6 +981,27 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
   }
 
+  // Pre-scan: detect hyphenated compound colors like TOPAZ-BLUE, GLAMOUR-RED
+  // These break the main loop because TOPAZ isn't a color word, but BLUE is.
+  // Detect the pattern and pre-consume the whole hyphenated word as color.
+  const compoundColorRe = /\b([A-Z][A-Z]+)-([A-Z][A-Z]+)\b/g
+  let compoundMatch: RegExpExecArray | null
+  while ((compoundMatch = compoundColorRe.exec(work)) !== null) {
+    const secondWord = compoundMatch[2]
+    if (COLOR_WORDS.includes(secondWord)) {
+      const start = compoundMatch.index
+      const end = compoundMatch.index + compoundMatch[0].length
+      // Check boundaries (not inside another word)
+      const beforeOk = start === 0 || !/[A-Z0-9]/.test(work[start - 1])
+      const afterOk = end >= work.length || !/[A-Z0-9]/.test(work[end])
+      if (beforeOk && afterOk && !color) {
+        color = compoundMatch[0].toUpperCase()
+        for (let i = start; i < end; i++) consumed[i] = true
+        break
+      }
+    }
+  }
+
   let pos = 0
   while (pos < work.length) {
     if (
@@ -965,12 +1021,13 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
         if (!partCode) {
           partCode = code
           matchedPartPhrase = phrase
-          consume(pos, phrase.length)
-          pos += phrase.length
-          matched = true
-          break
         }
-        // part already set — skip, let token fall through to flag/variant
+        // Always consume — even if partCode already set, so the phrase
+        // doesn't leak into model text
+        consume(pos, phrase.length)
+        pos += phrase.length
+        matched = true
+        break
       }
     }
     if (matched) continue
@@ -1040,6 +1097,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     let colorMatched = false
     for (const phrase of colorPhrases) {
       if (tryMatchAt(pos, phrase)) {
+        const thisColor = colorPhraseMap[phrase]
         if (!color) {
           const ext = extendColor(pos, phrase.length)
           if (ext.start < pos || ext.end > pos + phrase.length) {
@@ -1055,11 +1113,15 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
             color = ext.text
             pos = ext.end
           } else {
-            color = colorPhraseMap[phrase]
+            color = thisColor
             consume(pos, phrase.length)
             pos += phrase.length
           }
         } else {
+          // Second color found — append to first
+          if (!color.includes(thisColor)) {
+            color = color + '-' + thisColor
+          }
           consume(pos, phrase.length)
           pos += phrase.length
         }
@@ -1365,6 +1427,21 @@ export function parseCSV(
 
       brandCode = scan.brandCode
       partCode = scan.partCode
+
+      if (working.toUpperCase().includes('FRAME')) {
+        if (/\bFLEX\b/i.test(working)) {
+          partCode = 'MFF'
+        } else if (!partCode || partCode === 'MF') {
+          partCode = 'MF'
+        }
+      }
+
+      // MD + FLEX → MFF (Middle Frame With Flex)
+      // If part is MF and the description has FLEX in it anywhere, upgrade to MFF
+      const hasFlexInDescription = /\bFLEX\b/i.test(working)
+      if (partCode === 'MF' && hasFlexInDescription) {
+        partCode = 'MFF'
+      }
       if (quality === 'Normal') {
         quality = paren.quality || scan.quality
       }

@@ -26,6 +26,15 @@ export default function AdminPage() {
               Add/edit part, brand, color, quality aliases
             </div>
           </Link>
+          <Link
+            href="/admin/balance-check"
+            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+          >
+            <div className="text-sm font-semibold text-slate-800">Balance Check</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Detect and fix customer balance drift
+            </div>
+          </Link>
         </div>
         <Link href="/" className="text-blue-600 mt-4 inline-block text-sm">
           ← Home
