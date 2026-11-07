@@ -388,7 +388,16 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
   }
 
   async function deleteSale() {
-    if (!isOwner) return
+    const today = new Date().toLocaleDateString('en-CA')
+    const isToday = billDate === today
+
+    if (!isOwner && !isToday) {
+      setMessage(
+        'Staff can only delete today\'s bills. Ask owner to delete older bills.'
+      )
+      return
+    }
+
     if (
       !confirm(
         `Delete sale #${saleId}? Stock will be restored. Customer balance will be adjusted.`
@@ -606,16 +615,25 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
 
         {/* Footer */}
         <div className="px-4 sm:px-5 py-3 border-t border-slate-200 flex items-center gap-2 bg-slate-50 rounded-b-2xl shrink-0">
-          {isOwner && (
-            <button
-              onClick={deleteSale}
-              disabled={saving}
-              className="h-11 px-3 text-sm font-medium text-rose-700 border border-rose-300 rounded-lg hover:bg-rose-50 disabled:opacity-50 flex items-center gap-1"
-            >
-              <Trash2 className="w-4 h-4" />
-              Delete
-            </button>
-          )}
+          {(() => {
+            const today = new Date().toLocaleDateString('en-CA')
+            const canDelete = isOwner || billDate === today
+            return (
+              <button
+                onClick={deleteSale}
+                disabled={saving || !canDelete}
+                title={
+                  !canDelete
+                    ? 'Staff can only delete today\'s bills'
+                    : 'Delete this sale'
+                }
+                className="h-11 px-3 text-sm font-medium text-rose-700 border border-rose-300 rounded-lg hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete
+              </button>
+            )
+          })()}
           <button
             onClick={onClose}
             disabled={saving}
