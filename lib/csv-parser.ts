@@ -1,5 +1,5 @@
-// lib/csv-parser.ts — PART 1 OF 3
-// v34.1 — Fix A: dedupe Type of Goods against Description before scan
+// lib/csv-parser.ts — v35.0 — DB-driven rules with hardcoded fallback
+// v34.1 base + DB typo rules + DB alias tables (via setDBMessages)
 
 export type Quality =
   | 'Normal'
@@ -7,6 +7,8 @@ export type Quality =
   | '100 OG'
   | 'Care OG'
   | 'China OG'
+  | 'GL'
+  | 'PGL'
 
 export type ParsedRow = {
   rowNumber: number
@@ -37,6 +39,73 @@ export type AliasMaps = {
   partAliases: Record<string, string>
   colorAliases?: Record<string, string>
   validBrandCodes?: string[]
+}
+
+// ============================================================
+// DB-loaded rule cache — populated once per import session
+// via setDBMessages(). When null, parser uses hardcoded rules.
+// ============================================================
+
+export type TypoRule = {
+  pattern: string
+  replacement: string
+  match_type: 'word' | 'phrase' | 'regex'
+  priority?: number
+}
+
+export type DBMessages = {
+  partAliases: Record<string, string>
+  brandAliases: Record<string, string>
+  colorAliases: Record<string, string>
+  flagAliases: Record<string, string>
+  qualityAliases: Record<string, string>
+  variantAliases: Record<string, string>
+  typoRules: TypoRule[]
+}
+
+let dbCache: DBMessages | null = null
+
+export function setDBMessages(messages: DBMessages | null): void {
+  dbCache = messages
+}
+
+// Public wrapper for showing what the parser sees after typo normalization
+export function previewNormalizedText(text: string): string {
+  return normalizeTypos(text).toUpperCase()
+}
+
+export function clearDBMessages(): void {
+  dbCache = null
+}
+
+export function hasDBMessages(): boolean {
+  return dbCache !== null
+}
+
+export function applyTypoRules(text: string, rules: TypoRule[]): string {
+  if (!rules || rules.length === 0) return text
+  let t = text
+  const sorted = [...rules].sort(
+    (a, b) => (a.priority ?? 100) - (b.priority ?? 100)
+  )
+  for (const rule of sorted) {
+    try {
+      if (rule.match_type === 'word') {
+        const re = new RegExp(`\\b${rule.pattern}\\b`, 'gi')
+        t = t.replace(re, rule.replacement)
+      } else if (rule.match_type === 'phrase') {
+        const pattern = rule.pattern.replace(/\s+/g, '\\s+')
+        const re = new RegExp(`\\b${pattern}\\b`, 'gi')
+        t = t.replace(re, rule.replacement)
+      } else if (rule.match_type === 'regex') {
+        const re = new RegExp(rule.pattern, 'gi')
+        t = t.replace(re, rule.replacement)
+      }
+    } catch {
+      // bad regex in DB — skip
+    }
+  }
+  return t
 }
 
 const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
@@ -125,7 +194,7 @@ const COMPOUND_COLORS = [
   'STARRY-BLACK', 'LUMINOUS-BLACK', 'DAWN-WHITE', 'MIRROR-BLACK',
   'SPACE-BLACK', 'ONYX-GRAY', 'TROPICAL-GREEN',
   'COOL-BLUE', 'COOL-GREY', 'COOL-GRAY',  'DESERT-TITANIUM',
-    'CRYSTAL-BLACK', 'GLITTERY-WHITE', 'AWESOME-BLACK', 'AWESOME-BLUE',
+  'CRYSTAL-BLACK', 'GLITTERY-WHITE', 'AWESOME-BLACK', 'AWESOME-BLUE',
   'AWESOME-VOILET', 'AWESOME-WHITE', 'SUN-SHOWER', 'DIAMOND-RED',
   'DYNAMIC-BLACK', 'RADIANT-BLUE', 'COBALT-BLUE', 'OLIVE-GREEN',
   'RAINFOREST', 'MIRROR-BLACK', 'OXYGEN-GREEN', 'PHANTOM-BLACK',
@@ -142,7 +211,6 @@ const COLOR_WORDS = [
   'ONYX', 'COPPER', 'CHAMPAGNE', 'IVORY', 'CREAM', 'SAND', 'GOLDEN',
   'ROSE', 'VIOLET', 'MAGENTA', 'TURQUOISE', 'INDIGO', 'MAROON',
   'BURGUNDY', 'BLUSH', 'NEON', 'CHROME', 'GRAPHITE', 'MATTE',
-    // Compound color modifiers (prefixes used with base colors)
   'TOPAZ', 'GLAMOUR', 'OCEAN', 'MIST', 'LIME', 'MIDNIGHT', 'ROYAL',
   'GALACTIC', 'SONIC', 'MAJESTIC', 'HIMALAYAN', 'NEBULA', 'OBSIDIAN',
   'DREAMY', 'CORAL', 'TITAN', 'SPECTRE', 'ARTISTIC', 'SUNRISE',
@@ -160,9 +228,9 @@ const PART_CODE_MAP: Record<string, string> = {
   MFF: 'MFF', 'MIDDLE FRAME WITH FLEX': 'MFF',
   LCD: 'LCD', 'LCD FLEX': 'LCD',
   'LCD FLEX MAIN': 'LCD', 'LCD FLEX {MAIN}': 'LCD',
-  LCDCON: 'LCDCON', 'LCD CONNECTOR': 'LCDCON', 'LCD CONN': 'LCDCON', 'LCD CONN.': 'LCDCON',
+  LCDCON: 'LCDCON', 'LCD CONNECTOR': 'LCDCON', 'LCD CONN': 'LCDCON', 'LCD CONN.': 'LCDCON', 'LCD CON': 'LCDCON',
   LCDRING: 'LCDRING', 'LCD RING': 'LCDRING',
-  BATCON: 'BATCON', 'BATTERY CONNECTOR': 'BATCON', 'BATTERY CONN': 'BATCON',
+  BATCON: 'BATCON', 'BATTERY CONNECTOR': 'BATCON', 'BATTERY CONN': 'BATCON', BC: 'BATCON',
   'BATTERY CONN.': 'BATCON', 'B/C': 'BATCON', 'B/C CONN': 'BATCON', 'B/C CONN.': 'BATCON',
   BOARDCONN: 'BOARDCONN', 'BOARD CONN': 'BOARDCONN', 'BOARD CONN.': 'BOARDCONN',
   'BORD CONN': 'BOARDCONN', 'BORD CONN.': 'BOARDCONN',
@@ -254,8 +322,8 @@ const PART_TYPE_PHRASES: string[] = [
   'CONVERTER HOUSING', 'CONVETOR HOUSING', 'CONVERT HOUSING', 'CONVERT HOUSIG',
   'CONVERTER', 'CONVETOR', 'CONVERT',
   'BATTERY CONNECTOR', 'BATTERY CONN.', 'BATTERY CONN',
-  'B/C CONN.', 'B/C CONN', 'BOARD CONN.', 'BOARD CONN', 'BORD CONN.', 'BORD CONN',
-  'LCD CONNECTOR', 'LCD CONN.', 'LCD CONN', 'LCD RING',
+  'B/C CONN.', 'B/C CONN', 'BC', 'BOARD CONN.', 'BOARD CONN', 'BORD CONN.', 'BORD CONN',
+  'LCD CONNECTOR', 'LCD CONN.', 'LCD CONN', 'LCD CON', 'LCD RING',
   'GAS KIT FRONT', 'GAS KIT BACK', 'GAS KIT',
   'ON OFF', 'ON/OFF', 'ON OFF SWITCH', 'ONOFF SWITCH', 'TIKLI', 'ON OFF FLEX', 'ON/OFF FLEX',
   'ONLY FLEX', 'FLEX ONLY',
@@ -303,9 +371,15 @@ export function findColumnIndex(headers: string[], candidates: string[]): number
   }
   return -1
 }
-// PART 2 OF 3
+// ============================================================
+// Typo normalization — DB rules first, hardcoded fallback
+// ============================================================
 
 function normalizeTypos(desc: string): string {
+  // Apply DB typo rules first (if loaded via setDBMessages)
+  if (dbCache && dbCache.typoRules.length > 0) {
+    desc = applyTypoRules(desc, dbCache.typoRules)
+  }
   return desc
     .replace(/\b(SAM|MI|IP|VV|OP|RM|NK|TEC|INF|HUA|ITL|JIO|MT|NOTH|ONE)([A-Z])(\d)/g, '$1 $2$3')
     .replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
@@ -360,14 +434,22 @@ function normalizeTypos(desc: string): string {
 }
 
 function containsColorWord(text: string): boolean {
+  const words = dbCache
+    ? Object.keys(dbCache.colorAliases)
+    : COLOR_WORDS
   const upper = text.toUpperCase()
-  return COLOR_WORDS.some((word) => {
+  return words.some((word) => {
     const re = new RegExp(`\\b${word}\\b`, 'i')
     return re.test(upper)
   })
 }
 
 function resolveColorAlias(text: string, colorAliases?: Record<string, string>): string | null {
+  // DB color map takes precedence
+  if (dbCache) {
+    const upper = text.toUpperCase().trim()
+    return dbCache.colorAliases[upper] || null
+  }
   if (!colorAliases) return null
   const upper = text.toUpperCase().trim()
   return colorAliases[upper] || null
@@ -405,6 +487,8 @@ function extractParentheticals(desc: string): ParentheticalResult {
   let variant: string | null = null
   let year: string | null = null
 
+  const flagMap = dbCache ? dbCache.flagAliases : FLAG_MAP
+
   const re = /\(([^)]+)\)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(desc)) !== null) {
@@ -430,7 +514,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
       if (!quality) quality = 'OG'; continue
     }
 
-    if (FLAG_MAP[upper]) { flag = FLAG_MAP[upper]; continue }
+    if (flagMap[upper]) { flag = flagMap[upper]; continue }
     if (SIZE_MARKERS[upper]) { size = SIZE_MARKERS[upper]; continue }
 
     if (VARIANT_KEYWORDS.test(upper)) {
@@ -465,8 +549,13 @@ function extractQualityFromMarkers(markers: string[]): {
     const hasOrig = /\b(ORI|ORIG|ORIGINAL|ORG)\b/.test(upper)
     const hasMixOG = /\bMIX\s+OG\b/.test(upper)
     const hasPlainOG = /\bOG\b/.test(upper) && !hasHundred && !hasChina && !hasMixOG
+    const hasPGL = /\b1\s*#\s*GLASS\b/.test(upper) || /\b1\s+GLASS\b/.test(upper) || /\bPGL\b/.test(upper)
+    const hasGL = /\bGLASS\b/.test(upper) && !hasPGL
+    const hasGLShort = /\bGL\b/.test(upper) && !hasPGL && !hasGL
 
-    if (hasHundred) {
+    if (hasPGL) {
+      if (quality === 'Normal' || quality === 'OG') quality = 'PGL'
+    } else if (hasHundred) {
       if (quality === 'Normal' || quality === 'OG') quality = '100 OG'
     } else if (hasChina) {
       if (quality === 'Normal' || quality === 'OG') quality = 'China OG'
@@ -478,9 +567,18 @@ function extractQualityFromMarkers(markers: string[]): {
       if (quality === 'Normal') quality = 'OG'
     } else if (hasPlainOG) {
       if (quality === 'Normal') quality = 'OG'
+    } else if (hasGL) {
+      if (quality === 'Normal') quality = 'GL'
+    } else if (hasGLShort) {
+      if (quality === 'Normal') quality = 'GL'
     }
 
     const residual = upper
+      .replace(/\b1\s*#\s*GLASS\b/g, ' ')
+      .replace(/\b1\s+GLASS\b/g, ' ')
+      .replace(/\bPGL\b/g, ' ')
+      .replace(/\bGLASS\b/g, ' ')
+      .replace(/\bGL\b/g, ' ')
       .replace(/\b100\s*%?(?:\s*(?:OG|ORIG|ORIGINAL))?\b/g, ' ')
       .replace(/\bCHINA\s*(?:OG|ORIG|ORIGINAL)\b/g, ' ')
       .replace(/\bC\+\b/g, ' ')
@@ -517,6 +615,8 @@ function classifyMarkers(
   let color: string | null = null
   let modelAlias: string | null = null
 
+  const flagMap = dbCache ? dbCache.flagAliases : FLAG_MAP
+
   for (const m of markers) {
     const upper = m.toUpperCase().trim()
 
@@ -531,8 +631,8 @@ function classifyMarkers(
     if (SIZE_MARKERS[upper]) { size = SIZE_MARKERS[upper]; continue }
 
     const flagKey = upper.replace(/\s+/g, '')
-    if (FLAG_MAP[upper]) { flag = FLAG_MAP[upper]; continue }
-    if (FLAG_MAP[flagKey]) { flag = FLAG_MAP[flagKey]; continue }
+    if (flagMap[upper]) { flag = flagMap[upper]; continue }
+    if (flagMap[flagKey]) { flag = flagMap[flagKey]; continue }
 
     if (PACKAGING_VARIANT.test(upper)) {
       if (!variant) variant = 'BOX-PACKING'; continue
@@ -572,6 +672,7 @@ function findBrandAnywhere(
     return { brandCode: null, matchIndex: -1, matchLength: 0, matchedKey: '' }
   }
 
+  const brandAliasSource = dbCache ? dbCache.brandAliases : aliases.brandAliases
   const upper = text.toUpperCase()
   const candidates: Array<{
     brandCode: string
@@ -580,7 +681,7 @@ function findBrandAnywhere(
     matchedKey: string
   }> = []
 
-  const keys = Object.keys(aliases.brandAliases).sort((a, b) => b.length - a.length)
+  const keys = Object.keys(brandAliasSource).sort((a, b) => b.length - a.length)
   for (const key of keys) {
     if (key.length < 2) continue
     const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -588,7 +689,7 @@ function findBrandAnywhere(
     const m = re.exec(upper)
     if (!m) continue
 
-    const brandCode = aliases.brandAliases[key]
+    const brandCode = brandAliasSource[key]
     if (!brandCode) continue
 
     candidates.push({
@@ -626,11 +727,13 @@ function normalizePartCode(raw: string | null): string | null {
     .replace(/\.$/, '')
     .replace(/\s+/g, ' ')
 
-  if (PART_CODE_MAP[upper]) return PART_CODE_MAP[upper]
+  const partMap = dbCache ? dbCache.partAliases : PART_CODE_MAP
+
+  if (partMap[upper]) return partMap[upper]
   const spaceForm = upper.replace(/\s*\/\s*/g, ' ')
-  if (PART_CODE_MAP[spaceForm]) return PART_CODE_MAP[spaceForm]
+  if (partMap[spaceForm]) return partMap[spaceForm]
   const noSpace = upper.replace(/\s+/g, '')
-  if (PART_CODE_MAP[noSpace]) return PART_CODE_MAP[noSpace]
+  if (partMap[noSpace]) return partMap[noSpace]
 
   const bare = upper.replace(/[^A-Z0-9]/g, '')
   if (bare.length === 0 || bare.length > 10) return null
@@ -745,6 +848,8 @@ export function generateSku(fields: {
   else if (quality === '100 OG') seg.push('100OG')
   else if (quality === 'Care OG') seg.push('CARE')
   else if (quality === 'China OG') seg.push('CHINAOG')
+  else if (quality === 'GL') seg.push('GL')
+  else if (quality === 'PGL') seg.push('PGL')
 
   return seg.filter(Boolean).join('-')
 }
@@ -813,10 +918,17 @@ function extractPartFromDescription(
 ): { partText: string | null; cleanedDesc: string } {
   const upper = desc.toUpperCase()
 
-  const dbPhrases = aliases ? Object.keys(aliases.partAliases) : []
-  const allPhrases = Array.from(new Set([...dbPhrases, ...PART_TYPE_PHRASES]))
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)
+  let allPhrases: string[]
+  if (dbCache) {
+    allPhrases = Object.keys(dbCache.partAliases)
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length)
+  } else {
+    const dbPhrases = aliases ? Object.keys(aliases.partAliases) : []
+    allPhrases = Array.from(new Set([...dbPhrases, ...PART_TYPE_PHRASES]))
+      .filter(Boolean)
+      .sort((a, b) => b.length - a.length)
+  }
 
   for (const phrase of allPhrases) {
     const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -831,7 +943,10 @@ function extractPartFromDescription(
   }
   return { partText: null, cleanedDesc: desc }
 }
-// PART 3 OF 3
+
+// ============================================================
+// scanDescription
+// ============================================================
 
 type ScanResult = {
   brandCode: string | null
@@ -852,33 +967,51 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   const strongestBrand = findBrandAnywhere(work, aliases)
 
   const partPhraseMap: Record<string, string> = {}
-  for (const p of Object.keys(aliases.partAliases)) {
-    partPhraseMap[p.toUpperCase()] = aliases.partAliases[p]
-  }
-  for (const phrase of PART_TYPE_PHRASES) {
-    const key = phrase.toUpperCase()
-    if (!partPhraseMap[key]) {
-      const code = PART_CODE_MAP[key]
-      if (code) partPhraseMap[key] = code
+  if (dbCache) {
+    for (const k of Object.keys(dbCache.partAliases)) {
+      partPhraseMap[k.toUpperCase()] = dbCache.partAliases[k]
+    }
+  } else {
+    for (const p of Object.keys(aliases.partAliases)) {
+      partPhraseMap[p.toUpperCase()] = aliases.partAliases[p]
+    }
+    for (const phrase of PART_TYPE_PHRASES) {
+      const key = phrase.toUpperCase()
+      if (!partPhraseMap[key]) {
+        const code = PART_CODE_MAP[key]
+        if (code) partPhraseMap[key] = code
+      }
     }
   }
   const partPhrases = Object.keys(partPhraseMap).sort((a, b) => b.length - a.length)
 
   const brandPhraseMap: Record<string, string> = {}
-  for (const b of Object.keys(aliases.brandAliases)) {
-    brandPhraseMap[b.toUpperCase()] = aliases.brandAliases[b]
+  if (dbCache) {
+    for (const k of Object.keys(dbCache.brandAliases)) {
+      brandPhraseMap[k.toUpperCase()] = dbCache.brandAliases[k]
+    }
+  } else {
+    for (const b of Object.keys(aliases.brandAliases)) {
+      brandPhraseMap[b.toUpperCase()] = aliases.brandAliases[b]
+    }
   }
   const brandPhrases = Object.keys(brandPhraseMap).sort((a, b) => b.length - a.length)
 
   const colorPhraseMap: Record<string, string> = {}
-  for (const c of Object.keys(aliases.colorAliases || {})) {
-    colorPhraseMap[c.toUpperCase()] = (aliases.colorAliases || {})[c]
-  }
-  for (const c of COLOR_WORDS) {
-    if (!colorPhraseMap[c]) colorPhraseMap[c] = c
-  }
-  for (const c of COMPOUND_COLORS) {
-    if (!colorPhraseMap[c]) colorPhraseMap[c] = c
+  if (dbCache) {
+    for (const k of Object.keys(dbCache.colorAliases)) {
+      colorPhraseMap[k.toUpperCase()] = dbCache.colorAliases[k]
+    }
+  } else {
+    for (const c of Object.keys(aliases.colorAliases || {})) {
+      colorPhraseMap[c.toUpperCase()] = (aliases.colorAliases || {})[c]
+    }
+    for (const c of COLOR_WORDS) {
+      if (!colorPhraseMap[c]) colorPhraseMap[c] = c
+    }
+    for (const c of COMPOUND_COLORS) {
+      if (!colorPhraseMap[c]) colorPhraseMap[c] = c
+    }
   }
   const colorPhrases = Object.keys(colorPhraseMap).sort((a, b) => b.length - a.length)
 
@@ -906,7 +1039,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     for (let i = pos; i < end; i++) if (consumed[i]) return false
     return true
   }
-
   function consume(pos: number, len: number) {
     for (let i = pos; i < pos + len; i++) consumed[i] = true
   }
@@ -929,7 +1061,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
       if (COLOR_WORDS.includes(w)) return false
       if (['LITE', 'PRO', 'MAX', 'PLUS', 'MINI', 'NEO', 'SE'].includes(w)) return false
       if (['LITE', 'PRO', 'MAX', 'PLUS', 'MINI', 'NEO', 'SE'].includes(w)) return false
-      // Reject if this word begins a multi-word part phrase (e.g. MIDDLE FRAME, BACK PANEL)
       for (const pp of partPhrases) {
         if (pp.startsWith(w + ' ')) return false
       }
@@ -981,9 +1112,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
   }
 
-  // Pre-scan: detect hyphenated compound colors like TOPAZ-BLUE, GLAMOUR-RED
-  // These break the main loop because TOPAZ isn't a color word, but BLUE is.
-  // Detect the pattern and pre-consume the whole hyphenated word as color.
   const compoundColorRe = /\b([A-Z][A-Z]+)-([A-Z][A-Z]+)\b/g
   let compoundMatch: RegExpExecArray | null
   while ((compoundMatch = compoundColorRe.exec(work)) !== null) {
@@ -991,11 +1119,31 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     if (COLOR_WORDS.includes(secondWord)) {
       const start = compoundMatch.index
       const end = compoundMatch.index + compoundMatch[0].length
-      // Check boundaries (not inside another word)
       const beforeOk = start === 0 || !/[A-Z0-9]/.test(work[start - 1])
       const afterOk = end >= work.length || !/[A-Z0-9]/.test(work[end])
       if (beforeOk && afterOk && !color) {
         color = compoundMatch[0].toUpperCase()
+        for (let i = start; i < end; i++) consumed[i] = true
+        break
+      }
+    }
+  }
+
+  if (!color) {
+    const spaceCompoundRe = /\b([A-Z][A-Z]+)\s+([A-Z][A-Z]+)\b/g
+    let spaceMatch: RegExpExecArray | null
+    while ((spaceMatch = spaceCompoundRe.exec(work)) !== null) {
+      const prefix = spaceMatch[1]
+      const secondWord = spaceMatch[2]
+      if (!COLOR_WORDS.includes(secondWord)) continue
+      const compoundKey = `${prefix}-${secondWord}`
+      if (!COMPOUND_COLORS.includes(compoundKey)) continue
+      const start = spaceMatch.index
+      const end = spaceMatch.index + spaceMatch[0].length
+      const beforeOk = start === 0 || !/[A-Z0-9]/.test(work[start - 1])
+      const afterOk = end >= work.length || !/[A-Z0-9]/.test(work[end])
+      if (beforeOk && afterOk) {
+        color = compoundKey
         for (let i = start; i < end; i++) consumed[i] = true
         break
       }
@@ -1022,8 +1170,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
           partCode = code
           matchedPartPhrase = phrase
         }
-        // Always consume — even if partCode already set, so the phrase
-        // doesn't leak into model text
         consume(pos, phrase.length)
         pos += phrase.length
         matched = true
@@ -1033,6 +1179,9 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     if (matched) continue
 
     const qualityPatterns: { re: RegExp; q: Quality }[] = [
+      { re: /^1\s*#\s*GLASS(?![A-Z0-9])/i, q: 'PGL' },
+      { re: /^1\s+GLASS(?![A-Z0-9])/i, q: 'PGL' },
+      { re: /^PGL(?![A-Z0-9])/i, q: 'PGL' },
       { re: /^100\s*%?\s*CARE(?:\s+(?:OG|ORIG|ORIGINAL))?(?![A-Z0-9])/i, q: 'Care OG' },
       { re: /^CARE(?:\s+(?:OG|ORIG|ORIGINAL))?(?![A-Z0-9])/i, q: 'Care OG' },
       { re: /^100\s*%?\s*(?:OG|ORIG|ORIGINAL)/i, q: '100 OG' },
@@ -1040,6 +1189,8 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
       { re: /^CHINA\s*(?:OG|ORIG|ORIGINAL)/i, q: 'China OG' },
       { re: /^(?:OG|ORI|ORIG|ORIGINAL|ORG)(?![A-Z0-9])/i, q: 'OG' },
       { re: /^C\+/i, q: 'China OG' },
+      { re: /^GLASS(?![A-Z0-9])/i, q: 'GL' },
+      { re: /^GL(?![A-Z0-9])/i, q: 'GL' },
     ]
     for (const { re, q } of qualityPatterns) {
       const m = work.slice(pos).match(re)
@@ -1082,10 +1233,11 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     if (sizeMatched) continue
 
     let flagMatched = false
-    const flagKeys = Object.keys(FLAG_MAP).sort((a, b) => b.length - a.length)
+    const flagSource = dbCache ? dbCache.flagAliases : FLAG_MAP
+    const flagKeys = Object.keys(flagSource).sort((a, b) => b.length - a.length)
     for (const k of flagKeys) {
       if (tryMatchAt(pos, k)) {
-        if (!flag) flag = FLAG_MAP[k]
+        if (!flag) flag = flagSource[k]
         consume(pos, k.length)
         pos += k.length
         flagMatched = true
@@ -1096,11 +1248,21 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
     let colorMatched = false
     for (const phrase of colorPhrases) {
-      if (tryMatchAt(pos, phrase)) {
-        const thisColor = colorPhraseMap[phrase]
+      let matchedPhrase = phrase
+      let matchedColor = tryMatchAt(pos, phrase)
+      if (!matchedColor && phrase.includes('-')) {
+        const spaceForm = phrase.replace(/-/g, ' ')
+        if (tryMatchAt(pos, spaceForm)) {
+          matchedPhrase = spaceForm
+          matchedColor = true
+        }
+      }
+      if (matchedColor) {
+        const phraseLen = matchedPhrase.length
+        const thisColor = colorPhraseMap[matchedPhrase] || colorPhraseMap[phrase]
         if (!color) {
-          const ext = extendColor(pos, phrase.length)
-          if (ext.start < pos || ext.end > pos + phrase.length) {
+          const ext = extendColor(pos, phraseLen)
+          if (ext.start < pos || ext.end > pos + phraseLen) {
             for (let i = ext.start; i < ext.end; i++) {
               if (
                 work[i] !== ' ' &&
@@ -1114,16 +1276,15 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
             pos = ext.end
           } else {
             color = thisColor
-            consume(pos, phrase.length)
-            pos += phrase.length
+            consume(pos, phraseLen)
+            pos += phraseLen
           }
         } else {
-          // Second color found — append to first
           if (!color.includes(thisColor)) {
             color = color + '-' + thisColor
           }
-          consume(pos, phrase.length)
-          pos += phrase.length
+          consume(pos, phraseLen)
+          pos += phraseLen
         }
         colorMatched = true
         break
@@ -1146,7 +1307,6 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
       continue
     }
 
-    // Brand block — do NOT consume if brandCode already set.
     let brandMatched = false
     for (const phrase of brandPhrases) {
       if (phrase.length < 2) continue
@@ -1179,7 +1339,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
   const finalBrandCode = strongestBrand.brandCode || brandCode
   if (finalBrandCode) {
-    const brandAliases = Object.keys(aliases.brandAliases)
+    const brandAliases = Object.keys(brandPhraseMap)
       .filter((key) => key.length >= 2)
       .sort((a, b) => b.length - a.length)
 
@@ -1208,7 +1368,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 }
 
 // ============================================================
-// parseCSV — v34.1 (Fix A applied in the else branch)
+// parseCSV
 // ============================================================
 
 export function parseCSV(
@@ -1218,7 +1378,7 @@ export function parseCSV(
 ): ParsedRow[] {
   const safeAliases: AliasMaps = {
     ...aliases,
-    brandAliases: withFallbackBrandAliases(aliases.brandAliases),
+    brandAliases: dbCache ? dbCache.brandAliases : withFallbackBrandAliases(aliases.brandAliases),
   }
 
   const lines = splitCSVLines(text)
@@ -1331,20 +1491,22 @@ export function parseCSV(
       network = (modelRaw.match(/\b(4G|5G)\b/i) || [null])[0]
       if (network) network = network.toUpperCase()
 
-      brandCode = safeAliases.brandAliases[brandRaw] || brandRaw
+      const brandSource = dbCache ? dbCache.brandAliases : safeAliases.brandAliases
+      brandCode = brandSource[brandRaw] || brandRaw
       const nm = normalizeModelName(
         modelRaw.replace(/\(4G\)|\(5G\)/gi, '').trim()
       )
       modelName = nm.model
 
-      const directAlias = aliases.partAliases[partRaw]
+      const partSource = dbCache ? dbCache.partAliases : aliases.partAliases
+      const directAlias = partSource[partRaw]
       if (directAlias) {
         partCode = directAlias
       } else {
         const typeExtracted = extractPartFromDescription(partRaw, aliases)
         if (typeExtracted.partText) {
           partCode =
-            aliases.partAliases[typeExtracted.partText.toUpperCase()] ||
+            partSource[typeExtracted.partText.toUpperCase()] ||
             normalizePartCode(typeExtracted.partText)
         } else if (/^[A-Z0-9]{1,10}$/i.test(partRaw.trim())) {
           partCode = normalizePartCode(partRaw)
@@ -1352,18 +1514,13 @@ export function parseCSV(
       }
       if (nm.strippedPart && !partCode) {
         partCode =
-          aliases.partAliases[nm.strippedPart] ||
+          partSource[nm.strippedPart] ||
           normalizePartCode(nm.strippedPart)
       }
     } else {
       rawDescription = rawDescFromRow
       rawType = rawTypeFromRow
 
-      // ===== FIX A (v34.2) — dedupe on typo-normalized strings =====
-      // If Type of Goods is already contained in Description (ignoring typos
-      // like CONVETOR vs CONVERTER), drop it from `combined` so the part
-      // phrase only appears once. Prevents the second occurrence from leaking
-      // into model text.
       const normForCmp = (s: string) =>
         normalizeTypos(s).toUpperCase().replace(/\s+/g, ' ').trim()
       const descCmp = normForCmp(rawDescFromRow)
@@ -1374,13 +1531,19 @@ export function parseCSV(
       } else {
         combined = `${rawDescFromRow} ${rawTypeFromRow}`.trim()
       }
-      // ===== END FIX A =====
 
-      // Curly-brace quality extraction — before any strip
       const curlyMatches = combined.match(/\{[^}]*\}/g)
       if (curlyMatches) {
         for (const block of curlyMatches) {
           const inner = block.slice(1, -1).trim().toUpperCase()
+          if (/1\s*#\s*GLASS|1\s+GLASS/.test(inner)) {
+            quality = 'PGL'
+            break
+          }
+          if (/\bGLASS\b/.test(inner)) {
+            quality = 'GL'
+            break
+          }
           if (/100\s*%/.test(inner) || inner === '100') {
             quality = '100 OG'
             break
@@ -1398,12 +1561,14 @@ export function parseCSV(
             break
           }
         }
+        combined = combined.replace(/\{[^}]*\}/g, ' ')
       }
 
-      // v33: bracket strip preserves content, drops brackets
+      const flagMap = dbCache ? dbCache.flagAliases : FLAG_MAP
+
       combined = combined.replace(/\[([^\]]*)\]/g, (match, inner) => {
         const upper = inner.trim().toUpperCase()
-        if (FLAG_MAP[upper]) return ' ' + inner + ' '
+        if (flagMap[upper]) return ' ' + inner + ' '
         if (SIZE_MARKERS[upper]) return ' ' + inner + ' '
         if (/EXX\s*-?\s*BEE/i.test(inner)) return ' ' + inner + ' '
         if (
@@ -1436,8 +1601,6 @@ export function parseCSV(
         }
       }
 
-      // MD + FLEX → MFF (Middle Frame With Flex)
-      // If part is MF and the description has FLEX in it anywhere, upgrade to MFF
       const hasFlexInDescription = /\bFLEX\b/i.test(working)
       if (partCode === 'MF' && hasFlexInDescription) {
         partCode = 'MFF'
@@ -1459,16 +1622,18 @@ export function parseCSV(
       const nm = normalizeModelName(scan.modelText)
       modelName = nm.model
       if (nm.strippedPart && !partCode) {
+        const partSource = dbCache ? dbCache.partAliases : aliases.partAliases
         partCode =
-          aliases.partAliases[nm.strippedPart] ||
+          partSource[nm.strippedPart] ||
           normalizePartCode(nm.strippedPart)
       }
 
       if (!partCode) {
         const fallback = extractPartFromDescription(working, aliases)
         if (fallback.partText) {
+          const partSource = dbCache ? dbCache.partAliases : aliases.partAliases
           partCode =
-            aliases.partAliases[fallback.partText.toUpperCase()] ||
+            partSource[fallback.partText.toUpperCase()] ||
             normalizePartCode(fallback.partText)
         }
       }
@@ -1567,4 +1732,36 @@ export function parseCSV(
   }
 
   return flagged
+}
+
+// ============================================================
+// Fingerprint
+// ============================================================
+
+export function buildFingerprint(row: {
+  brandCode: string | null
+  modelName: string | null
+  partCode: string | null
+  quality: Quality | null | undefined
+  color: string | null
+  variant: string | null
+  flag: string | null
+  network: string | null
+  year: string | null
+}): string {
+  const upper = (s: string | null | undefined) =>
+    (s ?? '').toString().toUpperCase().replace(/\s+/g, ' ').trim()
+  const trimmed = (s: string | null | undefined) =>
+    (s ?? '').toString().replace(/\s+/g, ' ').trim()
+  return [
+    upper(row.brandCode),
+    upper(row.modelName),
+    upper(row.partCode),
+    trimmed(row.quality),
+    upper(row.color),
+    upper(row.variant),
+    upper(row.flag),
+    upper(row.network),
+    upper(row.year),
+  ].join('|')
 }

@@ -645,13 +645,15 @@ export default function PurchaseEntryPage() {
         quality: string
         variant: string | null
         color: string | null
+        flag: string | null
+        year: string | null
       }
     > = {}
 
     if (existingItemIds.length > 0) {
       const { data: itemRows } = await supabase
         .from('items')
-        .select('item_id, sku, brand_id, model_id, part_id, quality, variant, color')
+        .select('item_id, sku, brand_id, model_id, part_id, quality, variant, color, flag, year')
         .in('item_id', existingItemIds)
       for (const it of itemRows || []) {
         itemDetail[it.item_id] = it
@@ -666,6 +668,8 @@ export default function PurchaseEntryPage() {
       model_name: string | null
       part_code: string | null
       network: string | null
+      flag: string | null
+      year: string | null
       quality: string
       variant: string | null
       color: string | null
@@ -676,7 +680,6 @@ export default function PurchaseEntryPage() {
       is_general_item: boolean
       category_code: string | null
     }
-
     const payloadLines: PayloadLine[] = []
 
     for (const r of validRows) {
@@ -684,9 +687,12 @@ export default function PurchaseEntryPage() {
       let model_name: string | null = null
       let part_code: string | null = null
       let network: string | null = null
+      let flag: string | null = null
+      let year: string | null = null
       let quality: string = r.quality || 'Normal'
       let variant: string | null = r.variant || null
       let color: string | null = r.color || null
+
       let sku: string = r.sku || ''
       const is_gen = !!r.is_general_item
       const cat_code = r.category_code || null
@@ -708,6 +714,8 @@ export default function PurchaseEntryPage() {
         quality = it.quality || quality
         variant = it.variant ?? variant
         color = it.color ?? color
+        flag = it.flag ?? flag
+        year = it.year ?? year
       } else if (is_gen) {
         if (!r.sku) {
           setMessage(`Row ${r.rowId}: missing SKU for general item.`)
@@ -726,6 +734,8 @@ export default function PurchaseEntryPage() {
         part_code = r.part_code.toUpperCase()
         model_name = r.model_name
         network = r.network
+        flag = r.flag || null
+        year = r.year || null
       }
 
       const share =
@@ -739,6 +749,8 @@ export default function PurchaseEntryPage() {
         model_name,
         part_code,
         network,
+        flag,
+        year,
         quality,
         variant,
         color,
@@ -1462,13 +1474,21 @@ export default function PurchaseEntryPage() {
         </div>
       </div>
 
-      <ImportCSVDialog
-        open={showImport}
-        onClose={() => setShowImport(false)}
-        onImport={handleCSVImport}
-        onSkipRows={handleSkipRows}
-      />
-
+ <ImportCSVDialog
+  open={showImport}
+  onClose={() => setShowImport(false)}
+  onStaged={(sessionId) => {
+    setShowImport(false)
+    const qs = new URLSearchParams({
+      party: String(pickedSupplier.id || ''),
+      invoice: invoiceNo.trim(),
+      date: purchaseDate,
+      freight: String(Number(freight) || 0),
+      cash: String(Number(cashPaid) || 0),
+    }).toString()
+    window.location.href = `/imports/staging/${sessionId}?${qs}`
+  }}
+/>
       <NewItemDialog
         open={showNewItem}
         onClose={() => {

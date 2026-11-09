@@ -4,13 +4,10 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import {
   parseCSV,
-  groupParsedRows,
-  flagDuplicates,
-  generateSku,
+  setDBMessages,
   AliasMaps,
-  ItemLookup,
   ParsedRow,
-  Quality,
+  TypoRule,
 } from '@/lib/csv-parser'
 import {
   detectGeneralItemCSV,
@@ -26,6 +23,11 @@ import {
   ColumnRole,
 } from '@/lib/csv-mapper'
 import {
+  newSessionId,
+  writeStagingRows,
+  classifySession,
+} from '@/lib/import-staging'
+import {
   Upload,
   X,
   Check,
@@ -33,16 +35,22 @@ import {
   FileText,
   Sparkles,
   Settings2,
-  Pencil,
-  SkipForward,
 } from 'lucide-react'
 
 type Props = {
   open: boolean
   onClose: () => void
-  onImport: (matched: ParsedRow[], newItems: ParsedRow[], margin: number) => void
+  /** Staging flow — used by /purchases. Parent navigates to
+   *  /imports/staging/<sessionId>. */
+  onStaged?: (sessionId: string) => void
+  /** Legacy direct-import flow — used by /purchase-returns.
+   *  Called with parsed rows; parent decides what to do. */
+  onImport?: (
+    matched: ParsedRow[],
+    newItems: ParsedRow[],
+    margin: number
+  ) => void
   actionLabel?: string
-  onSkipRows?: (skipped: ParsedRow[]) => void
 }
 
 const ROLE_OPTIONS: { value: ColumnRole; label: string }[] = [
@@ -58,21 +66,17 @@ const ROLE_OPTIONS: { value: ColumnRole; label: string }[] = [
 export function ImportCSVDialog({
   open,
   onClose,
+  onStaged,
   onImport,
   actionLabel,
-  onSkipRows,
 }: Props) {
   const [csvText, setCsvText] = useState('')
   const [mode, setMode] = useState<'auto' | 'manual'>('auto')
   const [detected, setDetected] = useState<DetectedColumn[]>([])
   const [mapping, setMapping] = useState<ColumnMapping>({})
-  const [parsedRows, setParsedRows] = useState<ParsedRow[]>([])
   const [aliases, setAliases] = useState<AliasMaps | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [margin, setMargin] = useState('1.5')
-  const [editingRow, setEditingRow] = useState<number | null>(null)
-  const [skippedIndices, setSkippedIndices] = useState<Set<number>>(new Set())
 
   useEffect(() => {
     if (open && !aliases) loadAliases()
@@ -81,10 +85,14 @@ export function ImportCSVDialog({
   async function loadAliases() {
     setLoading(true)
 
-    const [brandRes, partRes, colorRes] = await Promise.all([
+    const [brandRes, partRes, colorRes, flagRes, qualityRes, variantRes, typoRes] = await Promise.all([
       supabase.from('brand_aliases').select('csv_code, brand_code'),
       supabase.from('part_type_aliases').select('csv_text, part_code'),
       supabase.from('parser_color_aliases').select('csv_text, color_value'),
+      supabase.from('flag_aliases').select('source_text, target_flag'),
+      supabase.from('quality_aliases').select('source_text, target_quality'),
+      supabase.from('variant_aliases').select('source_text, target_variant'),
+      supabase.from('typo_rules').select('pattern, replacement, match_type, priority').order('priority').order('id'),
     ])
 
     const brandAliases: Record<string, string> = {
@@ -125,63 +133,39 @@ export function ImportCSVDialog({
     }
 
     const colorAliases: Record<string, string> = {}
-    for (const r of ((colorRes.data as any[]) || [])) {
+    for (const r of (colorRes.data as any[]) || []) {
       colorAliases[String(r.csv_text).toUpperCase()] = String(r.color_value)
     }
 
     setAliases({ brandAliases, partAliases, colorAliases })
-    setLoading(false)
-  }
 
-  // Scoped SKU lookup — no full-table load. Chunked at 500.
-  async function lookupItemsBySku(skus: string[]): Promise<ItemLookup[]> {
-    const uniq = Array.from(
-      new Set(skus.map((s) => s.toUpperCase()).filter(Boolean))
-    )
-    if (uniq.length === 0) return []
+    // Load DB rules into parser cache (uses alias tables for every lookup)
+    const toMap = (rows: any[], k: string, v: string) =>
+      Object.fromEntries(
+        (rows || []).map((r) => [
+          String(r[k]).toUpperCase().trim(),
+          String(r[v]),
+        ])
+      )
 
-    const out: ItemLookup[] = []
-    const CHUNK = 500
-    for (let i = 0; i < uniq.length; i += CHUNK) {
-      const slice = uniq.slice(i, i + CHUNK)
-      const { data, error } = await supabase
-        .from('items')
-        .select('item_id, sku, brand_id, model_id, part_id, quality')
-        .in('sku', slice)
-      if (error) {
-        throw new Error('Could not look up existing SKUs: ' + error.message)
-      }
-      for (const it of (data as ItemLookup[]) || []) out.push(it)
-    }
-    return out
-  }
+    const typoRules: TypoRule[] = ((typoRes.data as any[]) || []).map((r) => ({
+      pattern: String(r.pattern),
+      replacement: String(r.replacement),
+      match_type: (r.match_type as 'word' | 'phrase' | 'regex') || 'word',
+      priority: r.priority ?? 100,
+    }))
 
-  // Reclassify matched/new from real DB state.
-  async function reclassify(rows: ParsedRow[]): Promise<ParsedRow[]> {
-    const skus = rows.map((r) => r.generatedSku).filter(Boolean) as string[]
-    const freshItems = await lookupItemsBySku(skus)
-    const freshBySku = new Map(
-      freshItems.map((it) => [it.sku.toUpperCase(), it])
-    )
-    return rows.map((r) => {
-      if (r.status === 'error') return r
-      if (!r.generatedSku) return r
-      const found = freshBySku.get(r.generatedSku.toUpperCase())
-      if (found) {
-        return {
-          ...r,
-          status: 'matched' as const,
-          matchedItemId: found.item_id,
-          matchedItemSku: found.sku,
-        }
-      }
-      return {
-        ...r,
-        status: 'new' as const,
-        matchedItemId: null,
-        matchedItemSku: null,
-      }
+    setDBMessages({
+      partAliases: toMap(partRes.data || [], 'csv_text', 'part_code'),
+      brandAliases: toMap(brandRes.data || [], 'csv_code', 'brand_code'),
+      colorAliases: toMap(colorRes.data || [], 'csv_text', 'color_value'),
+      flagAliases: toMap(flagRes.data || [], 'source_text', 'target_flag'),
+      qualityAliases: toMap(qualityRes.data || [], 'source_text', 'target_quality'),
+      variantAliases: toMap(variantRes.data || [], 'source_text', 'target_variant'),
+      typoRules,
     })
+
+    setLoading(false)
   }
 
   function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -191,9 +175,7 @@ export function ImportCSVDialog({
     reader.onload = (ev) => {
       const text = String(ev.target?.result || '')
       setCsvText(text)
-      setParsedRows([])
       setDetected([])
-      setSkippedIndices(new Set())
     }
     reader.readAsText(file)
   }
@@ -213,6 +195,51 @@ export function ImportCSVDialog({
     setMapping(buildDefaultMapping(result.columns))
   }
 
+  async function stageAndNavigate(
+    parse: () => Promise<ParsedRow[]> | ParsedRow[]
+  ) {
+    setLoading(true)
+    setError('')
+    try {
+      const rows = await parse()
+      if (rows.length === 0) {
+        setError('No valid rows found. Check the CSV.')
+        setLoading(false)
+        return
+      }
+      // Legacy flow — call onImport directly, no staging
+      if (onImport && !onStaged) {
+        const matched = rows.filter((r) => r.status === 'matched')
+        const newItems = rows.filter((r) => r.status === 'new')
+        const errorRows = rows.filter((r) => r.status === 'error')
+        if (errorRows.length > 0 && matched.length === 0 && newItems.length === 0) {
+          setError(`All ${errorRows.length} rows failed to parse.`)
+          setLoading(false)
+          return
+        }
+        setLoading(false)
+        onImport(matched, newItems, 1.5)
+        resetAndClose()
+        return
+      }
+      // Staging flow
+      if (!onStaged) {
+        setError('Import handler not configured.')
+        setLoading(false)
+        return
+      }
+      const sessionId = newSessionId()
+      await writeStagingRows(sessionId, rows)
+      await classifySession(sessionId)
+      setLoading(false)
+      onStaged(sessionId)
+      resetAndClose()
+    } catch (e: any) {
+      setLoading(false)
+      setError(e.message || 'Failed to stage CSV')
+    }
+  }
+
   async function handleParseAuto() {
     setError('')
     if (!aliases) return
@@ -220,33 +247,14 @@ export function ImportCSVDialog({
       setError('Please paste CSV.')
       return
     }
-    try {
+    await stageAndNavigate(async () => {
       const isGeneral = detectGeneralItemCSV(csvText)
-
-      let rows: ParsedRow[]
       if (isGeneral) {
         const generalRows = parseGeneralCSV(csvText, [])
-        rows = generalRows as unknown as ParsedRow[]
-      } else {
-        rows = parseCSV(csvText, aliases, [])
+        return generalRows as unknown as ParsedRow[]
       }
-
-      if (rows.length === 0) {
-        setError('No valid rows found in auto mode. Try Manual mapping.')
-        return
-      }
-
-      setLoading(true)
-      rows = await reclassify(rows)
-      setLoading(false)
-
-      setParsedRows(rows)
-      setEditingRow(null)
-      setSkippedIndices(new Set())
-    } catch (e: any) {
-      setLoading(false)
-      setError(e.message || 'Failed to parse CSV')
-    }
+      return parseCSV(csvText, aliases, [])
+    })
   }
 
   async function handleParseManual() {
@@ -257,153 +265,25 @@ export function ImportCSVDialog({
       setError('Missing required roles: ' + validation.missing.join(', '))
       return
     }
-    try {
-      let rows = applyMapping(csvText, mapping, aliases, [])
-      if (rows.length === 0) {
-        setError('No valid rows found. Check your mapping.')
-        return
-      }
-
-      setLoading(true)
-      rows = await reclassify(rows)
-      setLoading(false)
-
-      setParsedRows(rows)
-      setEditingRow(null)
-      setSkippedIndices(new Set())
-    } catch (e: any) {
-      setLoading(false)
-      setError(e.message || 'Failed to parse CSV')
-    }
-  }
-
-  function updateRow(index: number, patch: Partial<ParsedRow>) {
-    setParsedRows((prev) => {
-      const updated = prev.map((r, i) => {
-        if (i !== index) return r
-        const merged = { ...r, ...patch }
-
-        if (
-          patch.brandCode !== undefined ||
-          patch.modelName !== undefined ||
-          patch.partCode !== undefined ||
-          patch.quality !== undefined ||
-          patch.network !== undefined ||
-          patch.year !== undefined ||
-          patch.variant !== undefined ||
-          patch.flag !== undefined ||
-          patch.color !== undefined
-        ) {
-          const sku = buildSkuFromParts(merged)
-          merged.generatedSku = sku
-        }
-
-        if (!merged.brandCode || !merged.partCode) {
-          merged.status = 'error'
-          merged.errorMessage = 'Missing brand or part'
-        } else if (!merged.generatedSku) {
-          merged.status = 'error'
-          merged.errorMessage = 'Could not build SKU'
-        } else {
-          merged.matchedItemId = null
-          merged.matchedItemSku = null
-          merged.status = 'new'
-          merged.errorMessage = undefined
-        }
-
-        return merged
-      })
-
-      return flagDuplicates(updated)
-    })
-  }
-
-  function skipRow(index: number) {
-    setSkippedIndices((prev) => {
-      const next = new Set(prev)
-      next.add(index)
-      return next
-    })
-    if (editingRow === index) setEditingRow(null)
-    const row = parsedRows[index]
-    if (row && onSkipRows) {
-      onSkipRows([row])
-    }
-  }
-
-  function unskipRow(index: number) {
-    setSkippedIndices((prev) => {
-      const next = new Set(prev)
-      next.delete(index)
-      return next
-    })
-  }
-
-  function skipAllErrors() {
-    setSkippedIndices((prev) => {
-      const next = new Set(prev)
-      parsedRows.forEach((r, i) => {
-        if (r.status === 'error') next.add(i)
-      })
-      return next
-    })
-  }
-
-  function handleFill() {
-    const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
-
-    const { matched, newItems } = groupParsedRows(effectiveRows)
-
-    const usableMatched = matched.filter(
-      (r) => r.status !== 'error' && r.generatedSku
-    )
-    const usableNew = newItems.filter(
-      (r) => r.status !== 'error' && r.generatedSku
-    )
-
-    if (usableMatched.length === 0 && usableNew.length === 0) {
-      setError('No valid rows to import.')
-      return
-    }
-
-    onImport(usableMatched, usableNew, Number(margin) || 1.5)
-    resetAndClose()
+    await stageAndNavigate(() => applyMapping(csvText, mapping, aliases, []))
   }
 
   function resetAndClose() {
     setCsvText('')
-    setParsedRows([])
     setDetected([])
     setMapping({})
     setError('')
     setMode('auto')
-    setEditingRow(null)
-    setSkippedIndices(new Set())
     onClose()
   }
 
   if (!open) return null
 
-  const grouped = groupParsedRows(parsedRows)
-  const effectiveRows = parsedRows.filter((_, i) => !skippedIndices.has(i))
-  const groupedEffective = groupParsedRows(effectiveRows)
-  const totalUsable =
-    groupedEffective.matched.filter((r) => r.status !== 'error').length +
-    groupedEffective.newItems.filter((r) => r.status !== 'error').length
   const mappingValidation = validateMapping(mapping)
-
-  const sortedRows: { row: ParsedRow; originalIndex: number }[] = parsedRows
-    .map((row, originalIndex) => ({ row, originalIndex }))
-    .sort((a, b) => {
-      const order: Record<string, number> = { error: 0, new: 1, matched: 2 }
-      const diff = order[a.row.status] - order[b.row.status]
-      if (diff !== 0) return diff
-      return a.originalIndex - b.originalIndex
-    })
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl max-h-[90vh] flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
           <div className="flex items-center gap-2">
             <FileText className="w-5 h-5 text-blue-600" />
@@ -447,7 +327,7 @@ export function ImportCSVDialog({
         <div className="flex-1 overflow-y-auto p-6">
           {loading && (
             <div className="text-center py-8 text-slate-500">
-              {parsedRows.length === 0 ? 'Loading aliases…' : 'Checking SKUs…'}
+              {aliases ? 'Staging rows…' : 'Loading aliases…'}
             </div>
           )}
 
@@ -474,14 +354,11 @@ export function ImportCSVDialog({
                   value={csvText}
                   onChange={(e) => {
                     setCsvText(e.target.value)
-                    setParsedRows([])
                     setDetected([])
                     setError('')
-                    setEditingRow(null)
-                    setSkippedIndices(new Set())
                   }}
                   placeholder="Paste CSV text here..."
-                  rows={6}
+                  rows={10}
                   className="w-full font-mono text-xs p-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
 
@@ -500,8 +377,12 @@ export function ImportCSVDialog({
                     disabled={!csvText.trim()}
                     className="h-10 px-5 text-sm font-semibold text-white bg-slate-800 rounded-lg hover:bg-slate-900 disabled:opacity-50"
                   >
-                    Parse CSV (Auto)
+                    {onImport && !onStaged ? 'Parse CSV (Auto)' : 'Stage CSV (Auto)'}
                   </button>
+                  <p className="text-xs text-slate-500 mt-2">
+                    Parses the CSV and writes rows to staging. Nothing is
+                    created until you promote on the review page.
+                  </p>
                 </div>
               )}
 
@@ -585,7 +466,7 @@ export function ImportCSVDialog({
                           disabled={!mappingValidation.valid}
                           className="h-10 px-5 text-sm font-semibold text-white bg-slate-800 rounded-lg hover:bg-slate-900 disabled:opacity-50"
                         >
-                          Apply Mapping & Preview
+                          {onImport && !onStaged ? 'Parse CSV with Mapping' : 'Stage CSV with Mapping'}
                         </button>
 
                         {!mappingValidation.valid && (
@@ -605,201 +486,17 @@ export function ImportCSVDialog({
                   )}
                 </div>
               )}
-
-              {parsedRows.length > 0 && (
-                <>
-                  <div className="flex items-center gap-4 mt-6 mb-3 text-sm flex-wrap">
-                    <span className="flex items-center gap-1 text-green-700 font-medium">
-                      <Check className="w-4 h-4" />
-                      {groupedEffective.matched.filter((r) => r.status !== 'error').length} matched
-                    </span>
-                    <span className="flex items-center gap-1 text-amber-700 font-medium">
-                      <Sparkles className="w-4 h-4" />
-                      {groupedEffective.newItems.filter((r) => r.status !== 'error').length} new
-                    </span>
-                    {grouped.errors.length > 0 && (
-                      <span className="flex items-center gap-1 text-red-700 font-medium">
-                        <AlertCircle className="w-4 h-4" />
-                        {grouped.errors.length - skippedIndices.size} errors
-                      </span>
-                    )}
-                    {skippedIndices.size > 0 && (
-                      <span className="flex items-center gap-1 text-slate-500 font-medium">
-                        <SkipForward className="w-4 h-4" />
-                        {skippedIndices.size} skipped
-                      </span>
-                    )}
-                    <div className="ml-auto flex items-center gap-2">
-                      {grouped.errors.length > 0 && (
-                        <button
-                          onClick={skipAllErrors}
-                          className="h-7 px-3 text-xs font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-100 flex items-center gap-1"
-                          title="Mark all erroring rows as skipped"
-                        >
-                          <SkipForward className="w-3.5 h-3.5" />
-                          Skip all errors
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="border border-slate-200 rounded-lg overflow-hidden max-h-96 overflow-y-auto">
-                    <table className="w-full text-xs">
-                      <thead className="bg-slate-100 sticky top-0 z-10">
-                        <tr>
-                          <th className="px-3 py-2 text-left">#</th>
-                          <th className="px-3 py-2 text-left">Description</th>
-                          <th className="px-3 py-2 text-left">Type</th>
-                          <th className="px-3 py-2 text-left">Generated SKU</th>
-                          <th className="px-3 py-2 text-right">Qty</th>
-                          <th className="px-3 py-2 text-right">Rate</th>
-                          <th className="px-3 py-2 text-center">Status</th>
-                          <th className="px-3 py-2 text-center w-20">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedRows.map(({ row: r, originalIndex }) => {
-                          const isSkipped = skippedIndices.has(originalIndex)
-                          return (
-                            <tr
-                              key={originalIndex}
-                              className={
-                                isSkipped
-                                  ? 'bg-slate-100 opacity-60 line-through'
-                                  : r.status === 'error'
-                                  ? 'bg-red-100 border-l-4 border-red-500'
-                                  : r.status === 'matched'
-                                  ? 'bg-green-50/50'
-                                  : 'bg-amber-50/50'
-                              }
-                            >
-                              <td className="px-3 py-1.5 text-slate-500 align-top">
-                                {r.rowNumber}
-                              </td>
-                              <td className="px-3 py-1.5 text-slate-700 align-top">
-                                <div>{r.rawDescription}</div>
-                                {r.status === 'error' && r.errorMessage && !isSkipped && (
-                                  <div className="mt-0.5 text-[10px] text-red-700 font-medium">
-                                    ⚠ {r.errorMessage}
-                                  </div>
-                                )}
-                                {isSkipped && (
-                                  <div className="mt-0.5 text-[10px] text-slate-600 font-medium italic">
-                                    Skipped — will be saved to /imports/skipped
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-slate-600 align-top">
-                                {r.rawType}
-                              </td>
-                              <td className="px-3 py-1.5 font-mono text-slate-800 align-top">
-                                {r.generatedSku || '—'}
-                              </td>
-                              <td className="px-3 py-1.5 text-right align-top">
-                                {r.qty || '—'}
-                              </td>
-                              <td className="px-3 py-1.5 text-right align-top">
-                                {r.rate ? `₹ ${r.rate.toFixed(2)}` : '—'}
-                              </td>
-                              <td className="px-3 py-1.5 text-center align-top">
-                                {isSkipped ? (
-                                  <span className="text-slate-500 text-[10px] font-semibold">
-                                    SKIPPED
-                                  </span>
-                                ) : r.status === 'matched' ? (
-                                  <span className="text-green-700 text-[10px] font-semibold">
-                                    MATCHED
-                                  </span>
-                                ) : r.status === 'new' ? (
-                                  <span className="text-amber-700 text-[10px] font-semibold">
-                                    NEW
-                                  </span>
-                                ) : (
-                                  <span className="text-red-700 text-[10px] font-semibold">
-                                    ERROR
-                                  </span>
-                                )}
-                              </td>
-                              <td className="px-3 py-1.5 text-center align-top">
-                                <div className="flex items-center justify-center gap-1">
-                                  {!isSkipped && (
-                                    <button
-                                      onClick={() =>
-                                        setEditingRow(
-                                          editingRow === originalIndex
-                                            ? null
-                                            : originalIndex
-                                        )
-                                      }
-                                      className={`p-1 rounded hover:bg-slate-200 ${
-                                        r.status === 'error'
-                                          ? 'text-red-600'
-                                          : 'text-slate-400'
-                                      }`}
-                                      title="Edit row"
-                                    >
-                                      <Pencil className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
-                                  {!isSkipped ? (
-                                    <button
-                                      onClick={() => skipRow(originalIndex)}
-                                      className="p-1 rounded text-slate-500 hover:bg-slate-200 hover:text-slate-700"
-                                      title="Skip this row (will be saved for later review)"
-                                    >
-                                      <SkipForward className="w-3.5 h-3.5" />
-                                    </button>
-                                  ) : (
-                                    <button
-                                      onClick={() => unskipRow(originalIndex)}
-                                      className="p-1 rounded text-blue-600 hover:bg-blue-100"
-                                      title="Un-skip this row"
-                                    >
-                                      <Check className="w-3.5 h-3.5" />
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {editingRow !== null && parsedRows[editingRow] && (
-                    <EditRowPanel
-                      row={parsedRows[editingRow]}
-                      index={editingRow}
-                      onChange={(patch) => updateRow(editingRow, patch)}
-                      onClose={() => setEditingRow(null)}
-                    />
-                  )}
-                </>
-              )}
             </>
           )}
         </div>
 
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-200 bg-slate-50">
-          <div className="flex items-center gap-4">
-            <div className="text-xs text-slate-500">
-              {parsedRows.length > 0
-                ? `${totalUsable} rows ready (${groupedEffective.matched.filter((r) => r.status !== 'error').length} matched + ${groupedEffective.newItems.filter((r) => r.status !== 'error').length} new)${skippedIndices.size > 0 ? `, ${skippedIndices.size} skipped` : ''}`
-                : 'Waiting for CSV input...'}
-            </div>
-            {parsedRows.length > 0 && (
-              <div className="flex items-center gap-2 text-xs">
-                <label className="text-slate-600">Margin:</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={margin}
-                  onChange={(e) => setMargin(e.target.value)}
-                  className="w-16 h-7 px-2 text-xs text-center border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            )}
+          <div className="text-xs text-slate-500">
+            {loading
+              ? 'Staging rows…'
+              : onImport && !onStaged
+              ? `Parse CSV to fill ${actionLabel || 'this form'}.`
+              : 'Parse CSV to stage rows for review. Nothing is created until you promote.'}
           </div>
           <div className="flex items-center gap-3">
             <button
@@ -808,279 +505,9 @@ export function ImportCSVDialog({
             >
               Cancel
             </button>
-            {parsedRows.length > 0 && totalUsable > 0 && (
-              <button
-                onClick={handleFill}
-                className="h-9 px-5 text-sm font-semibold text-white bg-amber-600 rounded-lg hover:bg-amber-700 flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4" />
-                {actionLabel || 'Create All & Fill'} ({totalUsable})
-                {skippedIndices.size > 0 && ` · ${skippedIndices.size} skipped`}
-              </button>
-            )}
           </div>
         </div>
       </div>
     </div>
   )
-}
-
-/* ============================================================
-   Edit row panel
-   ============================================================ */
-function EditRowPanel({
-  row,
-  index,
-  onChange,
-  onClose,
-}: {
-  row: ParsedRow
-  index: number
-  onChange: (patch: Partial<ParsedRow>) => void
-  onClose: () => void
-}) {
-  const [brand, setBrand] = useState(row.brandCode || '')
-  const [model, setModel] = useState(row.modelName || '')
-  const [part, setPart] = useState(row.partCode || '')
-  const [network, setNetwork] = useState(row.network || '')
-  const [year, setYear] = useState(row.year || '')
-  const [variant, setVariant] = useState(row.variant || '')
-  const [flag, setFlag] = useState(row.flag || '')
-  const [color, setColor] = useState(row.color || '')
-  const [quality, setQuality] = useState<Quality>(row.quality || 'Normal')
-  const [qty, setQty] = useState(String(row.qty))
-  const [rate, setRate] = useState(String(row.rate))
-
-  useEffect(() => {
-    setBrand(row.brandCode || '')
-    setModel(row.modelName || '')
-    setPart(row.partCode || '')
-    setNetwork(row.network || '')
-    setYear(row.year || '')
-    setVariant(row.variant || '')
-    setFlag(row.flag || '')
-    setColor(row.color || '')
-    setQuality(row.quality || 'Normal')
-    setQty(String(row.qty))
-    setRate(String(row.rate))
-  }, [row])
-
-  function handleApply() {
-    onChange({
-      brandCode: brand.trim() || null,
-      modelName: model.trim() || null,
-      partCode: part.trim() || null,
-      network: network.trim() || null,
-      year: year.trim() || null,
-      variant: variant.trim() || null,
-      flag: flag.trim() || null,
-      color: color.trim() || null,
-      quality: quality,
-      qty: parseFloat(qty) || 0,
-      rate: parseFloat(rate) || 0,
-    })
-    onClose()
-  }
-
-  return (
-    <div className="mt-3 border-2 border-blue-400 rounded-lg bg-blue-50/50 p-4">
-      <div className="flex items-center justify-between mb-3">
-        <div className="text-sm font-semibold text-blue-900">
-          Editing row #{index + 1}
-        </div>
-        <button
-          onClick={onClose}
-          className="text-slate-400 hover:text-slate-700"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
-
-      <div className="text-xs text-slate-600 mb-3 italic">
-        Original: {row.rawDescription}
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Brand code
-          </label>
-          <input
-            value={brand}
-            onChange={(e) => setBrand(e.target.value.toUpperCase())}
-            placeholder="OP"
-            className="w-full h-8 px-2 text-sm font-mono border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Model
-          </label>
-          <input
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            placeholder="F21S PRO 4G"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Part code
-          </label>
-          <input
-            value={part}
-            onChange={(e) => setPart(e.target.value.toUpperCase())}
-            placeholder="BP"
-            className="w-full h-8 px-2 text-sm font-mono border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Year
-          </label>
-          <input
-            value={year}
-            onChange={(e) => setYear(e.target.value.toUpperCase())}
-            placeholder="2021"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Variant
-          </label>
-          <input
-            value={variant}
-            onChange={(e) => setVariant(e.target.value.toUpperCase())}
-            placeholder="MAIN / BOX-PACKING"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Network
-          </label>
-          <input
-            value={network}
-            onChange={(e) => setNetwork(e.target.value.toUpperCase())}
-            placeholder="4G / 5G"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Flag
-          </label>
-          <input
-            value={flag}
-            onChange={(e) => setFlag(e.target.value.toUpperCase())}
-            placeholder="WL / WC"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Color
-          </label>
-          <input
-            value={color}
-            onChange={(e) => setColor(e.target.value.toUpperCase())}
-            placeholder="BLACK"
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Quality
-          </label>
-          <select
-            value={quality}
-            onChange={(e) => setQuality(e.target.value as Quality)}
-            className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="Normal">Normal</option>
-            <option value="OG">OG</option>
-            <option value="100 OG">100 OG</option>
-            <option value="Care OG">Care OG</option>
-            <option value="China OG">China OG</option>
-          </select>
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Qty
-          </label>
-          <input
-            value={qty}
-            onChange={(e) => setQty(e.target.value)}
-            type="number"
-            className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div>
-          <label className="block text-[11px] font-medium text-slate-700 mb-1">
-            Rate
-          </label>
-          <input
-            value={rate}
-            onChange={(e) => setRate(e.target.value)}
-            type="number"
-            step="0.01"
-            className="w-full h-8 px-2 text-sm text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-        <div className="flex items-end col-span-2 md:col-span-4">
-          <button
-            onClick={handleApply}
-            className="w-full md:w-32 h-8 text-sm font-semibold text-white bg-blue-600 rounded hover:bg-blue-700"
-          >
-            Apply
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 text-[11px] text-slate-600">
-        Preview SKU:{' '}
-        <span className="font-mono text-slate-800">
-          {buildSkuFromParts({
-            brandCode: brand.trim() || null,
-            modelName: model.trim() || null,
-            partCode: part.trim() || null,
-            year: year.trim() || null,
-            variant: variant.trim() || null,
-            network: network.trim() || null,
-            flag: flag.trim() || null,
-            color: color.trim() || null,
-            quality: quality,
-          }) || '—'}
-        </span>
-      </div>
-    </div>
-  )
-}
-
-/* ============================================================
-   Local SKU builder — mirrors lib/csv-parser generateSku
-   ============================================================ */
-function buildSkuFromParts(row: {
-  brandCode: string | null
-  modelName: string | null
-  partCode: string | null
-  year: string | null
-  variant: string | null
-  network: string | null
-  flag: string | null
-  color: string | null
-  quality: string
-}): string | null {
-  return generateSku({
-    brandCode: row.brandCode,
-    modelName: row.modelName,
-    partCode: row.partCode,
-    year: row.year,
-    variant: row.variant,
-    network: row.network,
-    flag: row.flag,
-    color: row.color,
-    quality: row.quality as Quality,
-  })
 }

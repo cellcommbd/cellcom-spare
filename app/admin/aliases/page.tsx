@@ -84,6 +84,18 @@ const TABLES: TableConfig[] = [
     targetCol: 'target_variant',
     idCol: 'id',
   },
+  {
+    key: 'typos',
+    label: 'Typos',
+    table: 'typo_rules',
+    sourceCol: 'pattern',
+    targetCol: 'replacement',
+    idCol: 'id',
+    extraCols: [
+      { name: 'match_type', label: 'Match Type (word/phrase/regex)' },
+      { name: 'priority', label: 'Priority (10=first, 100=default)' },
+    ],
+  },
 ]
 type Row = Record<string, any>
 
@@ -176,7 +188,15 @@ export default function AliasesPage() {
     }
     if (config.extraCols) {
       for (const col of config.extraCols) {
-        payload[col.name] = formData[col.name] ? String(formData[col.name]).trim() : null
+        const raw = formData[col.name]
+        if (raw === undefined || raw === null || raw === '') {
+          payload[col.name] = null
+        } else if (col.name === 'priority') {
+          const n = parseInt(String(raw), 10)
+          payload[col.name] = isNaN(n) ? 100 : n
+        } else {
+          payload[col.name] = String(raw).trim()
+        }
       }
     }
 
@@ -488,13 +508,38 @@ function EditModal({
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 {c.label}
               </label>
-              <input
-                value={form[c.name] || ''}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, [c.name]: e.target.value }))
-                }
-                className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
+              {c.name === 'match_type' ? (
+                <select
+                  value={form[c.name] || 'word'}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, [c.name]: e.target.value }))
+                  }
+                  className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="word">word</option>
+                  <option value="phrase">phrase</option>
+                  <option value="regex">regex</option>
+                </select>
+              ) : c.name === 'priority' ? (
+                <input
+                  type="number"
+                  value={form[c.name] ?? 100}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, [c.name]: e.target.value }))
+                  }
+                  className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  min={1}
+                  max={200}
+                />
+              ) : (
+                <input
+                  value={form[c.name] || ''}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, [c.name]: e.target.value }))
+                  }
+                  className="w-full h-9 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              )}
             </div>
           ))}
         </div>
