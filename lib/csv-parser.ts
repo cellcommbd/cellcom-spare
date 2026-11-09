@@ -788,6 +788,23 @@ function normalizeModelName(model: string | null): {
   })
   cleaned = cleaned.replace(/\b(\d+)\s+([A-Z])\b/g, '$1$2')
 
+  // Strip redundant model repeat: if a token in the middle matches the prefix of
+  // the first token, drop the duplicate. E.g. "A04E ... A04" → "A04E ..." 
+  const words = cleaned.split(/\s+/)
+  if (words.length >= 2) {
+    const first = words[0]
+    const filtered = [first]
+    for (let i = 1; i < words.length; i++) {
+      const w = words[i]
+      // If this word is a prefix of first AND first is longer, drop it
+      if (w.length >= 3 && first.startsWith(w) && first.length > w.length) {
+        continue
+      }
+      filtered.push(w)
+    }
+    cleaned = filtered.join(' ')
+  }
+
   if (!cleaned) return { model: null, strippedPart }
 
   cleaned = cleaned.replace(TRAILING_QUALITY_REGEX, '').trim()
@@ -1214,7 +1231,11 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
     const yearMatch = work.slice(pos).match(/^(?:19|20)\d{2}(?![A-Z0-9])/)
     if (yearMatch && tryMatchAt(pos, yearMatch[0])) {
-      if (!year) year = yearMatch[0]
+      if (!year) {
+        year = yearMatch[0]
+      } else if (year !== yearMatch[0] && !year.split('-').includes(yearMatch[0])) {
+        year = year + '-' + yearMatch[0]
+      }
       consume(pos, yearMatch[0].length)
       pos += yearMatch[0].length
       continue
@@ -1223,7 +1244,11 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     let sizeMatched = false
     for (const [k, v] of Object.entries(SIZE_MARKERS)) {
       if (tryMatchAt(pos, k)) {
-        if (!size) size = v
+        if (!size) {
+          size = v
+        } else if (size !== v && !size.split('-').includes(v)) {
+          size = size + '-' + v
+        }
         consume(pos, k.length)
         pos += k.length
         sizeMatched = true
@@ -1295,7 +1320,7 @@ function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     const variantMatch = work
       .slice(pos)
       .match(
-        /^(?:BOX\s*PACKING|BOXPACKING|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
+        /^(?:BOX\s*PACKING|BOXPACKING|MAIN\s*\d+|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
       )
     if (variantMatch && tryMatchAt(pos, variantMatch[0])) {
       const v = variantMatch[0].toUpperCase().replace(/\.$/, '')
@@ -1589,6 +1614,7 @@ export function parseCSV(
       const working = paren.cleanedDesc
 
       const scan = scanDescription(working, safeAliases)
+
 
       brandCode = scan.brandCode
       partCode = scan.partCode
