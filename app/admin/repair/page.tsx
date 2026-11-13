@@ -151,16 +151,19 @@ export default function RepairPage() {
             <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
               <div className="text-xs font-semibold text-blue-900">
-                Current SKU grammar (v34.2)
+                Current SKU grammar (v37-canonical)
               </div>
               <div className="text-[11px] text-blue-800 mt-1 font-mono">
-                BRAND - MODEL - YEAR - PART - NETWORK - FLAG - VARIANT - COLOR - QUALITY
+                BRAND - MODEL - YEAR - PART - NETWORK - FLAG - SIZE - VARIANT - COLOR - QUALITY
               </div>
               <ul className="text-[11px] text-blue-800 mt-1.5 space-y-0.5 list-disc list-inside">
                 <li>Year (if present) comes AFTER model, BEFORE part</li>
-                <li>Flag comes BEFORE variant</li>
+                <li>Flag comes AFTER network</li>
+                <li>Size (BIG/SMALL/MEDIUM/PIN) comes AFTER flag</li>
+                <li>Variant comes AFTER size</li>
                 <li>Color comes AFTER variant</li>
                 <li>Quality suffix is LAST</li>
+                <li>PIN counts (4PIN, 5PIN) fold into the PART segment</li>
               </ul>
               <div className="text-[11px] text-blue-700 mt-1.5">
                 When merging duplicates, keep the item whose SKU follows this

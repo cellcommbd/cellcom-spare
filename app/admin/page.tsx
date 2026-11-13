@@ -35,6 +35,24 @@ export default function AdminPage() {
               Detect and fix customer balance drift
             </div>
           </Link>
+          <Link
+            href="/admin/batch-audit"
+            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+          >
+            <div className="text-sm font-semibold text-slate-800">Batch Audit</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Audit bulk data for inconsistencies
+            </div>
+          </Link>
+          <Link
+            href="/admin/purchase-audit"
+            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+          >
+            <div className="text-sm font-semibold text-slate-800">Purchase Audit</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              Audit purchases and vendor records
+            </div>
+          </Link>
         </div>
         <Link href="/" className="text-blue-600 mt-4 inline-block text-sm">
           ← Home

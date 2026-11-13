@@ -41,6 +41,7 @@ const dailyNav = [
   { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
   { href: '/parties', label: 'Parties', Icon: Users },
+  { href: '/customer-ledger', label: 'Ledger', Icon: BookOpen },
   
   { href: '/brands', label: 'Brands', Icon: Tag },
   { href: '/reference', label: 'Reference', Icon: BookOpen },
@@ -55,6 +56,8 @@ const adminNav = [
   { href: '/admin/repair', label: 'Fix & Repair', Icon: Hammer },
   { href: '/admin/aliases', label: 'Aliases', Icon: BookOpen },
   { href: '/admin/balance-check', label: 'Balance Check', Icon: Wrench },
+  { href: '/admin/batch-audit', label: 'Batch Audit', Icon: ClipboardList },
+  { href: '/admin/purchase-audit', label: 'Purchase Audit', Icon: FileSearch },
 ]
 
 const ownerNav = dailyNav

@@ -311,7 +311,41 @@ function PaymentsPageInner() {
       amount: Number(it.amount),
       sku: skuMap[it.item_id] || '(unknown)',
     }))
-    setOutstandingItems(items)
+
+    // Display-only FIFO: hide items fully covered by paid_amount.
+    // Partially-paid boundary item shows with fractional quantity.
+    const itemsBySale: Record<number, SaleItem[]> = {}
+    for (const it of items) {
+      if (!itemsBySale[it.sale_id]) itemsBySale[it.sale_id] = []
+      itemsBySale[it.sale_id].push(it)
+    }
+
+    const filteredOutstanding: SaleItem[] = []
+    for (const bill of rows) {
+      const billItems = (itemsBySale[bill.sale_id] || [])
+        .slice()
+        .sort((a, b) => a.detail_id - b.detail_id)
+      let paidRemaining = Number(bill.paid_amount || 0)
+      for (const it of billItems) {
+        if (paidRemaining <= 0) {
+          filteredOutstanding.push(it)
+        } else if (paidRemaining >= it.amount) {
+          paidRemaining -= it.amount
+        } else {
+          const unpaidAmount = it.amount - paidRemaining
+          const unpaidQty =
+            it.amount > 0 ? (unpaidAmount / it.amount) * it.quantity : 0
+          filteredOutstanding.push({
+            ...it,
+            quantity: unpaidQty,
+            amount: unpaidAmount,
+          })
+          paidRemaining = 0
+        }
+      }
+    }
+
+    setOutstandingItems(filteredOutstanding)
 
     // Statement lines: today's items first, then older — same as before
     const billDateById: Record<number, string> = {}
@@ -394,12 +428,6 @@ function PaymentsPageInner() {
       .sort()
       .map((date) => {
         const bills = byDate[date]
-        const total = bills.reduce((s, b) => s + Number(b.total_amount), 0)
-        const paid = bills.reduce(
-          (s, b) => s + Number(b.paid_amount || 0),
-          0
-        )
-        const due = Math.max(0, total - paid)
         const items: SaleItem[] = []
         let itemCount = 0
         for (const b of bills) {
@@ -409,6 +437,13 @@ function PaymentsPageInner() {
             itemCount += it.quantity
           }
         }
+        const total = bills.reduce((s, b) => s + Number(b.total_amount), 0)
+        const paid = bills.reduce(
+          (s, b) => s + Number(b.paid_amount || 0),
+          0
+        )
+        // due = sum of unpaid (filtered) items, so it matches the item list
+        const due = items.reduce((s, it) => s + Number(it.amount), 0)
         return { date, bills, total, paid, due, itemCount, items }
       })
   }, [outstandingBills, outstandingItems])

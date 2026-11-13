@@ -21,6 +21,7 @@ import {
   X,
   FileSearch,
   ClipboardList,
+  BookOpen,
 } from 'lucide-react'
 
 // ---------- Types ----------
@@ -446,6 +447,12 @@ export default function Home() {
               label="Reports"
               Icon={BarChart3}
               color="purple"
+            />
+            <ActionTile
+              href="/customer-ledger"
+              label="Customer Ledger"
+              Icon={BookOpen}
+              color="indigo"
             />
             <ActionTile
               href="/purchases"

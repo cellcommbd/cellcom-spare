@@ -55,7 +55,8 @@ export function buildStatementText(data: StatementData): string {
 
   // ── Items ──
   if (data.items.length > 0) {
-    out.push('*🧾 ITEMS*')
+    const itemsSubtotal = data.items.reduce((s, x) => s + x.amount, 0)
+    out.push('*🧾 UNPAID ITEMS*')
     out.push('━━━━━━━━━━━━━━━')
     for (const item of data.items) {
       out.push(`*${item.sku}*`)
@@ -64,10 +65,15 @@ export function buildStatementText(data: StatementData): string {
       )
     }
     out.push('')
-    out.push(`*Total Purchases: Rs.${data.purchasesTotal.toFixed(2)}*`)
+    out.push(`*Unpaid Items Total: Rs.${itemsSubtotal.toFixed(2)}*`)
+    if (data.purchasesTotal > itemsSubtotal + 0.01) {
+      out.push(
+        `_Total Purchases (incl. paid): Rs.${data.purchasesTotal.toFixed(2)}_`
+      )
+    }
     out.push('')
   } else {
-    out.push('_No purchases in this period._')
+    out.push('_No unpaid items in this period._')
     out.push('')
   }
 

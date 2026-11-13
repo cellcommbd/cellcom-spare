@@ -32,6 +32,7 @@ type SaleRow = {
   sale_id: number
   bill_date: string
   total_amount: number
+  paid_amount: number | null
   status: string
 }
 
@@ -150,7 +151,7 @@ export default function StatementPage() {
 
     const { data: salesData } = await supabase
       .from('sales')
-      .select('sale_id, bill_date, total_amount, status')
+      .select('sale_id, bill_date, total_amount, paid_amount, status')
       .eq('party_id', pickedCustomerId)
       .gte('bill_date', from)
       .lte('bill_date', to)
@@ -181,15 +182,52 @@ export default function StatementPage() {
         }
       }
 
-      setLines(
-        itemList.map((it) => ({
-          detail_id: it.detail_id,
-          sku: itemMap[it.item_id] || '(unknown)',
-          quantity: Number(it.quantity),
-          rate: Number(it.rate),
-          amount: Number(it.amount),
-        }))
-      )
+      // Display-only FIFO: hide items fully covered by paid_amount.
+      // Partially-paid boundary item shows with fractional quantity.
+      const itemsBySale: Record<number, typeof itemList> = {}
+      for (const it of itemList) {
+        if (!itemsBySale[it.sale_id]) itemsBySale[it.sale_id] = []
+        itemsBySale[it.sale_id].push(it)
+      }
+
+      const filteredLines: StatementLine[] = []
+      for (const bill of saleList) {
+        const billItems = (itemsBySale[bill.sale_id] || [])
+          .slice()
+          .sort((a, b) => a.detail_id - b.detail_id)
+        let paidRemaining = Number(bill.paid_amount || 0)
+        for (const it of billItems) {
+          const rawAmount = Number(it.amount)
+          const rawQty = Number(it.quantity)
+          const rate = Number(it.rate)
+          const sku = itemMap[it.item_id] || '(unknown)'
+          if (paidRemaining <= 0) {
+            filteredLines.push({
+              detail_id: it.detail_id,
+              sku,
+              quantity: rawQty,
+              rate,
+              amount: rawAmount,
+            })
+          } else if (paidRemaining >= rawAmount) {
+            paidRemaining -= rawAmount
+          } else {
+            const unpaidAmount = rawAmount - paidRemaining
+            const unpaidQty =
+              rawAmount > 0 ? (unpaidAmount / rawAmount) * rawQty : 0
+            filteredLines.push({
+              detail_id: it.detail_id,
+              sku,
+              quantity: unpaidQty,
+              rate,
+              amount: unpaidAmount,
+            })
+            paidRemaining = 0
+          }
+        }
+      }
+
+      setLines(filteredLines)
     } else {
       setLines([])
     }
