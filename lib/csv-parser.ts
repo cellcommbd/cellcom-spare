@@ -1,27 +1,5 @@
 // lib/csv-parser.ts — v36.0 — two-pass resolver, entry-first contract
-//
-// CONTRACT
-//   Entry: every line produces a correct, non-leaking SKU, or a visible
-//   `needs_correction` row. Nothing is silently dropped. Ambiguity is a
-//   warning, not a blocker. Audit (drift reconciliation) is downstream and
-//   does not shape entry behaviour.
-//
-//   Resolver: pass 1 collects every candidate match; pass 2 resolves by
-//   (longer span) > (type priority) > (leftmost). Deterministic, no
-//   first-match leaks.
-//
-//   Three row states:
-//     'matched' | 'new'  -> import-ready (may carry warnings[])
-//     'needs_correction' -> no SKU / hard failure; operator fixes in staging
-//   parseCSV throws only if called without setDBMessages() (programmer bug).
-//
-//   Model segment: all model-like tokens, sorted lexicographically, so the
-//   same shared part converges to one SKU regardless of invoice word order.
-//   Fitment is therefore preserved in the SKU, not dropped and not privileged.
-//
-//   Two entry categories, one pipeline:
-//     phone part   -> brand-<sorted models>-part-...
-//     general item -> GEN|TOOL-<sorted specs>-<type>-...  (is_general_item)
+// (with P2 fixes: PIN-in-part, GEN brand alias, flag/brand/part fallback merge)
 
 export type Quality =
   | 'Normal'
@@ -41,7 +19,7 @@ export type ParsedRow = {
   qty: number
   rate: number
   brandCode: string | null
-  modelName: string | null        // sorted, dashed model/spec segment
+  modelName: string | null
   network: string | null
   year: string | null
   size: string | null
@@ -103,10 +81,6 @@ export function previewNormalizedText(text: string): string {
   return normalizeTypos(text).toUpperCase()
 }
 
-// ---------------------------------------------------------------------------
-// Typo normalization (data normalization only — NO reorder rules)
-// ---------------------------------------------------------------------------
-
 export function applyTypoRules(text: string, rules: TypoRule[]): string {
   if (!rules || rules.length === 0) return text
   let t = text
@@ -124,21 +98,20 @@ export function applyTypoRules(text: string, rules: TypoRule[]): string {
         const re = new RegExp(rule.pattern, 'gi')
         t = t.replace(re, rule.replacement)
       }
-    } catch {
-      // bad regex in DB — skip
-    }
+    } catch {}
   }
   return t
 }
 
-// Hardcoded typo fixes that are NOT data-dependent (grammar of the domain).
-// Reorder rules are deliberately absent — the resolver handles order.
 function normalizeTypos(desc: string): string {
   if (dbCache && dbCache.typoRules.length > 0) {
     desc = applyTypoRules(desc, dbCache.typoRules)
   }
   return desc
+    .replace(/[{}]/g, ' ')
+    .replace(/\b(\d{1,2})\s*[-\s]?\s*PIN[-\s]+(ONOFFSWITCH|ONOFF|MIC)\b/gi, '$2 $1PIN')
     .replace(/\b(SAM|MI|IP|VV|OP|RM|NK|TEC|INF|HUA|ITL|JIO|MT|NOTH|ONE)([A-Z])(\d)/g, '$1 $2$3')
+    .replace(/\b1\s+PLUS\b/gi, '1+')
     .replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
     .replace(/\b1\s*\+\s*(?=[A-Z])/gi, '1+ ')
     .replace(/(\d)\+/g, (m, d) => (d === '1' ? m : d + ' PLUS'))
@@ -190,10 +163,6 @@ function normalizeTypos(desc: string): string {
     .trim()
 }
 
-// ---------------------------------------------------------------------------
-// Built-in fallback data (used only when dbCache is absent — tests/harness)
-// ---------------------------------------------------------------------------
-
 const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
   OP: 'OP', RE: 'RE', OPPO: 'OP', REALME: 'RE',
   SAM: 'SAM', SM: 'SAM',
@@ -203,7 +172,7 @@ const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
   RM: 'MI', MI: 'MI', REDMI: 'MI',
   IQOO: 'IQOO', CMF: 'CMF',
   GGL: 'GGL', GOOGLE: 'GGL',
-  ONE: 'ONE', GENERIC: 'GEN', TOOL: 'TOOL',
+  ONE: 'ONE', GEN: 'GEN', GENERIC: 'GEN', TOOL: 'TOOL',
   '1+': 'ONE', '1PLUS': 'ONE',
 }
 
@@ -226,9 +195,10 @@ const SIZE_MARKERS: Record<string, string> = {
   '16MM': '16MM', '16 MM': '16MM',
   '15MM': '15MM', '15 MM': '15MM',
   '10MM': '10MM', '10 MM': '10MM',
-  BIG: 'BIG', 'BIG SIZE': 'BIGSIZE', BIGSIZE: 'BIGSIZE',
-  SMALL: 'SMALL', 'SMALL SIZE': 'SMALLSIZE', SMALLSIZE: 'SMALLSIZE',
-  MEDIUM: 'MEDIUM', 'MEDIUM SIZE': 'MEDIUMSIZE', MEDIUMSIZE: 'MEDIUMSIZE',
+  BIG: 'BIG', 'BIG SIZE': 'BIG', BIGSIZE: 'BIG',
+  SMALL: 'SMALL', 'SMALL SIZE': 'SMALL', SMALLSIZE: 'SMALL',
+  MEDIUM: 'MEDIUM', 'MEDIUM SIZE': 'MEDIUM', MEDIUMSIZE: 'MEDIUM',
+  '5 PIN': '5PIN', '5PIN': '5PIN',
   '4 PIN': '4PIN', '4PIN': '4PIN',
   '3 PIN': '3PIN', '3PIN': '3PIN',
   '2 PIN': '2PIN', '2PIN': '2PIN',
@@ -238,13 +208,11 @@ const SIZE_MARKERS: Record<string, string> = {
 const VARIANT_KEYWORDS = /^(MAIN(?:[-\s]?\d+)?|OCTA(?:[-\s]?\d+)?|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX|SMB)$/i
 const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
 
-// Model-suffix words that are never a model token on their own
 const MODEL_SUFFIX_WORDS = new Set([
   'PRO', 'PLUS', 'MAX', 'LITE', 'MINI', 'NEO', 'SE', 'ULTRA', 'FUSION',
   'STYLUS', 'CURVE', 'POWER', 'PLAY', 'CORE', 'PRIME', 'NARZO', 'TURBO',
 ])
 
-// Part-code tokens that must never be captured as a model/spec token
 const PART_CODE_TOKENS = new Set<string>([
   'BP', 'BK', 'FH', 'MF', 'MD', 'MFF', 'LCD', 'LCDCON', 'LCDRING',
   'BATCON', 'BOARDCONN', 'SENSORCONN', 'SENSORSIDE', 'SENSOR',
@@ -268,8 +236,6 @@ const FLAG_MAP: Record<string, string> = {
   COPY: 'COPY', METAL: 'METAL', GLASS: 'GLASS', NFC: 'NFC', SVC: 'SVC',
 }
 
-// Fallback part map (DB overrides this). Space form SPEAKER RINGER JALI -> SPKJ,
-// RINGER JALI / RINGER NET -> RSPKJ, matching part_type_aliases rows 103-106, 338-341.
 const PART_CODE_MAP: Record<string, string> = {
   BP: 'BP', 'BACK PANEL': 'BP', 'BACK COVER': 'BP', BK: 'BP',
   'BACK PANAL': 'BP', 'BACK PANLE': 'BP', 'BACK PANNEL': 'BP',
@@ -381,16 +347,13 @@ type EffectiveRules = {
 
 function effectiveRules(aliases: AliasMaps): EffectiveRules {
   if (dbCache) {
-    const partAliases = { ...dbCache.partAliases }
-    // General-item classification is data; a part_types.is_general feed can
-    // populate a `generalPartCodes` array on DBMessages later. Until then the
-    // constant is the fallback.
+    const partAliases = { ...PART_CODE_MAP, ...dbCache.partAliases }
     const generalItemPartCodes = new Set<string>(GENERAL_ITEM_PART_CODES)
     return {
       brandAliases: { ...BUILT_IN_BRAND_ALIASES, ...dbCache.brandAliases },
       partAliases,
       colorAliases: dbCache.colorAliases,
-      flagAliases: dbCache.flagAliases,
+      flagAliases: { ...FLAG_MAP, ...dbCache.flagAliases },
       variantAliases: dbCache.variantAliases,
       generalItemPartCodes,
     }
@@ -429,9 +392,6 @@ type Candidate = {
   raw: string
 }
 
-// Resolver priority on equal span. Lower number = higher priority.
-// This is an invariant of resolution, deliberately in code (data grows; logic
-// does not churn). Position is the final tiebreak.
 const TYPE_PRIORITY: Record<TokenType, number> = {
   flag: 1,
   quality: 2,
@@ -445,8 +405,6 @@ const TYPE_PRIORITY: Record<TokenType, number> = {
   model: 10,
 }
 
-// Word-boundary check: a match at [start,end) is valid if the chars immediately
-// before/after are not alphanumeric (or are string ends).
 function boundaryOk(work: string, start: number, end: number): boolean {
   if (start > 0 && /[A-Z0-9]/.test(work[start - 1])) return false
   if (end < work.length && /[A-Z0-9]/.test(work[end])) return false
@@ -472,8 +430,6 @@ function collectAt(
 function collectCandidates(work: string, rules: EffectiveRules): Candidate[] {
   const out: Candidate[] = []
 
-  // Sort phrase sets longest-first so that longer phrases win the span tiebreak
-  // naturally; the resolver re-sorts anyway, but this keeps the raw list small.
   const partPhrases = Object.keys(rules.partAliases).sort((a, b) => b.length - a.length)
   const flagPhrases = Object.keys(rules.flagAliases).sort((a, b) => b.length - a.length)
   const colorPhrases = Object.keys(rules.colorAliases).sort((a, b) => b.length - a.length)
@@ -499,36 +455,28 @@ function collectCandidates(work: string, rules: EffectiveRules): Candidate[] {
   for (let pos = 0; pos < work.length; pos++) {
     if (work[pos] === ' ' || work[pos] === '(' || work[pos] === ')') continue
 
-    // Part phrases
     for (const p of partPhrases) collectAt(work, pos, p, 'part', rules.partAliases[p], out)
 
-    // Quality (regex family)
     for (const { re, q } of qualityPatterns) {
       const m = work.slice(pos).match(re)
       if (m && m[0]) collectAt(work, pos, m[0], 'quality', q, out)
     }
 
-    // Network
     const net = work.slice(pos).match(/^(?:4G|5G)(?![A-Z0-9])/i)
     if (net && net[0]) collectAt(work, pos, net[0], 'network', net[0].toUpperCase(), out)
 
-    // Year (first of a consecutive pair is handled during resolution)
     const yr = work.slice(pos).match(/^(?:19|20)\d{2}(?![A-Z0-9])/)
     if (yr && yr[0]) collectAt(work, pos, yr[0], 'year', yr[0], out)
 
-    // Size
     for (const s of sizePhrases) collectAt(work, pos, s, 'size', SIZE_MARKERS[s], out)
 
-    // Flags
     for (const f of flagPhrases) collectAt(work, pos, f, 'flag', rules.flagAliases[f], out)
 
-    // Colors
     for (const c of colorPhrases) collectAt(work, pos, c, 'color', rules.colorAliases[c], out)
 
-    // Variants (DB + keyword regex)
     for (const v of variantPhrases) collectAt(work, pos, v, 'variant', rules.variantAliases[v], out)
     const vk = work.slice(pos).match(
-      /^(?:BOX\s*PACKING|BOXPACKING|MAIN\s*\d+|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|FOR|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
+      /^(?:BOX\s*PACKING|BOXPACKING|MAIN\s*\d+|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
     )
     if (vk && vk[0]) {
       const raw = vk[0].toUpperCase().replace(/\.$/, '')
@@ -536,7 +484,6 @@ function collectCandidates(work: string, rules: EffectiveRules): Candidate[] {
       collectAt(work, pos, vk[0], 'variant', value, out)
     }
 
-    // Brands
     for (const b of brandPhrases) collectAt(work, pos, b, 'brand', rules.brandAliases[b], out)
   }
 
@@ -554,7 +501,6 @@ type Resolution = {
 }
 
 function resolve(work: string, candidates: Candidate[]): Resolution {
-  // Sort by: longer span first, then type priority, then leftmost.
   const ranked = [...candidates].sort((a, b) => {
     const spanA = a.end - a.start
     const spanB = b.end - b.start
@@ -574,19 +520,16 @@ function resolve(work: string, candidates: Candidate[]): Resolution {
       if (consumed[i]) { overlap = true; break }
     }
     if (overlap) continue
-    // A brand candidate that overlaps a model token would be wrong; since model
-    // tokens aren't candidates yet, this is safe.
     for (let i = cand.start; i < cand.end; i++) consumed[i] = true
     accepted.push(cand)
   }
 
-  // Collect model tokens: maximal runs of unconsumed, non-space, non-paren chars.
   const modelTokens: { start: number; end: number; text: string }[] = []
   let i = 0
   while (i < work.length) {
-    if (consumed[i] || work[i] === ' ' || work[i] === '(' || work[i] === ')') { i++; continue }
+    if (consumed[i] || /[\s()\-]/.test(work[i])) { i++; continue }
     const start = i
-    while (i < work.length && !consumed[i] && work[i] !== ' ' && work[i] !== '(' && work[i] !== ')') i++
+    while (i < work.length && !consumed[i] && !/[\s()\-]/.test(work[i])) i++
     const text = work.slice(start, i)
     if (text.length > 0) modelTokens.push({ start, end: i, text })
   }
@@ -598,8 +541,6 @@ function resolve(work: string, candidates: Candidate[]): Resolution {
 // Token classification helpers
 // ---------------------------------------------------------------------------
 
-// Single-letter / short tokens that are themselves model names.
-// IP X (iPhone X), ONE 10 R, S21 FE, SE variants.
 const SINGLE_LETTER_MODELS = new Set<string>(['X', 'R', 'S', 'FE', 'SE'])
 
 function isModelLikeToken(tok: string, rules: EffectiveRules): boolean {
@@ -611,15 +552,8 @@ function isModelLikeToken(tok: string, rules: EffectiveRules): boolean {
   if (Object.prototype.hasOwnProperty.call(rules.brandAliases, t)) return false
   if (Object.prototype.hasOwnProperty.call(rules.colorAliases, t)) return false
   if (Object.prototype.hasOwnProperty.call(SIZE_MARKERS, t)) return false
-  // Explicit short model names (checked after exclusion sets so that, e.g., a
-  // part alias named 'X' would still win over the model interpretation).
   if (SINGLE_LETTER_MODELS.has(t)) return true
-  // Pure alphabetic tokens ≥ 2 chars without digits are generally model names
-  // ("RENO", "NORD", "NARZO", "SMART"). Suffix words (PRO, PLUS, MAX, LITE,
-  // NEO, PRIME, FUSION, REFRESH, MIX) are model-name parts, not noise, so
-  // they are NOT excluded — they flow into the model run.
   if (/^[A-Z]+$/.test(t) && t.length >= 2) return true
-  // Alphanumeric with digit ("A14", "Y33S", "14C", "X6525", "8T", "10")
   if (/[0-9]/.test(t) && /^[A-Z0-9]+$/.test(t)) return true
   return false
 }
@@ -631,7 +565,6 @@ function sortDashed(tokens: string[]): string {
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
     .join('-')
 }
-
 // ---------------------------------------------------------------------------
 // scanDescription — the entry point used by parseCSV for the legacy format
 // ---------------------------------------------------------------------------
@@ -646,38 +579,32 @@ export type ScanResult = {
   flag: string | null
   color: string | null
   variant: string | null
-  modelText: string      // sorted, dashed
+  modelText: string
   isGeneralItem: boolean
   warnings: string[]
 }
 
 export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
   const rules = effectiveRules(aliases)
-  const work = normalizeTypos(text).toUpperCase()
 
-  // Parenthetical extraction runs before token scan; results merge with scan
-  // output (paren wins when both fire for the same field).
-  const paren = extractParentheticals(work)
+  const normalized = normalizeTypos(text)
+  const paren = extractParentheticals(normalized)
+  const work = paren.cleanedDesc.toUpperCase()
 
   const candidates = collectCandidates(work, rules)
   const { accepted, modelTokens } = resolve(work, candidates)
 
-  // Pick single-valued fields: highest-priority accepted candidate of each type.
-  // Longer spans / earlier priority wins; multiple colors concatenate.
   const byType = new Map<TokenType, Candidate[]>()
   for (const c of accepted) {
     if (!byType.has(c.type)) byType.set(c.type, [])
     byType.get(c.type)!.push(c)
   }
 
-  // Brand: rightmost wins (your rule), with model-guard.
   let brandCode: string | null = null
   const brands = byType.get('brand') ?? []
   if (brands.length > 0) {
     const rightmost = brands.reduce((a, b) => (a.start > b.start ? a : b))
     let chosen = rightmost
-    // Model-guard: if rightmost's next non-space char isn't model-like and an
-    // earlier candidate's next char is, prefer the earlier one.
     const rightNeighborModelLike = (c: Candidate): boolean => {
       let p = c.end
       while (p < work.length && work[p] === ' ') p++
@@ -693,11 +620,9 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     brandCode = chosen.value
   }
 
-  // Part: first accepted part candidate (longest already favored by rank).
   const partCand = (byType.get('part') ?? [])[0] ?? null
   let partCode: string | null = partCand ? partCand.value : null
 
-  // Quality: paren overrides; otherwise first accepted.
   let quality: Quality = 'Normal'
   if (paren.quality) quality = paren.quality
   else {
@@ -707,14 +632,11 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
   const network = paren.network || (byType.get('network') ?? [])[0]?.value || null
 
-  // Year: combine consecutive years (e.g. "2020 2021") only when nothing
-  // intervenes between the two year candidates.
   let year: string | null = paren.year || null
   if (!year) {
     const years = (byType.get('year') ?? []).sort((a, b) => a.start - b.start)
     if (years.length === 1) year = years[0].value
     else if (years.length >= 2) {
-      // Accept the first, plus the second only if strictly consecutive in text
       const a = years[0]
       const b = years[1]
       const between = work.slice(a.end, b.start).trim()
@@ -726,11 +648,43 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
   }
 
-  const size = paren.size || (byType.get('size') ?? [])[0]?.value || null
-  const flag = paren.flag || (byType.get('flag') ?? [])[0]?.value || null
+  let size: string | null = null
+  if (paren.size) size = paren.size
+  else {
+    const sizes = (byType.get('size') ?? []).sort((a, b) => a.start - b.start)
+    if (sizes.length > 0) {
+      const seen = new Set<string>()
+      const parts: string[] = []
+      for (const s of sizes) {
+        const v = s.value.toUpperCase()
+        if (!seen.has(v)) { seen.add(v); parts.push(v) }
+      }
+      size = parts.join('-')
+    }
+  }
+
+  let flag: string | null = null
+  if (paren.flag) flag = paren.flag
+  else {
+    const flags = (byType.get('flag') ?? []).sort((a, b) => a.start - b.start)
+    if (flags.length > 0) {
+      const seen = new Set<string>()
+      for (const f of flags) seen.add(f.value.toUpperCase())
+      const FLAG_ORDER = ['SET', 'WC', 'WCL', 'WL', 'FLEX', 'FRONT', 'BACK', 'METAL', 'GLASS', 'NFC', 'SVC', 'COPY']
+      const sorted = Array.from(seen).sort((a, b) => {
+        const ia = FLAG_ORDER.indexOf(a)
+        const ib = FLAG_ORDER.indexOf(b)
+        if (ia === -1 && ib === -1) return a.localeCompare(b)
+        if (ia === -1) return 1
+        if (ib === -1) return -1
+        return ia - ib
+      })
+      flag = sorted.join('-')
+    }
+  }
+
   const variant = paren.variant || (byType.get('variant') ?? [])[0]?.value || null
 
-  // Colors: paren colors first, else concatenate every accepted color candidate.
   let color: string | null = null
   const colors = (byType.get('color') ?? []).sort((a, b) => a.start - b.start)
   if (paren.colors.length > 0) color = paren.colors[0]
@@ -744,15 +698,6 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     color = parts.join('-')
   }
 
-  // Model tokens: everything unconsumed that is model-like, sorted.
-  // Build model text by grouping un-consumed model-like tokens into runs
-  // (adjacent in original text), preserving each run's word order, then
-  // sorting runs against each other. Keeps "NOTE 11T" as NOTE-11T (not
-  // 11T-NOTE) and "NORD CE4" as NORD-CE4, while making "T1X ... Y33S" and
-  // "Y33S ... T1X" converge to the same SKU for a shared part.
-  //
-  // "TO" between model tokens expresses a range (iPhone X TO 16 PRO) and is
-  // kept inside the run so the range reads as one fitment phrase.
   const isAdjacentToPrev = (a: { end: number }, b: { start: number }) =>
     /^\s*$/.test(work.slice(a.end, b.start))
 
@@ -825,8 +770,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 }
 
 // ---------------------------------------------------------------------------
-// Parenthetical extraction — runs before scan, returns both cleaned text and
-// typed values. Result fields override scan results in scanDescription above.
+// Parenthetical extraction
 // ---------------------------------------------------------------------------
 
 type ParentheticalResult = {
@@ -849,7 +793,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
   let variant: string | null = null
   let year: string | null = null
 
-  const flagMap = dbCache ? dbCache.flagAliases : FLAG_MAP
+  const flagMap = dbCache ? { ...FLAG_MAP, ...dbCache.flagAliases } : FLAG_MAP
   const re = /\(([^)]+)\)/g
   let m: RegExpExecArray | null
   while ((m = re.exec(desc)) !== null) {
@@ -890,6 +834,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
   const cleanedDesc = desc.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim()
   return { colors, network, quality, flag, size, variant, year, cleanedDesc }
 }
+
 // ---------------------------------------------------------------------------
 // Part code / model normalization
 // ---------------------------------------------------------------------------
@@ -902,7 +847,7 @@ export function normalizePartCode(raw: string | null): string | null {
     .replace(/\.$/, '')
     .replace(/\s+/g, ' ')
 
-  const rules = dbCache ? dbCache.partAliases : PART_CODE_MAP
+  const rules = dbCache ? { ...PART_CODE_MAP, ...dbCache.partAliases } : PART_CODE_MAP
   if (rules[upper]) return rules[upper]
   const spaceForm = upper.replace(/\s*\/\s*/g, ' ')
   if (rules[spaceForm]) return rules[spaceForm]
@@ -963,7 +908,7 @@ function extractPartFromDescription(
   aliases: AliasMaps
 ): { partText: string | null; cleanedDesc: string } {
   const upper = desc.toUpperCase()
-  const source = dbCache ? dbCache.partAliases : { ...PART_CODE_MAP, ...aliases.partAliases }
+  const source = dbCache ? { ...PART_CODE_MAP, ...dbCache.partAliases } : { ...PART_CODE_MAP, ...aliases.partAliases }
   const allPhrases = Object.keys(source).filter(Boolean).sort((a, b) => b.length - a.length)
   for (const phrase of allPhrases) {
     const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -1036,8 +981,6 @@ export function generateSku(fields: SkuFields): string | null {
 
   const seg: string[] = [brandCode]
 
-  // General items: model slot holds spec tokens (sorted); part follows.
-  // Phone parts: model first, then part.
   if (isGeneralItem) {
     if (modelName) seg.push(dash(modelName))
     seg.push(partCode)
@@ -1110,10 +1053,6 @@ export function groupParsedRows(rows: ParsedRow[]): {
   return { matched, newItems, needsCorrection }
 }
 
-// ---------------------------------------------------------------------------
-// Fingerprint (used by audit for stable per-row identity)
-// ---------------------------------------------------------------------------
-
 export function buildFingerprint(row: {
   brandCode: string | null
   modelName: string | null
@@ -1160,7 +1099,7 @@ export type ItemLookup = {
 }
 
 // ---------------------------------------------------------------------------
-// parseCSV — the only public entry point that matters to callers
+// parseCSV
 // ---------------------------------------------------------------------------
 
 export function parseCSV(
@@ -1169,9 +1108,7 @@ export function parseCSV(
   items: ItemLookup[] = []
 ): ParsedRow[] {
   if (!hasDBMessages()) {
-    throw new Error(
-      'parseCSV called before setDBMessages — alias cache must be loaded first'
-    )
+    throw new Error('parseCSV called before setDBMessages — alias cache must be loaded first')
   }
 
   const lines = splitCSVLines(text)
@@ -1245,7 +1182,6 @@ export function parseCSV(
     if (isReturnLine) warnings.push('return line (negative qty/price) — will be skipped on import')
 
     if (isNewFormat) {
-      // New-format: explicit brand/model/part columns
       const brandRaw = normalizeTypos((row[colBrand] || '').toUpperCase().trim())
       const modelRaw = normalizeTypos((row[colModel] || '').trim())
       const partRaw = normalizeTypos((row[colPart] || '').toUpperCase().trim())
@@ -1274,7 +1210,6 @@ export function parseCSV(
       }
       isGeneralItem = partCode !== null && rules.generalItemPartCodes.has(partCode)
     } else {
-      // Legacy format: description, quantity, price
       rawDescription = rawDescFromRow
       const scan = scanDescription(rawDescription, aliases)
       brandCode = scan.brandCode
@@ -1297,9 +1232,37 @@ export function parseCSV(
       if (partCode === 'MF' && /\bFLEX\b/.test(rawDescription.toUpperCase())) {
         partCode = 'MFF'
       }
+
+      // P2 fix: PIN-in-part. Fold "\d PIN" into partCode as PART-PIN.
+      // Handles multi-value size/variant slots (e.g. size='4PIN-BIG') by
+      // removing only the PIN token, keeping the rest.
+      const PIN_CAPABLE_PARTS = new Set(['ONOFFSWITCH', 'ONOFF', 'MIC'])
+      if (partCode) {
+        const basePartMatch = partCode.toUpperCase().match(/^(\d{1,2}PIN)[-\s]+(.+)$/)
+        if (basePartMatch) {
+          partCode = basePartMatch[2]
+        }
+        if (PIN_CAPABLE_PARTS.has(partCode.toUpperCase())) {
+          const pinMatch = rawDescription.toUpperCase().match(/\b(\d{1,2})\s*[-\s]?\s*PIN\b/)
+          if (pinMatch) {
+            const pinSuffix = `${pinMatch[1]}PIN`
+            partCode = partCode.replace(/-\d+PIN$/i, '')
+            if (!partCode.toUpperCase().endsWith(`-${pinSuffix}`)) {
+              partCode = `${partCode}-${pinSuffix}`
+            }
+            const norm = (s: string) => s.toUpperCase().replace(/\s+/g, '')
+            const stripPin = (v: string | null): string | null => {
+              if (!v) return v
+              const kept = v.split('-').filter((p) => norm(p) !== pinSuffix)
+              return kept.length > 0 ? kept.join('-') : null
+            }
+            size = stripPin(size)
+            variant = stripPin(variant)
+          }
+        }
+      }
     }
 
-    // Build SKU
     const sku = hardFail
       ? null
       : generateSku({
@@ -1317,11 +1280,19 @@ export function parseCSV(
           isGeneralItem,
         })
 
-    // Determine status
     let status: RowStatus = 'new'
     let errorMessage: string | undefined
     let matchedItemId: number | null = null
     let matchedItemSku: string | null = null
+
+    const CANONICAL_SKU = /^[A-Z0-9]+(-[A-Z0-9]+)+$/
+    if (sku && !CANONICAL_SKU.test(sku)) {
+      status = 'needs_correction'
+      errorMessage = `non-canonical SKU: ${sku}`
+    }
+    if (sku && warnings.some((w) => w.startsWith('unclassified tokens'))) {
+      warnings.push('SKU built with unclassified tokens — verify')
+    }
 
     if (hardFail) {
       status = 'needs_correction'
