@@ -75,6 +75,7 @@ export function ImportCSVDialog({
   const [detected, setDetected] = useState<DetectedColumn[]>([])
   const [mapping, setMapping] = useState<ColumnMapping>({})
   const [aliases, setAliases] = useState<AliasMaps | null>(null)
+  const [items, setItems] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -165,6 +166,23 @@ export function ImportCSVDialog({
       typoRules,
     })
 
+    // Load items for DB matching (paginated — Supabase defaults to 1000 rows)
+    let allItems: any[] = []
+    let from = 0
+    const pageSize = 1000
+    while (true) {
+      const { data: page, error: err } = await supabase
+        .from('items')
+        .select('item_id, sku, brand_id, model_id, part_id, quality')
+        .range(from, from + pageSize - 1)
+      if (err || !page || page.length === 0) break
+      allItems = allItems.concat(page)
+      if (page.length < pageSize) break
+      from += pageSize
+    }
+    setItems(allItems)
+    console.log('DEBUG items:', allItems.length, 'has GEN-SPKJ-BIG:', allItems.some((i) => i.sku === 'GEN-SPKJ-BIG'))
+
     setLoading(false)
   }
 
@@ -211,7 +229,7 @@ export function ImportCSVDialog({
       if (onImport && !onStaged) {
         const matched = rows.filter((r) => r.status === 'matched')
         const newItems = rows.filter((r) => r.status === 'new')
-        const errorRows = rows.filter((r) => r.status === 'error')
+        const errorRows = rows.filter((r) => r.status === 'needs_correction')
         if (errorRows.length > 0 && matched.length === 0 && newItems.length === 0) {
           setError(`All ${errorRows.length} rows failed to parse.`)
           setLoading(false)
@@ -253,7 +271,7 @@ export function ImportCSVDialog({
         const generalRows = parseGeneralCSV(csvText, [])
         return generalRows as unknown as ParsedRow[]
       }
-      return parseCSV(csvText, aliases, [])
+      return parseCSV(csvText, aliases, items)
     })
   }
 
@@ -265,7 +283,7 @@ export function ImportCSVDialog({
       setError('Missing required roles: ' + validation.missing.join(', '))
       return
     }
-    await stageAndNavigate(() => applyMapping(csvText, mapping, aliases, []))
+    await stageAndNavigate(() => applyMapping(csvText, mapping, aliases, items))
   }
 
   function resetAndClose() {

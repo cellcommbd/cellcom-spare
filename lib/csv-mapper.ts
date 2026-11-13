@@ -5,7 +5,7 @@
 //
 // This eliminates the drift problem: all parsing logic lives in csv-parser.ts.
 
-import { ParsedRow, AliasMaps, ItemLookup, parseCSV } from './csv-parser'
+import { ParsedRow, AliasMaps, ItemLookup, parseCSV, setDBMessages } from './csv-parser'
 
 export type ColumnRole =
   | 'brand'

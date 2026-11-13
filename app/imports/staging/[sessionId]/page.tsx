@@ -27,7 +27,10 @@ import {
   FileText,
   Pencil,
   X,
+  Copy,
+  Check,
 } from 'lucide-react'
+import { buildSummaryFromStaging, copyTextToClipboard } from '@/lib/copy-summary'
 
 type Filter = 'all' | 'ready' | 'review' | 'unresolved'
 
@@ -83,6 +86,14 @@ export default function SessionDetailPage() {
   const [freightMode, setFreightMode] = useState<'amount' | 'percent'>('amount')
   const [editingRow, setEditingRow] = useState<StagingRow | null>(null)
   const [busyRowId, setBusyRowId] = useState<number | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  async function handleCopySummary() {
+    const text = buildSummaryFromStaging(rows)
+    const ok = await copyTextToClipboard(text)
+    setCopyState(ok ? 'copied' : 'failed')
+    setTimeout(() => setCopyState('idle'), 1500)
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -256,14 +267,26 @@ export default function SessionDetailPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={handleCopySummary}
+            disabled={loading || rows.length === 0}
+            className="h-8 px-3 text-xs font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-100 flex items-center gap-1 disabled:opacity-50"
+            title="Copy compact tab-separated summary — paste into AI chat"
+          >
+            {copyState === 'copied' ? (
+              <Check className="w-3.5 h-3.5 text-green-600" />
+            ) : (
+              <Copy className="w-3.5 h-3.5" />
+            )}
+            {copyState === 'copied' ? 'Copied' : copyState === 'failed' ? 'Failed' : 'Copy Summary'}
+          </button>
+          <button
             onClick={handleReclassify}
             disabled={classifying || loading}
             className="h-8 px-3 text-xs font-medium text-slate-700 border border-slate-300 rounded hover:bg-slate-100 flex items-center gap-1 disabled:opacity-50"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${classifying ? 'animate-spin' : ''}`} />
             {classifying ? 'Classifying…' : 'Reclassify'}
-          </button>
-          <button
+          </button>          <button
             onClick={handleDiscard}
             className="h-8 px-3 text-xs font-medium text-red-700 border border-red-300 rounded hover:bg-red-50 flex items-center gap-1"
           >

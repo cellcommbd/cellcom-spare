@@ -136,7 +136,7 @@ export async function writeStagingRows(
 // Classify a single row (shared logic between classifySession and reclassifyRow)
 function classifyOne(
   r: StagingRow,
-  matches: { item_id: number; sku: string; cost_price: number | null }[]
+  match: { item_id: number; sku: string; cost_price: number | null } | null
 ): {
   action: StagingAction
   matched_item_id: number | null
@@ -152,28 +152,19 @@ function classifyOne(
   } else if (!r.brand_code || !r.part_code) {
     action = 'unresolved'
     conflict_reason = 'Missing brand or part code'
-  } else if (!r.fingerprint || r.fingerprint === '||||||||') {
+  } else if (!r.generated_sku) {
     action = 'unresolved'
-    conflict_reason = 'Could not compute fingerprint'
-  } else if (matches.length > 1) {
-    action = 'ambiguous'
-    conflict_reason = `Multiple items (${matches.length}) share this fingerprint`
-  } else if (matches.length === 1) {
-    const m = matches[0]
-    matched_item_id = m.item_id
-    const skuDiffers = (m.sku || '') !== (r.generated_sku || '')
+    conflict_reason = 'No SKU generated'
+  } else if (match) {
+    matched_item_id = match.item_id
     const pctDiff =
-      m.cost_price && r.rate
-        ? Math.abs((r.rate - m.cost_price) / m.cost_price) * 100
+      match.cost_price && r.rate
+        ? Math.abs((r.rate - match.cost_price) / match.cost_price) * 100
         : 0
     const significantPriceDiff = pctDiff > PRICE_THRESHOLD_PCT
-
-    if (skuDiffers) {
-      action = 'match_reformat'
-      conflict_reason = `Existing SKU: ${m.sku}`
-    } else if (significantPriceDiff) {
+    if (significantPriceDiff) {
       action = 'price_mismatch'
-      conflict_reason = `Cost ₹${m.cost_price} → Now ₹${r.rate} (${pctDiff.toFixed(1)}% diff)`
+      conflict_reason = `Cost ₹${match.cost_price} → Now ₹${r.rate} (${pctDiff.toFixed(1)}% diff)`
     } else {
       action = 'match'
     }
@@ -187,40 +178,38 @@ function classifyOne(
   return { action, matched_item_id, conflict_reason }
 }
 
-async function fetchMatchesForFingerprints(fingerprints: string[]): Promise<
-  Map<string, { item_id: number; sku: string; cost_price: number | null }[]>
+async function fetchMatchesForSkus(skus: string[]): Promise<
+  Map<string, { item_id: number; sku: string; cost_price: number | null }>
 > {
   type ItemRow = {
     item_id: number
     sku: string
     cost_price: number | null
-    fingerprint: string | null
   }
-  const itemsByFp = new Map<
+  const bySku = new Map<
     string,
-    { item_id: number; sku: string; cost_price: number | null }[]
+    { item_id: number; sku: string; cost_price: number | null }
   >()
-  if (fingerprints.length === 0) return itemsByFp
+  if (skus.length === 0) return bySku
 
   const CHUNK = 500
-  for (let i = 0; i < fingerprints.length; i += CHUNK) {
-    const slice = fingerprints.slice(i, i + CHUNK)
+  for (let i = 0; i < skus.length; i += CHUNK) {
+    const slice = skus.slice(i, i + CHUNK)
     const { data: itemRows, error: ie } = await supabase
       .from('items')
-      .select('item_id, sku, cost_price, fingerprint')
-      .in('fingerprint', slice)
+      .select('item_id, sku, cost_price')
+      .in('sku', slice)
     if (ie) throw new Error('Could not look up items: ' + ie.message)
     for (const it of (itemRows as ItemRow[]) || []) {
-      if (!it.fingerprint) continue
-      if (!itemsByFp.has(it.fingerprint)) itemsByFp.set(it.fingerprint, [])
-      itemsByFp.get(it.fingerprint)!.push({
+      if (!it.sku) continue
+      bySku.set(it.sku.toUpperCase(), {
         item_id: it.item_id,
         sku: it.sku,
         cost_price: it.cost_price,
       })
     }
   }
-  return itemsByFp
+  return bySku
 }
 
 export async function classifySession(sessionId: string): Promise<void> {
@@ -231,15 +220,15 @@ export async function classifySession(sessionId: string): Promise<void> {
   if (se) throw new Error('Could not load staging rows: ' + se.message)
   if (!stagingRows || stagingRows.length === 0) return
 
-  const fingerprints = Array.from(
+  const skus = Array.from(
     new Set(
       (stagingRows as StagingRow[])
-        .map((r) => r.fingerprint)
+        .map((r) => (r.generated_sku || '').toUpperCase())
         .filter(Boolean) as string[]
     )
   )
 
-  const itemsByFp = await fetchMatchesForFingerprints(fingerprints)
+  const itemsBySku = await fetchMatchesForSkus(skus)
 
   type Update = {
     staging_id: number
@@ -250,8 +239,9 @@ export async function classifySession(sessionId: string): Promise<void> {
   const updates: Update[] = []
 
   for (const r of stagingRows as StagingRow[]) {
-    const matches = r.fingerprint ? itemsByFp.get(r.fingerprint) || [] : []
-    const { action, matched_item_id, conflict_reason } = classifyOne(r, matches)
+    const skuKey = (r.generated_sku || '').toUpperCase()
+    const match = skuKey ? itemsBySku.get(skuKey) || null : null
+    const { action, matched_item_id, conflict_reason } = classifyOne(r, match)
     updates.push({
       staging_id: r.staging_id,
       resolved_action: action,
@@ -291,7 +281,7 @@ export async function reclassifyRow(stagingId: number): Promise<void> {
   if (!data || data.length === 0) return
   const r = data[0] as StagingRow
 
-  // Recompute fingerprint from current fields
+  // Recompute fingerprint from current fields (kept for informational purposes)
   const fingerprint =
     r.brand_code && r.part_code
       ? buildFingerprint({
@@ -307,12 +297,14 @@ export async function reclassifyRow(stagingId: number): Promise<void> {
         })
       : null
 
-  const fps = fingerprint ? [fingerprint] : []
-  const itemsByFp = await fetchMatchesForFingerprints(fps)
-  const matches = fingerprint ? itemsByFp.get(fingerprint) || [] : []
+  // Match by SKU (canonical identity)
+  const skuKey = (r.generated_sku || '').toUpperCase()
+  const skus = skuKey ? [skuKey] : []
+  const itemsBySku = await fetchMatchesForSkus(skus)
+  const match = skuKey ? itemsBySku.get(skuKey) || null : null
 
   const updated = { ...r, fingerprint }
-  const { action, matched_item_id, conflict_reason } = classifyOne(updated, matches)
+  const { action, matched_item_id, conflict_reason } = classifyOne(updated, match)
 
   const { error: ue } = await supabase
     .from('import_staging')
