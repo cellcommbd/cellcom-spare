@@ -1,5 +1,14 @@
-// lib/csv-parser.ts — v36.0 — two-pass resolver, entry-first contract
-// (with P2 fixes: PIN-in-part, GEN brand alias, flag/brand/part fallback merge)
+// lib/csv-parser.ts — v37-canonical
+// Canonical SKU grammar: BRAND - MODEL - YEAR - PART - NETWORK - FLAG - SIZE - VARIANT - COLOR - QUALITY
+// (General items: BRAND - MODEL/SPECS - PART - SIZE - VARIANT - QUALITY)
+//
+// This file is the result of the parser fix campaign that resolved:
+//   - silent wrong SKUs (contract assertion now blocks non-canonical output)
+//   - PIN-in-part folding (ONOFFSWITCH-4PIN, MIC-5PIN)
+//   - partial-merge asymmetry (parts/brands/flags fall back to hardcoded maps)
+//   - model-token noise (NOISE_TOKENS drops English filler)
+//   - bracket notation ([SUB], [NEW]) normalization
+//   - trailing count after CAMERA GLASS
 
 export type Quality =
   | 'Normal'
@@ -81,6 +90,10 @@ export function previewNormalizedText(text: string): string {
   return normalizeTypos(text).toUpperCase()
 }
 
+// ---------------------------------------------------------------------------
+// Typo normalization (data normalization only — NO reorder rules)
+// ---------------------------------------------------------------------------
+
 export function applyTypoRules(text: string, rules: TypoRule[]): string {
   if (!rules || rules.length === 0) return text
   let t = text
@@ -98,7 +111,9 @@ export function applyTypoRules(text: string, rules: TypoRule[]): string {
         const re = new RegExp(rule.pattern, 'gi')
         t = t.replace(re, rule.replacement)
       }
-    } catch {}
+    } catch {
+      // bad regex in DB — skip
+    }
   }
   return t
 }
@@ -108,19 +123,27 @@ function normalizeTypos(desc: string): string {
     desc = applyTypoRules(desc, dbCache.typoRules)
   }
   return desc
+    // Bracket/brace normalization — [X] and {X} both become X
     .replace(/[{}]/g, ' ')
+    .replace(/\[([^\]]*)\]/g, ' $1 ')
+    // PIN-before-part normalization: "4-PIN-ONOFFSWITCH" → "ONOFFSWITCH 4PIN"
     .replace(/\b(\d{1,2})\s*[-\s]?\s*PIN[-\s]+(ONOFFSWITCH|ONOFF|MIC)\b/gi, '$2 $1PIN')
+    // Brand-token split: NOTHA14 → NOTH A14, SAMA52 → SAM A52
     .replace(/\b(SAM|MI|IP|VV|OP|RM|NK|TEC|INF|HUA|ITL|JIO|MT|NOTH|ONE)([A-Z])(\d)/g, '$1 $2$3')
+    // 1+ variants
     .replace(/\b1\s+PLUS\b/gi, '1+')
     .replace(/\b1\s*\+\s*(\d)/g, '1+ $1')
     .replace(/\b1\s*\+\s*(?=[A-Z])/gi, '1+ ')
     .replace(/(\d)\+/g, (m, d) => (d === '1' ? m : d + ' PLUS'))
+    // Brand merges
     .replace(/\bOPPO\s*-?\s*REALME\b/gi, 'REALME')
     .replace(/\bREALME\s*-?\s*POCO\b/gi, 'POCO')
     .replace(/\bRE\s*-?\s*POCO\b/gi, 'POCO')
     .replace(/\bNOTHING\s+CMF\b/gi, 'CMF')
+    // Part-phrase canonicalization
     .replace(/\b(MIDDLE\s+FRAME|MF)\s+WITH\s+FLEX\b/gi, 'MIDDLE FRAME WITH FLEX')
     .replace(/\bSMA\s*(\d)/gi, 'SAM A$1')
+    // Typo fixes
     .replace(/\bMATEL\b/gi, 'METAL')
     .replace(/\bLENCE\b/gi, 'LENS')
     .replace(/\bREMOVE\b/gi, ' ')
@@ -157,11 +180,17 @@ function normalizeTypos(desc: string): string {
     .replace(/\bB\s*\/\s*C\s+CONN\.?/gi, 'B/C CONN')
     .replace(/([A-Z])B\/C\b/gi, '$1 B/C')
     .replace(/BOX\s*PECKING/gi, 'BOX PACKING')
+    .replace(/\b(CAMERA GLASS|CG)\s+(\d{1,2})\s*$/i, '$1 ($2)')
+
     .replace(/###/g, ' ')
     .replace(/[*'`"]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
+
+// ---------------------------------------------------------------------------
+// Built-in fallback data
+// ---------------------------------------------------------------------------
 
 const BUILT_IN_BRAND_ALIASES: Record<string, string> = {
   OP: 'OP', RE: 'RE', OPPO: 'OP', REALME: 'RE',
@@ -205,12 +234,19 @@ const SIZE_MARKERS: Record<string, string> = {
   '41 PIN': '41PIN', '41PIN': '41PIN',
 }
 
-const VARIANT_KEYWORDS = /^(MAIN(?:[-\s]?\d+)?|OCTA(?:[-\s]?\d+)?|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX|SMB)$/i
+// Variant keywords (SUB is included — supplier notes like [SUB] or (SUB) become variant tokens)
+const VARIANT_KEYWORDS = /^(MAIN(?:[-\s]?\d+)?|OCTA(?:[-\s]?\d+)?|SUB|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX|SMB)$/i
 const PACKAGING_VARIANT = /^(BOX\s*PECK?ING|BOX\s*PACKING|BOXPACKING|BOXPECKING)$/i
 
 const MODEL_SUFFIX_WORDS = new Set([
   'PRO', 'PLUS', 'MAX', 'LITE', 'MINI', 'NEO', 'SE', 'ULTRA', 'FUSION',
   'STYLUS', 'CURVE', 'POWER', 'PLAY', 'CORE', 'PRIME', 'NARZO', 'TURBO',
+])
+
+// English filler words that should never become model tokens.
+// ONLY is intentionally NOT in this list — it is meaningful for SPKFL vs SPKF detection.
+const NOISE_TOKENS = new Set<string>([
+  'FOR', 'WITH', 'OF', 'AND', 'THE', 'A', 'AN', 'IN', 'ON',
 ])
 
 const PART_CODE_TOKENS = new Set<string>([
@@ -221,7 +257,7 @@ const PART_CODE_TOKENS = new Set<string>([
   'ST', 'GASKIT', 'GASKITF', 'GASKITB', 'OUTKEY', 'MIC', 'VIB', 'ANT',
   'INRUBBER', 'BACKGLASS', 'FF', 'BCAM', 'FCAM', 'CONVHOUSING',
   'NETWORKWIRE', 'WIRE', 'TOOL', 'FLEX', 'MICFLEX', 'MICFLEXSIM',
-  'LCDFLEXSIM', 'SIMFLEX', 'WIRELESSFLEX',
+  'LCDFLEXSIM', 'SIMFLEX', 'WIRELESSFLEX', 'NETFLEX',
 ])
 
 const GENERAL_ITEM_PART_CODES = new Set<string>([
@@ -235,7 +271,6 @@ const FLAG_MAP: Record<string, string> = {
   'W/C': 'WC', WC: 'WC', 'W/C/L': 'WCL', 'W/CL': 'WCL', WCL: 'WCL',
   COPY: 'COPY', METAL: 'METAL', GLASS: 'GLASS', NFC: 'NFC', SVC: 'SVC',
 }
-
 const PART_CODE_MAP: Record<string, string> = {
   BP: 'BP', 'BACK PANEL': 'BP', 'BACK COVER': 'BP', BK: 'BP',
   'BACK PANAL': 'BP', 'BACK PANLE': 'BP', 'BACK PANNEL': 'BP',
@@ -250,7 +285,7 @@ const PART_CODE_MAP: Record<string, string> = {
   BOARDCONN: 'BOARDCONN', 'BOARD CONN': 'BOARDCONN', 'BORD CONN': 'BOARDCONN', 'BOARD CON': 'BOARDCONN',
   SENSORCONN: 'SENSORCONN', 'SENSOR CONN': 'SENSORCONN',
   SENSORSIDE: 'SENSORSIDE', 'SENSOR SIDE': 'SENSORSIDE', 'SENSOR [SIDE]': 'SENSORSIDE',
-  SENSOR: 'SENSOR',
+  SENSOR: 'SENSOR', 'SENSOR FLEX': 'SENSOR',
   ONOFF: 'ONOFF', 'ON OFF': 'ONOFF', 'ON/OFF': 'ONOFF', 'ON OFF FLEX': 'ONOFF', 'ON/OFF FLEX': 'ONOFF',
   ONOFFSWITCH: 'ONOFFSWITCH', 'ON OFF SWITCH': 'ONOFFSWITCH', 'ONOFF SWITCH': 'ONOFFSWITCH', TIKLI: 'ONOFFSWITCH',
   VOL: 'VOL', 'VOL FLEX': 'VOL', 'VOLUME FLEX': 'VOL', 'VOLLUME FLEX': 'VOL',
@@ -287,6 +322,7 @@ const PART_CODE_MAP: Record<string, string> = {
   'CONVERT HOUSING': 'CONVHOUSING', 'CONVERT HOUSIG': 'CONVHOUSING',
   CONVERTER: 'CONVHOUSING', CONVETOR: 'CONVHOUSING', CONVERT: 'CONVHOUSING',
   NETWORKWIRE: 'NETWORKWIRE', 'NETWORK WIRE': 'NETWORKWIRE',
+  NETFLEX: 'NETFLEX', 'NETWORK FLEX': 'NETFLEX', 'NETWORKFLEX': 'NETFLEX', 'NET FLEX': 'NETFLEX',
   WIRELESSFLEX: 'WIRELESSFLEX', 'WIRELESS FLEX': 'WIRELESSFLEX', WIRELESS: 'WIRELESSFLEX',
   MICFLEX: 'MICFLEX', 'MIC FLEX': 'MICFLEX',
   MICFLEXSIM: 'MICFLEXSIM', 'MIC FLEX SIM': 'MICFLEXSIM', 'MIC FLEX + SIM': 'MICFLEXSIM',
@@ -294,6 +330,7 @@ const PART_CODE_MAP: Record<string, string> = {
   SIMFLEX: 'SIMFLEX', 'SIM FLEX': 'SIMFLEX',
   WIRE: 'WIRE', TOOL: 'TOOL', FLEX: 'FLEX',
 }
+
 // ---------------------------------------------------------------------------
 // CSV splitting / header detection
 // ---------------------------------------------------------------------------
@@ -455,28 +492,36 @@ function collectCandidates(work: string, rules: EffectiveRules): Candidate[] {
   for (let pos = 0; pos < work.length; pos++) {
     if (work[pos] === ' ' || work[pos] === '(' || work[pos] === ')') continue
 
+    // Part phrases
     for (const p of partPhrases) collectAt(work, pos, p, 'part', rules.partAliases[p], out)
 
+    // Quality (regex family)
     for (const { re, q } of qualityPatterns) {
       const m = work.slice(pos).match(re)
       if (m && m[0]) collectAt(work, pos, m[0], 'quality', q, out)
     }
 
+    // Network
     const net = work.slice(pos).match(/^(?:4G|5G)(?![A-Z0-9])/i)
     if (net && net[0]) collectAt(work, pos, net[0], 'network', net[0].toUpperCase(), out)
 
+    // Year
     const yr = work.slice(pos).match(/^(?:19|20)\d{2}(?![A-Z0-9])/)
     if (yr && yr[0]) collectAt(work, pos, yr[0], 'year', yr[0], out)
 
+    // Size
     for (const s of sizePhrases) collectAt(work, pos, s, 'size', SIZE_MARKERS[s], out)
 
+    // Flags
     for (const f of flagPhrases) collectAt(work, pos, f, 'flag', rules.flagAliases[f], out)
 
+    // Colors
     for (const c of colorPhrases) collectAt(work, pos, c, 'color', rules.colorAliases[c], out)
 
+    // Variants (DB + keyword regex)
     for (const v of variantPhrases) collectAt(work, pos, v, 'variant', rules.variantAliases[v], out)
     const vk = work.slice(pos).match(
-      /^(?:BOX\s*PACKING|BOXPACKING|MAIN\s*\d+|MAIN|OCTA|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
+      /^(?:BOX\s*PACKING|BOXPACKING|MAIN\s*\d+|MAIN|OCTA|SUB|NEW|DAMD\.?|DISPLAY|MAINBOARD|MAIN BOARD|REFRESH|MIX)(?![A-Z0-9])/i
     )
     if (vk && vk[0]) {
       const raw = vk[0].toUpperCase().replace(/\.$/, '')
@@ -484,12 +529,12 @@ function collectCandidates(work: string, rules: EffectiveRules): Candidate[] {
       collectAt(work, pos, vk[0], 'variant', value, out)
     }
 
+    // Brands
     for (const b of brandPhrases) collectAt(work, pos, b, 'brand', rules.brandAliases[b], out)
   }
 
   return out
 }
-
 // ---------------------------------------------------------------------------
 // Resolution (pass 2)
 // ---------------------------------------------------------------------------
@@ -524,6 +569,8 @@ function resolve(work: string, candidates: Candidate[]): Resolution {
     accepted.push(cand)
   }
 
+  // Collect model tokens: maximal runs of unconsumed, non-boundary chars.
+  // NOISE_TOKENS are dropped here silently (not warned, not included).
   const modelTokens: { start: number; end: number; text: string }[] = []
   let i = 0
   while (i < work.length) {
@@ -531,7 +578,12 @@ function resolve(work: string, candidates: Candidate[]): Resolution {
     const start = i
     while (i < work.length && !consumed[i] && !/[\s()\-]/.test(work[i])) i++
     const text = work.slice(start, i)
-    if (text.length > 0) modelTokens.push({ start, end: i, text })
+    if (text.length > 0) {
+      // Skip pure noise tokens — they never become model
+      const upperText = text.toUpperCase()
+      if (NOISE_TOKENS.has(upperText)) continue
+      modelTokens.push({ start, end: i, text })
+    }
   }
 
   return { accepted, consumed, modelTokens }
@@ -546,6 +598,7 @@ const SINGLE_LETTER_MODELS = new Set<string>(['X', 'R', 'S', 'FE', 'SE'])
 function isModelLikeToken(tok: string, rules: EffectiveRules): boolean {
   const t = tok.toUpperCase()
   if (t.length === 0) return false
+  if (NOISE_TOKENS.has(t)) return false
   if (PART_CODE_TOKENS.has(t)) return false
   if (Object.prototype.hasOwnProperty.call(rules.partAliases, t)) return false
   if (Object.prototype.hasOwnProperty.call(rules.flagAliases, t)) return false
@@ -558,15 +611,8 @@ function isModelLikeToken(tok: string, rules: EffectiveRules): boolean {
   return false
 }
 
-function sortDashed(tokens: string[]): string {
-  return [...tokens]
-    .map((x) => x.toUpperCase().replace(/\s+/g, ''))
-    .filter((x) => x.length > 0)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .join('-')
-}
 // ---------------------------------------------------------------------------
-// scanDescription — the entry point used by parseCSV for the legacy format
+// scanDescription
 // ---------------------------------------------------------------------------
 
 export type ScanResult = {
@@ -600,6 +646,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     byType.get(c.type)!.push(c)
   }
 
+  // Brand — rightmost wins, with model-guard
   let brandCode: string | null = null
   const brands = byType.get('brand') ?? []
   if (brands.length > 0) {
@@ -620,9 +667,11 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     brandCode = chosen.value
   }
 
+  // Part — first accepted (longest span wins in resolver)
   const partCand = (byType.get('part') ?? [])[0] ?? null
   let partCode: string | null = partCand ? partCand.value : null
 
+  // Quality — paren overrides; else first accepted
   let quality: Quality = 'Normal'
   if (paren.quality) quality = paren.quality
   else {
@@ -632,6 +681,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
   const network = paren.network || (byType.get('network') ?? [])[0]?.value || null
 
+  // Year — combine consecutive years
   let year: string | null = paren.year || null
   if (!year) {
     const years = (byType.get('year') ?? []).sort((a, b) => a.start - b.start)
@@ -648,6 +698,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
   }
 
+  // Size — concatenate multiple if present
   let size: string | null = null
   if (paren.size) size = paren.size
   else {
@@ -663,6 +714,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     }
   }
 
+  // Flag — concatenate with canonical order
   let flag: string | null = null
   if (paren.flag) flag = paren.flag
   else {
@@ -685,6 +737,7 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
 
   const variant = paren.variant || (byType.get('variant') ?? [])[0]?.value || null
 
+  // Colors — concatenate all accepted
   let color: string | null = null
   const colors = (byType.get('color') ?? []).sort((a, b) => a.start - b.start)
   if (paren.colors.length > 0) color = paren.colors[0]
@@ -698,6 +751,8 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     color = parts.join('-')
   }
 
+  // Model runs: group adjacent unconsumed model-like tokens, keep word order within each run,
+  // sort runs against each other.
   const isAdjacentToPrev = (a: { end: number }, b: { start: number }) =>
     /^\s*$/.test(work.slice(a.end, b.start))
 
@@ -741,17 +796,20 @@ export function scanDescription(text: string, aliases: AliasMaps): ScanResult {
     warnings.push(`unclassified tokens: ${dropped.join(' ')}`)
   }
 
+  const cleanRuns = modelRuns.map((r) => r.toUpperCase().replace(/\s+/g, ''))
+  const uniqueRuns = Array.from(new Set(cleanRuns)).filter((run) => {
+    return !cleanRuns.some(
+      (other) => other !== run && other.startsWith(run + '-')
+    )
+  })
   const modelText =
-    modelRuns.length === 0
+    uniqueRuns.length === 0
       ? ''
-      : modelRuns
-          .map((r) => r.toUpperCase().replace(/\s+/g, ''))
+      : uniqueRuns
           .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
           .join('-')
-
   const isGeneralItem =
-    partCode !== null &&
-    rules.generalItemPartCodes.has(partCode)
+    partCode !== null && rules.generalItemPartCodes.has(partCode)
 
   return {
     brandCode,
@@ -824,6 +882,10 @@ function extractParentheticals(desc: string): ParentheticalResult {
       if (!variant) variant = upper.replace(/\.$/, '')
       continue
     }
+    if (/^\d{1,2}$/.test(upper)) {
+      if (!variant) variant = upper
+      continue
+    }
     if (PACKAGING_VARIANT.test(upper)) {
       if (!variant) variant = 'BOX-PACKING'
       continue
@@ -841,11 +903,7 @@ function extractParentheticals(desc: string): ParentheticalResult {
 
 export function normalizePartCode(raw: string | null): string | null {
   if (!raw) return null
-  const upper = raw
-    .toUpperCase()
-    .trim()
-    .replace(/\.$/, '')
-    .replace(/\s+/g, ' ')
+  const upper = raw.toUpperCase().trim().replace(/\.$/, '').replace(/\s+/g, ' ')
 
   const rules = dbCache ? { ...PART_CODE_MAP, ...dbCache.partAliases } : PART_CODE_MAP
   if (rules[upper]) return rules[upper]
@@ -1009,7 +1067,7 @@ export function generateSku(fields: SkuFields): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate detection and grouping
+// Duplicate detection / grouping
 // ---------------------------------------------------------------------------
 
 export function flagDuplicates(rows: ParsedRow[]): ParsedRow[] {
@@ -1099,7 +1157,7 @@ export type ItemLookup = {
 }
 
 // ---------------------------------------------------------------------------
-// parseCSV
+// parseCSV — main entry point
 // ---------------------------------------------------------------------------
 
 export function parseCSV(
@@ -1231,17 +1289,14 @@ export function parseCSV(
 
       if (partCode === 'MF' && /\bFLEX\b/.test(rawDescription.toUpperCase())) {
         partCode = 'MFF'
+        if (flag === 'FLEX') flag = null
       }
 
-      // P2 fix: PIN-in-part. Fold "\d PIN" into partCode as PART-PIN.
-      // Handles multi-value size/variant slots (e.g. size='4PIN-BIG') by
-      // removing only the PIN token, keeping the rest.
+      // PIN-in-part fold
       const PIN_CAPABLE_PARTS = new Set(['ONOFFSWITCH', 'ONOFF', 'MIC'])
       if (partCode) {
         const basePartMatch = partCode.toUpperCase().match(/^(\d{1,2}PIN)[-\s]+(.+)$/)
-        if (basePartMatch) {
-          partCode = basePartMatch[2]
-        }
+        if (basePartMatch) partCode = basePartMatch[2]
         if (PIN_CAPABLE_PARTS.has(partCode.toUpperCase())) {
           const pinMatch = rawDescription.toUpperCase().match(/\b(\d{1,2})\s*[-\s]?\s*PIN\b/)
           if (pinMatch) {
@@ -1266,16 +1321,8 @@ export function parseCSV(
     const sku = hardFail
       ? null
       : generateSku({
-          brandCode,
-          modelName,
-          variant,
-          year,
-          partCode,
-          network,
-          quality,
-          flag,
-          color,
-          size,
+          brandCode, modelName, variant, year, partCode,
+          network, quality, flag, color, size,
           validBrandCodes: aliases.validBrandCodes,
           isGeneralItem,
         })
@@ -1285,6 +1332,7 @@ export function parseCSV(
     let matchedItemId: number | null = null
     let matchedItemSku: string | null = null
 
+    // Contract: refuse to emit non-canonical SKUs
     const CANONICAL_SKU = /^[A-Z0-9]+(-[A-Z0-9]+)+$/
     if (sku && !CANONICAL_SKU.test(sku)) {
       status = 'needs_correction'

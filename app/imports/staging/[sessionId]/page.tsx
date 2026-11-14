@@ -10,6 +10,7 @@ import {
   reclassifyRow,
   skipRow,
   useOldPrice,
+  acceptNewPrice,
   keepOldSku,
   renameOldItem,
   treatReturnAsPurchase,
@@ -158,6 +159,10 @@ export default function SessionDetailPage() {
 
   async function handleUseOldPrice(stagingId: number) {
     await runRowAction(stagingId, () => useOldPrice(stagingId))
+  }
+
+  async function handleUseNewPrice(stagingId: number) {
+    await runRowAction(stagingId, () => acceptNewPrice(stagingId))
   }
 
   async function handleKeepOldSku(stagingId: number) {
@@ -465,11 +470,18 @@ export default function SessionDetailPage() {
                     <td className="px-2 py-1.5 align-top text-right">
                       <div className="flex items-center justify-end gap-1 flex-wrap">
                         {r.resolved_action === 'price_mismatch' && (
-                          <ActionBtn
-                            onClick={() => handleUseOldPrice(r.staging_id)}
-                            disabled={busy}
-                            label="Use old price"
-                          />
+                          <>
+                            <ActionBtn
+                              onClick={() => handleUseOldPrice(r.staging_id)}
+                              disabled={busy}
+                              label="Use old price"
+                            />
+                            <ActionBtn
+                              onClick={() => handleUseNewPrice(r.staging_id)}
+                              disabled={busy}
+                              label="Use new price"
+                            />
+                          </>
                         )}
                         {r.resolved_action === 'match_reformat' && (
                           <>

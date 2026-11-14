@@ -70,6 +70,11 @@ export default function BalanceCheckPage() {
       .eq('return_type', 'Customer')
       .in('party_id', partyIds)
 
+    const { data: payments } = await supabase
+      .from('payments')
+      .select('party_id, amount')
+      .in('party_id', partyIds)
+
     // Compute per party
     const salesByParty: Record<number, number> = {}
     for (const s of sales || []) {
@@ -81,11 +86,24 @@ export default function BalanceCheckPage() {
       returnsByParty[r.party_id] = (returnsByParty[r.party_id] || 0) + Number(r.total_amount)
     }
 
+    const paymentsByParty: Record<number, number> = {}
+    for (const pmt of payments || []) {
+      paymentsByParty[pmt.party_id] = (paymentsByParty[pmt.party_id] || 0) + Number(pmt.amount)
+    }
+
+    const appliedByParty: Record<number, number> = {}
+    for (const s of sales || []) {
+      appliedByParty[s.party_id] = (appliedByParty[s.party_id] || 0) + Number(s.paid_amount || 0)
+    }
+
     const drift: DriftRow[] = []
     for (const p of parties) {
-      const computed = Math.round(
-        ((salesByParty[p.party_id] || 0) - (returnsByParty[p.party_id] || 0)) * 100
-      ) / 100
+      const unpaid = salesByParty[p.party_id] || 0
+      const returned = returnsByParty[p.party_id] || 0
+      const totalPayments = paymentsByParty[p.party_id] || 0
+      const totalApplied = appliedByParty[p.party_id] || 0
+      const overpaid = Math.max(0, totalPayments - totalApplied)
+      const computed = Math.round((unpaid - returned - overpaid) * 100) / 100
       const stored = Number(p.current_balance || 0)
       const diff = Math.round((stored - computed) * 100) / 100
       if (Math.abs(diff) > 0.01) {

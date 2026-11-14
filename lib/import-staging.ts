@@ -353,6 +353,26 @@ export async function useOldPrice(stagingId: number): Promise<void> {
   await reclassifyRow(stagingId)
 }
 
+export async function acceptNewPrice(stagingId: number): Promise<void> {
+  const { data, error } = await supabase
+    .from('import_staging')
+    .select('*')
+    .eq('staging_id', stagingId)
+  if (error) throw new Error('Row load failed: ' + error.message)
+  if (!data || data.length === 0) throw new Error('Row not found')
+  const r = data[0] as StagingRow
+  if (!r.matched_item_id) throw new Error('No matched item')
+
+  const { error: ue } = await supabase
+    .from('import_staging')
+    .update({
+      resolved_action: 'match',
+      conflict_reason: null,
+    })
+    .eq('staging_id', stagingId)
+  if (ue) throw new Error('Update failed: ' + ue.message)
+}
+
 export async function keepOldSku(stagingId: number): Promise<void> {
   const { data, error } = await supabase
     .from('import_staging')
@@ -443,7 +463,25 @@ export async function updateStagingRow(
     .update(patch)
     .eq('staging_id', stagingId)
   if (error) throw new Error('Update failed: ' + error.message)
-  await reclassifyRow(stagingId)
+
+  // If operator explicitly set a rate, trust it — don't let reclassify flip it
+  // back to price_mismatch. Recompute other fields only.
+  const { data } = await supabase
+    .from('import_staging')
+    .select('rate')
+    .eq('staging_id', stagingId)
+    .maybeSingle()
+  const patchHasRate = patch.rate !== undefined
+
+  if (patchHasRate) {
+    // Mark as match directly — operator has decided the price
+    await supabase
+      .from('import_staging')
+      .update({ resolved_action: 'match', conflict_reason: null })
+      .eq('staging_id', stagingId)
+  } else {
+    await reclassifyRow(stagingId)
+  }
 }
 
 // ----- Read / promote / discard -----
