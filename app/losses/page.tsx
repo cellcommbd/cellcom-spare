@@ -40,8 +40,6 @@ const REASONS = ['Damaged', 'Broken', 'Defective', 'Expired', 'Other']
 const DEFAULT_REASON = 'Damaged'
 
 export default function LossesPage() {
-  // Only items for TODAY's losses need to be cached here (small set).
-  // Full item search goes through the search_items RPC via SmartCombobox.
   const [todayItems, setTodayItems] = useState<Item[]>([])
   const [todayLosses, setTodayLosses] = useState<Loss[]>([])
   const [itemOptions, setItemOptions] = useState<
@@ -85,7 +83,6 @@ export default function LossesPage() {
     const lossRows = (lossData || []) as Loss[]
     setTodayLosses(lossRows)
 
-    // Fetch SKUs only for today's loss items — small, never truncated.
     const itemIds = Array.from(new Set(lossRows.map((l) => l.item_id)))
     if (itemIds.length === 0) {
       setTodayItems([])
@@ -100,7 +97,7 @@ export default function LossesPage() {
     setTodayItems((itemData || []) as Item[])
   }
 
-  // ---------- Item search (server-side RPC) ----------
+  // ---------- Item search ----------
   async function searchItems(query: string) {
     if (!query || query.trim().length < 2) {
       setItemOptions([])
@@ -166,8 +163,6 @@ export default function LossesPage() {
   }
 
   function handleItemSelect(rowId: number, itemId: number) {
-    // Look up the full item — either already in options or fetch fresh.
-    const fromOptions = itemOptions.find((o) => o.value === itemId)
     const cached = todayItems.find((i) => i.item_id === itemId)
     if (cached) {
       updateRow(rowId, {
@@ -179,7 +174,6 @@ export default function LossesPage() {
       return
     }
 
-    // Fetch to get cost_price reliably (options label is display-only)
     supabase
       .from('items')
       .select('item_id, sku, current_stock, cost_price')
@@ -333,12 +327,13 @@ export default function LossesPage() {
 
   // ============ RENDER ============
   return (
-    <div className="min-h-screen bg-slate-50 p-4 sm:p-6 lg:p-8">
+    <div className="min-h-screen bg-slate-50 p-3 sm:p-4 lg:p-8">
       <div className="max-w-6xl mx-auto">
 
-        <div className="mb-6 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        {/* Header */}
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-800">
               Faulty / Loss Entry
             </h1>
             <p className="text-xs sm:text-sm text-slate-500 mt-1">
@@ -346,7 +341,7 @@ export default function LossesPage() {
               This loss is subtracted from profit in reports.
             </p>
           </div>
-          <div>
+          <div className="w-full sm:w-auto">
             <label className="block text-xs font-medium text-slate-600 mb-1">
               Loss Date
             </label>
@@ -354,47 +349,33 @@ export default function LossesPage() {
               type="date"
               value={lossDate}
               onChange={(e) => setLossDate(e.target.value)}
-              className="h-11 sm:h-9 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              className="w-full sm:w-auto h-12 sm:h-9 px-3 text-base sm:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
             />
           </div>
         </div>
 
-        <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-6 mb-6 shadow-sm">
+        {/* Entry card */}
+        <div className="bg-white border border-slate-200 rounded-2xl p-3 sm:p-6 mb-6 shadow-sm">
 
-          <div className="border border-slate-300 rounded-lg">
+          {/* ---------- DESKTOP TABLE (md and up) ---------- */}
+          <div className="hidden md:block border border-slate-300 rounded-lg overflow-hidden">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-100">
-                  <th className="w-10 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">
-                    #
-                  </th>
-                  <th className="border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">
-                    Item (SKU)
-                  </th>
-                  <th className="w-20 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">
-                    Qty
-                  </th>
-                  <th className="w-24 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">
-                    Cost
-                  </th>
-                  <th className="w-32 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">
-                    Reason
-                  </th>
-                  <th className="border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">
-                    Notes
-                  </th>
-                  <th className="w-28 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">
-                    Amount
-                  </th>
+                  <th className="w-10 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">#</th>
+                  <th className="border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">Item (SKU)</th>
+                  <th className="w-20 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Qty</th>
+                  <th className="w-24 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Cost</th>
+                  <th className="w-32 border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">Reason</th>
+                  <th className="border-b border-slate-300 px-2 py-2 text-left text-xs font-semibold text-slate-600">Notes</th>
+                  <th className="w-28 border-b border-slate-300 px-2 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
                   <th className="w-12 border-b border-slate-300 px-2 py-2"></th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, idx) => (
                   <tr key={row.rowId} className="border-b border-slate-200">
-                    <td className="px-2 py-1 text-center text-slate-500 text-xs">
-                      {idx + 1}
-                    </td>
+                    <td className="px-2 py-1 text-center text-slate-500 text-xs">{idx + 1}</td>
                     <td className="px-2 py-1">
                       <SmartCombobox
                         options={itemOptions}
@@ -413,9 +394,7 @@ export default function LossesPage() {
                     </td>
                     <td className="px-2 py-1">
                       <input
-                        ref={(el) => {
-                          qtyRefs.current[row.rowId] = el
-                        }}
+                        ref={(el) => { qtyRefs.current[row.rowId] = el }}
                         type="number"
                         inputMode="numeric"
                         value={row.quantity || ''}
@@ -454,9 +433,7 @@ export default function LossesPage() {
                         className="w-full h-8 px-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                       >
                         {REASONS.map((r) => (
-                          <option key={r} value={r}>
-                            {r}
-                          </option>
+                          <option key={r} value={r}>{r}</option>
                         ))}
                       </select>
                     </td>
@@ -487,7 +464,6 @@ export default function LossesPage() {
                 ))}
               </tbody>
             </table>
-
             <button
               onClick={addRow}
               className="w-full px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 flex items-center justify-center gap-1 border-t border-slate-200"
@@ -497,9 +473,139 @@ export default function LossesPage() {
             </button>
           </div>
 
-          <div className="mt-6 grid grid-cols-2 gap-6">
-            <div></div>
-            <div>
+          {/* ---------- MOBILE CARDS (below md) ---------- */}
+          <div className="md:hidden space-y-3">
+            {rows.map((row, idx) => (
+              <div
+                key={row.rowId}
+                className="border border-slate-300 rounded-xl p-3 bg-slate-50/40"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-semibold text-slate-500">
+                    Row #{idx + 1}
+                  </span>
+                  <button
+                    onClick={() => removeRow(row.rowId)}
+                    className="text-red-500 hover:text-red-700 p-1"
+                    title="Remove row"
+                  >
+                    <Trash2 className="size-5" />
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Item (SKU)
+                    </label>
+                    <SmartCombobox
+                      options={itemOptions}
+                      value={row.item_id ? String(row.item_id) : null}
+                      fallbackLabel={row.item_id && row.sku ? row.sku : null}
+                      onValueChange={(v, label, isNew) => {
+                        if (isNew) return
+                        handleItemSelect(row.rowId, Number(v))
+                      }}
+                      onTabKey={() => handleItemTab(row, idx)}
+                      onSearch={searchItems}
+                      placeholder="Type 2+ letters to search SKU…"
+                      allowCreate={false}
+                      inputDataAttr={`loss-row-${row.rowId}`}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Qty
+                      </label>
+                      <input
+                        ref={(el) => { qtyRefs.current[row.rowId] = el }}
+                        type="number"
+                        inputMode="numeric"
+                        value={row.quantity || ''}
+                        onChange={(e) =>
+                          updateRow(row.rowId, {
+                            quantity: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                        onFocus={(e) => e.target.select()}
+                        className="w-full h-12 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1">
+                        Cost
+                      </label>
+                      <input
+                        type="number"
+                        inputMode="numeric"
+                        value={row.rate || ''}
+                        onChange={(e) =>
+                          updateRow(row.rowId, {
+                            rate: parseFloat(e.target.value) || 0,
+                          })
+                        }
+                        onFocus={(e) => e.target.select()}
+                        className="w-full h-12 px-3 text-base text-right border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Reason
+                    </label>
+                    <select
+                      value={row.reason}
+                      onChange={(e) =>
+                        updateRow(row.rowId, { reason: e.target.value })
+                      }
+                      className="w-full h-12 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    >
+                      {REASONS.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                      Notes
+                    </label>
+                    <input
+                      type="text"
+                      value={row.notes}
+                      onChange={(e) =>
+                        updateRow(row.rowId, { notes: e.target.value })
+                      }
+                      placeholder="optional"
+                      className="w-full h-12 px-3 text-base border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2 border-t border-slate-200">
+                    <span className="text-sm text-slate-600">Amount:</span>
+                    <span className="text-base font-semibold text-slate-900">
+                      ₹ {row.amount.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <button
+              onClick={addRow}
+              className="w-full h-12 text-base font-medium text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center justify-center gap-2"
+            >
+              <Plus className="size-5" />
+              Add Row
+            </button>
+          </div>
+
+          {/* Totals */}
+          <div className="mt-6 flex justify-end">
+            <div className="w-full sm:w-1/2">
               <div className="flex justify-between text-base border-t border-slate-300 pt-2">
                 <span className="font-semibold text-slate-800">
                   Total Loss Value:
@@ -511,91 +617,70 @@ export default function LossesPage() {
             </div>
           </div>
 
+          {/* Actions */}
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 mt-6 pt-4 border-t border-slate-200">
             <button
               id="save-loss-btn"
               onClick={saveLosses}
               disabled={saving}
-              className="h-11 px-6 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
+              className="w-full sm:w-auto h-12 sm:h-11 px-6 text-base sm:text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-2"
             >
-              <Save className="size-4" />
+              <Save className="size-5 sm:size-4" />
               {saving ? 'Saving...' : 'Save Losses'}
             </button>
             <button
               onClick={resetForm}
-              className="h-11 px-4 text-sm text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center justify-center gap-2"
+              className="w-full sm:w-auto h-12 sm:h-11 px-4 text-base sm:text-sm text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 flex items-center justify-center gap-2"
             >
-              <X className="size-4" />
+              <X className="size-5 sm:size-4" />
               Clear
             </button>
-            {message && <div className="text-sm text-slate-700">{message}</div>}
+            {message && (
+              <div className="text-sm text-slate-700 text-center sm:text-left">
+                {message}
+              </div>
+            )}
           </div>
         </div>
 
+        {/* Today's losses */}
         <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
           <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
             <span className="text-sm font-semibold text-slate-700">
               Today's Losses ({todayLosses.length})
             </span>
           </div>
-          <div className="overflow-x-auto">
+
+          {/* Desktop table */}
+          <div className="hidden md:block overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
                 <tr className="bg-slate-100">
-                  <th className="w-16 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">
-                    ID
-                  </th>
-                  <th className="border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">
-                    Item
-                  </th>
-                  <th className="w-20 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">
-                    Qty
-                  </th>
-                  <th className="w-28 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">
-                    Cost
-                  </th>
-                  <th className="w-32 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">
-                    Reason
-                  </th>
-                  <th className="w-28 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">
-                    Amount
-                  </th>
-                  <th className="w-20 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">
-                    Action
-                  </th>
+                  <th className="w-16 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">ID</th>
+                  <th className="border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">Item</th>
+                  <th className="w-20 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">Qty</th>
+                  <th className="w-28 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">Cost</th>
+                  <th className="w-32 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">Reason</th>
+                  <th className="w-28 border-b border-slate-300 px-3 py-2 text-right text-xs font-semibold text-slate-600">Amount</th>
+                  <th className="w-20 border-b border-slate-300 px-3 py-2 text-left text-xs font-semibold text-slate-600">Action</th>
                 </tr>
               </thead>
               <tbody>
                 {todayLosses.length === 0 ? (
                   <tr>
-                    <td
-                      colSpan={7}
-                      className="px-3 py-4 text-center text-sm text-slate-400"
-                    >
+                    <td colSpan={7} className="px-3 py-4 text-center text-sm text-slate-400">
                       No losses today yet.
                     </td>
                   </tr>
                 ) : (
                   todayLosses.map((l) => (
                     <tr key={l.loss_id} className="hover:bg-slate-50">
-                      <td className="border-b border-slate-200 px-3 py-2 text-slate-600">
-                        {l.loss_id}
-                      </td>
-                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800 font-mono text-xs">
-                        {itemSku(l.item_id)}
-                      </td>
-                      <td className="border-b border-slate-200 px-3 py-2 text-right text-slate-800">
-                        {l.quantity}
-                      </td>
-                      <td className="border-b border-slate-200 px-3 py-2 text-right text-slate-800">
-                        ₹ {Number(l.rate).toFixed(2)}
-                      </td>
-                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800">
-                        {l.reason}
-                      </td>
-                      <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-red-700">
-                        ₹ {Number(l.total_amount).toFixed(2)}
-                      </td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-600">{l.loss_id}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800 font-mono text-xs">{itemSku(l.item_id)}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-right text-slate-800">{l.quantity}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-right text-slate-800">₹ {Number(l.rate).toFixed(2)}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-slate-800">{l.reason}</td>
+                      <td className="border-b border-slate-200 px-3 py-2 text-right font-medium text-red-700">₹ {Number(l.total_amount).toFixed(2)}</td>
                       <td className="border-b border-slate-200 px-3 py-2">
                         <button
                           onClick={() => deleteLoss(l.loss_id)}
@@ -610,6 +695,57 @@ export default function LossesPage() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Mobile cards */}
+          <div className="md:hidden">
+            {todayLosses.length === 0 ? (
+              <div className="px-4 py-6 text-center text-sm text-slate-400">
+                No losses today yet.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-200">
+                {todayLosses.map((l) => (
+                  <div key={l.loss_id} className="p-4">
+                    <div className="flex justify-between items-start mb-2">
+                      <div>
+                        <div className="text-xs text-slate-500">ID #{l.loss_id}</div>
+                        <div className="font-mono text-sm text-slate-800 mt-1">
+                          {itemSku(l.item_id)}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => deleteLoss(l.loss_id)}
+                        className="text-red-600 hover:text-red-800 p-1"
+                        title="Delete"
+                      >
+                        <Trash2 className="size-5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-sm">
+                      <div>
+                        <span className="text-slate-500 text-xs">Qty:</span>{' '}
+                        <span className="text-slate-800">{l.quantity}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-500 text-xs">Cost:</span>{' '}
+                        <span className="text-slate-800">₹ {Number(l.rate).toFixed(2)}</span>
+                      </div>
+                      <div>
+                        <span className="text-slate-500 text-xs">Reason:</span>{' '}
+                        <span className="text-slate-800">{l.reason}</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-500 text-xs">Amount:</span>{' '}
+                        <span className="font-semibold text-red-700">
+                          ₹ {Number(l.total_amount).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
