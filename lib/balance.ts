@@ -1,6 +1,51 @@
-import { supabase } from './supabase'
+export function isCounterSaleParty(
+  partyName?: string | null,
+  partyId?: number | null
+): boolean {
+  if (partyId !== undefined && partyId !== null && partyId === 3) return true
+  const name = (partyName || '').trim().toLowerCase()
+  return name === 'counter sale' || name === 'counter'
+}
+
+export function computeExpectedCustomerBalance({
+  sales = [],
+  returns = [],
+  partyName,
+  partyId,
+}: {
+  sales?: Array<{ total_amount?: number | string | null; paid_amount?: number | string | null }>
+  returns?: Array<{ total_amount?: number | string | null }>
+  partyName?: string | null
+  partyId?: number | null
+}): number {
+  if (isCounterSaleParty(partyName, partyId)) return 0
+
+  const unpaid = sales.reduce(
+    (sum, sale) => sum + (Number(sale.total_amount || 0) - Number(sale.paid_amount || 0)),
+    0
+  )
+  const returned = returns.reduce(
+    (sum, entry) => sum + Number(entry.total_amount || 0),
+    0
+  )
+
+  return Math.round((unpaid - returned) * 100) / 100
+}
+
+async function getSupabaseClient() {
+  const mod = await import('./supabase.ts')
+  return mod.supabase as any
+}
 
 export async function recomputePartyBalance(partyId: number): Promise<number> {
+  const supabase = await getSupabaseClient()
+
+  const { data: party } = await supabase
+    .from('parties')
+    .select('party_name')
+    .eq('party_id', partyId)
+    .single()
+
   const { data: sales } = await supabase
     .from('sales')
     .select('total_amount, paid_amount')
@@ -12,30 +57,12 @@ export async function recomputePartyBalance(partyId: number): Promise<number> {
     .eq('party_id', partyId)
     .eq('return_type', 'Customer')
 
-  const { data: payments } = await supabase
-    .from('payments')
-    .select('amount')
-    .eq('party_id', partyId)
-
-  const unpaid = (sales || []).reduce(
-    (s, x) => s + (Number(x.total_amount) - Number(x.paid_amount || 0)),
-    0
-  )
-  const returned = (returns || []).reduce(
-    (s, x) => s + Number(x.total_amount),
-    0
-  )
-  const totalPayments = (payments || []).reduce(
-    (s, x) => s + Number(x.amount),
-    0
-  )
-  const totalApplied = (sales || []).reduce(
-    (s, x) => s + Number(x.paid_amount || 0),
-    0
-  )
-  const overpaid = Math.max(0, totalPayments - totalApplied)
-
-  const correct = Math.round((unpaid - returned - overpaid) * 100) / 100
+  const correct = computeExpectedCustomerBalance({
+    sales: sales || [],
+    returns: returns || [],
+    partyName: party?.party_name || null,
+    partyId,
+  })
 
   await supabase
     .from('parties')
@@ -49,6 +76,7 @@ export async function reverseFIFO(
   partyId: number,
   amount: number
 ): Promise<number[]> {
+  const supabase = await getSupabaseClient()
   const { data: bills } = await supabase
     .from('sales')
     .select('sale_id, total_amount, paid_amount, bill_date')

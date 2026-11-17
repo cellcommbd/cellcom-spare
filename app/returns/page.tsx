@@ -508,7 +508,7 @@ export default function SalesReturnPage() {
                       </div>
                       <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded uppercase ${
                         s.status === 'Paid' ? 'bg-emerald-100 text-emerald-700' :
-                        s.status === 'Partially Paid' ? 'bg-amber-100 text-amber-700' :
+                        s.status === 'Partially Paid' ? 'border border-orange-200 bg-orange-100 text-orange-700' :
                         'bg-rose-100 text-rose-700'
                       }`}>{s.status}</span>
                     </button>

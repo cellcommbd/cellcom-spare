@@ -19,6 +19,10 @@ import {
 import { getRole } from '../../lib/auth'
 import { searchItems as searchItemsShared } from '../../lib/item-search'
 import { recomputePartyBalance } from '../../lib/balance'
+import {
+  computeSaleStatus,
+  normalizeAmount,
+} from '../../lib/sale-status'
 
 type Party = {
   party_id: number
@@ -141,6 +145,7 @@ function SalesEntryPage() {
   const [rows, setRows] = useState<SaleRow[]>([
     { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
   ])
+  const [paidAmount, setPaidAmount] = useState(0)
   const [nextRowId, setNextRowId] = useState(2)
 
   const [pendingFocusRowId, setPendingFocusRowId] = useState<number | null>(
@@ -554,6 +559,14 @@ function SalesEntryPage() {
   }
 
   const subtotal = rows.reduce((s, r) => s + (r.amount || 0), 0)
+  const isCounterSaleSelected =
+    pickedShop.id != null &&
+    shops.find((s) => s.party_id === pickedShop.id)?.party_name ===
+      COUNTER_SALE_NAME
+  const normalizedPaidAmount = Math.min(normalizeAmount(paidAmount), subtotal)
+  const saleStatusPreview = isCounterSaleSelected
+    ? 'Paid'
+    : computeSaleStatus(subtotal, normalizedPaidAmount)
 
   async function ensureShop(): Promise<number | null> {
     if (pickedShop.id) return pickedShop.id
@@ -627,6 +640,12 @@ function SalesEntryPage() {
 
     const isCounterSale =
       shops.find((s) => s.party_id === shopId)?.party_name === COUNTER_SALE_NAME
+    const effectivePaid = isCounterSale
+      ? subtotal
+      : Math.min(normalizeAmount(paidAmount), subtotal)
+    const saleStatus = isCounterSale
+      ? 'Paid'
+      : computeSaleStatus(subtotal, effectivePaid)
 
     const { data: saleData, error: saleError } = await supabase
       .from('sales')
@@ -634,8 +653,8 @@ function SalesEntryPage() {
         party_id: shopId,
         bill_date: billDate,
         total_amount: subtotal,
-        status: isCounterSale ? 'Paid' : 'Pending',
-        paid_amount: isCounterSale ? subtotal : 0,
+        status: saleStatus,
+        paid_amount: effectivePaid,
       })
       .select()
       .single()
@@ -685,6 +704,7 @@ function SalesEntryPage() {
     setRows([
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
+    setPaidAmount(0)
     setNextRowId(2)
     setRowItemOptions({})
     await loadData()
@@ -708,6 +728,7 @@ function SalesEntryPage() {
     setRows([
       { rowId: 1, item_id: null, sku: '', quantity: 0, rate: 0, amount: 0 },
     ])
+    setPaidAmount(0)
     setNextRowId(2)
     setRowItemOptions({})
     setMessage('')
@@ -987,13 +1008,12 @@ function SalesEntryPage() {
     // 1. Update sales header — recompute status from new total vs paid_amount
     const isCounterSaleEdit =
       shops.find((s) => s.party_id === newPartyId)?.party_name === COUNTER_SALE_NAME
-    const effectivePaid = isCounterSaleEdit ? newTotal : editState.paid_amount
-    const newStatus =
-      newTotal <= effectivePaid
-        ? 'Paid'
-        : effectivePaid > 0
-        ? 'Partially Paid'
-        : 'Pending'
+    const effectivePaid = isCounterSaleEdit
+      ? newTotal
+      : Math.min(normalizeAmount(editState.paid_amount), newTotal)
+    const newStatus = isCounterSaleEdit
+      ? 'Paid'
+      : computeSaleStatus(newTotal, effectivePaid)
 
     const { error: headerErr } = await supabase
       .from('sales')
@@ -1678,8 +1698,43 @@ function SalesEntryPage() {
                     ₹ {(prevBalance + subtotal).toFixed(2)}
                   </span>
                 </div>
+                <div className="flex justify-between text-sm pt-2">
+                  <span className="text-slate-600">Received Now:</span>
+                  <span className="font-medium text-slate-800">
+                    ₹ {normalizedPaidAmount.toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-600">Status Preview:</span>
+                  <span className="font-semibold text-slate-800">
+                    {saleStatusPreview}
+                  </span>
+                </div>
               </div>
             </div>
+
+            {!isCounterSaleSelected && (
+              <div className="mt-4">
+                <label className="block text-sm font-medium text-slate-700 mb-1">
+                  Amount Received Today
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={paidAmount || ''}
+                  onChange={(e) =>
+                    setPaidAmount(Math.max(0, Number(e.target.value) || 0))
+                  }
+                  className="w-full h-10 px-3 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                  placeholder="0.00"
+                />
+                <div className="mt-1 text-[11px] text-slate-500">
+                  For parchi sales, enter whatever was paid now and leave the
+                  rest as due for the next visit.
+                </div>
+              </div>
+            )}
 
             <div className="flex items-center gap-3 mt-6 pt-4 border-t border-slate-200">
               <button
@@ -2117,7 +2172,7 @@ function TodaySalesGrouped({
                             s.status === 'Paid'
                               ? 'bg-emerald-100 text-emerald-700'
                               : s.status === 'Partially Paid'
-                              ? 'bg-amber-100 text-amber-700'
+                              ? 'border border-orange-200 bg-orange-100 text-orange-700'
                               : 'bg-rose-100 text-rose-700'
                           }`}
                         >

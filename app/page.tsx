@@ -651,7 +651,7 @@ function StatusPill({ status }: { status: string }) {
     status === 'Paid'
       ? 'bg-emerald-100 text-emerald-700'
       : status === 'Partially Paid'
-      ? 'bg-amber-100 text-amber-700'
+      ? 'border border-orange-200 bg-orange-100 text-orange-700'
       : 'bg-rose-100 text-rose-700'
   return (
     <span

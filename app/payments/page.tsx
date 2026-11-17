@@ -332,12 +332,13 @@ function PaymentsPageInner() {
         } else if (paidRemaining >= it.amount) {
           paidRemaining -= it.amount
         } else {
+          // Keep the original item quantity for display. We do not split a
+          // real sold item into fractional units just because a bill was only
+          // partially paid. The unpaid amount is what changes, not the item's
+          // physical quantity.
           const unpaidAmount = it.amount - paidRemaining
-          const unpaidQty =
-            it.amount > 0 ? (unpaidAmount / it.amount) * it.quantity : 0
           filteredOutstanding.push({
             ...it,
-            quantity: unpaidQty,
             amount: unpaidAmount,
           })
           paidRemaining = 0
@@ -1076,6 +1077,7 @@ function PaymentsPageInner() {
               {outstandingDays.map((day) => {
                 const isOpen = !!expandedDays[day.date]
                 const age = daysAgo(day.date)
+                const hasPartialPayment = day.paid > 0 && day.paid < day.total
                 const ageColor =
                   age < 7
                     ? 'text-slate-500'
@@ -1100,17 +1102,24 @@ function PaymentsPageInner() {
                         <div className="text-sm font-semibold text-slate-900">
                           {formatDateLong(day.date)}
                         </div>
-                        <div className="text-[11px] text-slate-500 mt-0.5">
-                          {day.itemCount} item
-                          {day.itemCount === 1 ? '' : 's'} · ₹
-                          {day.total.toFixed(0)} total
+                        <div className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-1">
+                          {hasPartialPayment ? (
+                            <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
+                              Partially paid
+                            </span>
+                          ) : (
+                            <span>
+                              {day.itemCount} item
+                              {day.itemCount === 1 ? '' : 's'} · ₹
+                              {day.total.toFixed(0)} total
+                            </span>
+                          )}
                           {day.paid > 0 && (
                             <span className="text-emerald-700">
-                              {' '}
                               · ₹{day.paid.toFixed(0)} paid
                             </span>
                           )}
-                          <span className={`ml-1 ${ageColor}`}>
+                          <span className={` ${ageColor}`}>
                             · {age}d old
                           </span>
                         </div>
@@ -1121,7 +1130,7 @@ function PaymentsPageInner() {
                         </div>
                         <div className="text-[10px] text-slate-400">due</div>
                       </div>
-                      {day.bills.length === 1 && (
+                      {day.bills.length > 0 && (
                         <span
                           role="button"
                           tabIndex={0}
@@ -1147,10 +1156,10 @@ function PaymentsPageInner() {
                     {/* Expanded items */}
                     {isOpen && (
                       <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
-                        {day.bills.length > 1 && (
+                        {day.bills.length > 0 && (
                           <div className="mb-2 pb-2 border-b border-slate-200">
                             <div className="text-[10px] uppercase text-slate-500 mb-1">
-                              {day.bills.length} bills on this day
+                              {day.bills.length === 1 ? 'Bill' : `${day.bills.length} bills on this day`}
                             </div>
                             {day.bills.map((bill) => (
                               <div
@@ -1167,7 +1176,7 @@ function PaymentsPageInner() {
                                 className="w-full flex items-center justify-between text-xs py-1 px-1 hover:bg-slate-100 rounded cursor-pointer"
                               >
                                 <span className="text-slate-600">
-                                  Bill #{bill.sale_id}
+                                  {day.bills.length === 1 ? 'Invoice' : `Bill #${bill.sale_id}`}
                                 </span>
                                 <span className="flex items-center gap-2">
                                   <span className="text-slate-800 font-medium">
@@ -1201,12 +1210,20 @@ function PaymentsPageInner() {
                                 </div>
                               </div>
                             ))}
-                            <div className="pt-2 mt-2 border-t border-slate-200 flex justify-between text-xs">
+                            <div className="pt-2 mt-2 border-t border-slate-200 flex justify-between items-center gap-2 text-xs">
                               <span className="text-slate-500">
-                                {day.itemCount} item
-                                {day.itemCount === 1 ? '' : 's'} ·{' '}
-                                {day.bills.length} bill
-                                {day.bills.length === 1 ? '' : 's'}
+                                {hasPartialPayment ? (
+                                  <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
+                                    Partially paid
+                                  </span>
+                                ) : (
+                                  <>
+                                    {day.itemCount} item
+                                    {day.itemCount === 1 ? '' : 's'} ·{' '}
+                                    {day.bills.length} bill
+                                    {day.bills.length === 1 ? '' : 's'}
+                                  </>
+                                )}
                               </span>
                               <span className="font-semibold text-slate-800">
                                 Total ₹{day.total.toFixed(2)}

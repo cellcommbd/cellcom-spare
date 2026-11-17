@@ -1,62 +1,82 @@
-'use client'
+﻿'use client'
 
 import Link from 'next/link'
 
+const tools = [
+  {
+    href: '/admin/balance-check',
+    title: 'Balance Check',
+    summary: 'Find customer drift, compare stored vs computed, and choose the right fix.',
+    tone: 'bg-amber-50 border-amber-200 text-amber-900',
+  },
+  {
+    href: '/admin/repair',
+    title: 'Fix & Repair',
+    summary: 'Clean duplicate records, merge data, and repair catalog issues.',
+    tone: 'bg-rose-50 border-rose-200 text-rose-900',
+  },
+  {
+    href: '/admin/aliases',
+    title: 'Parser Aliases',
+    summary: 'Create and edit aliases for parts, brands, colors, and quality tags.',
+    tone: 'bg-sky-50 border-sky-200 text-sky-900',
+  },
+  {
+    href: '/admin/batch-audit',
+    title: 'Batch Audit',
+    summary: 'Review bulk entries and flag likely inconsistencies across records.',
+    tone: 'bg-violet-50 border-violet-200 text-violet-900',
+  },
+  {
+    href: '/admin/purchase-audit',
+    title: 'Purchase Audit',
+    summary: 'Check purchase records and vendor data for missing or mismatched values.',
+    tone: 'bg-emerald-50 border-emerald-200 text-emerald-900',
+  },
+]
+
 export default function AdminPage() {
   return (
-    <div className="min-h-screen bg-slate-50 p-4">
-      <div className="max-w-2xl mx-auto">
-        <h1 className="text-xl font-bold mb-4">Admin</h1>
-        <div className="grid gap-2">
+    <div className="min-h-screen bg-slate-50 p-4 sm:p-6">
+      <div className="max-w-3xl mx-auto">
+        <div className="mb-5">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+            Owner tools
+          </div>
+          <h1 className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">Admin</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            Data cleanup, audits, and balance checks for store operations.
+          </p>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2">
+          {tools.map((tool) => (
+            <Link
+              key={tool.href}
+              href={tool.href}
+              className={`group block rounded-2xl border p-4 transition hover:-translate-y-0.5 hover:shadow-sm ${tool.tone}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="text-base font-semibold">{tool.title}</div>
+                <span className="text-xl leading-none">→</span>
+              </div>
+              <div className="mt-2 text-sm leading-5 opacity-80">{tool.summary}</div>
+            </Link>
+          ))}
+        </div>
+
+        <div className="mt-6 flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
+          <div>
+            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Back</div>
+            <div className="text-sm text-slate-700">Return to the main shop screen</div>
+          </div>
           <Link
-            href="/admin/repair"
-            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+            href="/"
+            className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700"
           >
-            <div className="text-sm font-semibold text-slate-800">Fix & Repair</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Duplicate items, merge, catalog cleanup
-            </div>
-          </Link>
-          <Link
-            href="/admin/aliases"
-            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-          >
-            <div className="text-sm font-semibold text-slate-800">Parser Aliases</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Add/edit part, brand, color, quality aliases
-            </div>
-          </Link>
-          <Link
-            href="/admin/balance-check"
-            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-          >
-            <div className="text-sm font-semibold text-slate-800">Balance Check</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Detect and fix customer balance drift
-            </div>
-          </Link>
-          <Link
-            href="/admin/batch-audit"
-            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-          >
-            <div className="text-sm font-semibold text-slate-800">Batch Audit</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Audit bulk data for inconsistencies
-            </div>
-          </Link>
-          <Link
-            href="/admin/purchase-audit"
-            className="block p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-          >
-            <div className="text-sm font-semibold text-slate-800">Purchase Audit</div>
-            <div className="text-xs text-slate-500 mt-0.5">
-              Audit purchases and vendor records
-            </div>
+            Home
           </Link>
         </div>
-        <Link href="/" className="text-blue-600 mt-4 inline-block text-sm">
-          ← Home
-        </Link>
       </div>
     </div>
   )

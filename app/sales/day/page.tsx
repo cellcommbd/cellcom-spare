@@ -461,7 +461,7 @@ export default function DaySalesPage() {
   }
 
   function defaultPartyForNewRow(): number {
-    if (lastPartyId) return lastPartyId
+    if (lastPartyId && lastPartyId !== COUNTER_SALE_PARTY_ID) return lastPartyId
     return COUNTER_SALE_PARTY_ID
   }
 
@@ -627,51 +627,87 @@ export default function DaySalesPage() {
     }
 
     try {
-      // 1. Insert day_sales_payments row
-      const { error: dayPayErr } = await supabase
+      // 1. Insert day_sales_payments row only once for this party/day
+      const { data: existingDayPayments } = await supabase
         .from('day_sales_payments')
-        .insert({
-          bill_date: billDate,
-          party_id: partyId,
-          cash: cashAmount,
-          upi: upiAmount,
-        })
-      if (dayPayErr) throw new Error(dayPayErr.message)
+        .select('id, cash, upi')
+        .eq('bill_date', billDate)
+        .eq('party_id', partyId)
 
-      // 2. Insert payments row(s) — Cash and/or UPI
+      const existingCash = (existingDayPayments || []).reduce(
+        (sum, p) => sum + Number(p.cash || 0),
+        0
+      )
+      const existingUpi = (existingDayPayments || []).reduce(
+        (sum, p) => sum + Number(p.upi || 0),
+        0
+      )
+
+      const insertCash = Math.max(0, cashAmount - existingCash)
+      const insertUpi = Math.max(0, upiAmount - existingUpi)
+
+      if (insertCash > 0 || insertUpi > 0) {
+        const { error: dayPayErr } = await supabase
+          .from('day_sales_payments')
+          .insert({
+            bill_date: billDate,
+            party_id: partyId,
+            cash: insertCash,
+            upi: insertUpi,
+          })
+        if (dayPayErr) throw new Error(dayPayErr.message)
+      }
+
+      // 2. Insert only the missing payment rows — avoid duplicate ledger entries
+      const { data: existingPayments } = await supabase
+        .from('payments')
+        .select('amount, payment_mode')
+        .eq('payment_date', billDate)
+        .eq('party_id', partyId)
+
+      const existingCashLedger = (existingPayments || [])
+        .filter((p) => p.payment_mode === 'Cash')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+      const existingUpiLedger = (existingPayments || [])
+        .filter((p) => p.payment_mode === 'UPI')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+
       const inserts: {
         party_id: number
         payment_date: string
         amount: number
         payment_mode: string
       }[] = []
-      if (cashAmount > 0) {
+      if (cashAmount > existingCashLedger) {
         inserts.push({
           party_id: partyId,
           payment_date: billDate,
-          amount: cashAmount,
+          amount: cashAmount - existingCashLedger,
           payment_mode: 'Cash',
         })
       }
-      if (upiAmount > 0) {
+      if (upiAmount > existingUpiLedger) {
         inserts.push({
           party_id: partyId,
           payment_date: billDate,
-          amount: upiAmount,
+          amount: upiAmount - existingUpiLedger,
           payment_mode: 'UPI',
         })
       }
-      const { data: insertedPayments, error: payErr } = await supabase
-        .from('payments')
-        .insert(inserts)
-        .select('payment_id, amount')
-      if (payErr || !insertedPayments) {
-        throw new Error(payErr?.message || 'Payment insert failed')
-      }
 
-      // 3. Apply FIFO to outstanding bills (per payment row, with allocation)
-      for (const p of insertedPayments) {
-        await applyFIFO(partyId, Number(p.amount), p.payment_id)
+      if (inserts.length > 0) {
+        const { data: insertedPayments, error: payErr } = await supabase
+          .from('payments')
+          .insert(inserts)
+          .select('payment_id, amount')
+        if (payErr || !insertedPayments) {
+          throw new Error(payErr?.message || 'Payment insert failed')
+        }
+
+        // 3. Apply FIFO to outstanding bills (per payment row, with allocation)
+        for (const p of insertedPayments) {
+          await applyFIFO(partyId, Number(p.amount), p.payment_id)
+        }
       }
 
       // 4. Recompute balance (self-healing)
@@ -691,15 +727,102 @@ export default function DaySalesPage() {
     }
   }
 
+  async function syncCounterSalePayments(
+    targetCash: number,
+    targetUpi: number
+  ): Promise<{ inserted: number; error?: string }> {
+    try {
+      const { data: existingRows } = await supabase
+        .from('payments')
+        .select('amount, payment_mode')
+        .eq('payment_date', billDate)
+        .eq('party_id', COUNTER_SALE_PARTY_ID)
+
+      const existingCash = (existingRows || [])
+        .filter((p) => p.payment_mode === 'Cash')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+      const existingUpi = (existingRows || [])
+        .filter((p) => p.payment_mode === 'UPI')
+        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+
+      const cashToInsert = Math.max(0, targetCash - existingCash)
+      const upiToInsert = Math.max(0, targetUpi - existingUpi)
+
+      if (cashToInsert <= 0.01 && upiToInsert <= 0.01) {
+        return { inserted: 0 }
+      }
+
+      const inserts: {
+        party_id: number
+        payment_date: string
+        amount: number
+        payment_mode: string
+      }[] = []
+
+      if (cashToInsert > 0.01) {
+        inserts.push({
+          party_id: COUNTER_SALE_PARTY_ID,
+          payment_date: billDate,
+          amount: Number(cashToInsert.toFixed(2)),
+          payment_mode: 'Cash',
+        })
+      }
+      if (upiToInsert > 0.01) {
+        inserts.push({
+          party_id: COUNTER_SALE_PARTY_ID,
+          payment_date: billDate,
+          amount: Number(upiToInsert.toFixed(2)),
+          payment_mode: 'UPI',
+        })
+      }
+
+      if (inserts.length > 0) {
+        const { error } = await supabase.from('payments').insert(inserts)
+        if (error) throw new Error(error.message)
+      }
+
+      return { inserted: inserts.length }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Counter sale payment sync failed'
+      return { inserted: 0, error: msg }
+    }
+  }
+
   // ============================================================
   // CLOSE DAY
   // ============================================================
+
+  async function checkAlreadyClosed(dayDate: string) {
+    const { data, error } = await supabase
+      .from('sales')
+      .select('sale_id', { count: 'exact', head: true })
+      .eq('bill_date', dayDate)
+
+    if (error) {
+      return { alreadyClosed: false, error: error.message }
+    }
+
+    return {
+      alreadyClosed: (data ?? []).length > 0 || false,
+      error: null as string | null,
+    }
+  }
 
   // Opens the Close Day dialog — fetches current payment totals first
   const handleCloseDayClick = useCallback(async () => {
     setCloseError('')
     if (activeRows.length === 0) {
       setCloseError('Nothing to close — add at least one item.')
+      return
+    }
+
+    const closedCheck = await checkAlreadyClosed(billDate)
+    if (closedCheck.error) {
+      setCloseError('Could not verify whether this day was already closed: ' + closedCheck.error)
+      return
+    }
+    if (closedCheck.alreadyClosed) {
+      setCloseError('This day is already closed. Nothing new will be created again.')
       return
     }
 
@@ -742,6 +865,21 @@ export default function DaySalesPage() {
   } | null>(null)
 
   async function openPastDayClose(dayDate: string) {
+    const { data: saleCheck, error: saleErr } = await supabase
+      .from('sales')
+      .select('sale_id', { count: 'exact', head: true })
+      .eq('bill_date', dayDate)
+
+    if (saleErr) {
+      alert('Failed to verify closure state: ' + saleErr.message)
+      return
+    }
+
+    if ((saleCheck ?? []).length > 0) {
+      alert('This day was already closed. Re-closing would create duplicate bills.')
+      return
+    }
+
     const { data: itemsData, error: itemsErr } = await supabase
       .rpc('get_day_items', { p_bill_date: dayDate })
     if (itemsErr) {
@@ -814,25 +952,9 @@ export default function DaySalesPage() {
       const counterSaleUpi = Math.min(deltaUpi, pastDayData.counterSaleTotal)
       const counterSaleCash = Math.max(0, pastDayData.counterSaleTotal - counterSaleUpi)
 
-      const inserts: any[] = []
-      if (counterSaleCash > 0.01) {
-        inserts.push({
-          party_id: COUNTER_SALE_PARTY_ID,
-          payment_date: dayDate,
-          amount: counterSaleCash,
-          payment_mode: 'Cash',
-        })
-      }
-      if (counterSaleUpi > 0.01) {
-        inserts.push({
-          party_id: COUNTER_SALE_PARTY_ID,
-          payment_date: dayDate,
-          amount: counterSaleUpi,
-          payment_mode: 'UPI',
-        })
-      }
-      if (inserts.length > 0) {
-        await supabase.from('payments').insert(inserts)
+      const { error } = await syncCounterSalePayments(counterSaleCash, counterSaleUpi)
+      if (error) {
+        alert('Counter sale payment sync failed: ' + error)
       }
     }
 
@@ -847,13 +969,22 @@ export default function DaySalesPage() {
       setCloseState('closing')
       setShowCloseDialog(false)
       try {
+        const { alreadyClosed, error: closedErr } = await checkAlreadyClosed(billDate)
+        if (closedErr) {
+          throw new Error(closedErr)
+        }
+        if (alreadyClosed) {
+          throw new Error('This day is already closed. Duplicate closing is blocked.')
+        }
+
         // 1. Run the close RPC (creates bills, clears day_sales_items)
         const { data, error } = await supabase.rpc('close_day_sales', {
           p_bill_date: billDate,
         })
         if (error) throw new Error(error.message)
 
-        // 2. Insert Counter Sale payment rows based on UPI reconciliation
+        // 2. Insert Counter Sale payment rows only for the missing delta,
+        // so repeated close attempts do not create duplicate payment entries.
         if (dialogData && dialogData.counterSaleTotal > 0) {
           const deltaUpi = Math.max(0, totalUpiToday - dialogData.alreadyUpi)
           const counterSaleUpi = Math.min(
@@ -865,30 +996,12 @@ export default function DaySalesPage() {
             dialogData.counterSaleTotal - counterSaleUpi
           )
 
-          const counterInserts: {
-            party_id: number
-            payment_date: string
-            amount: number
-            payment_mode: string
-          }[] = []
-          if (counterSaleCash > 0.01) {
-            counterInserts.push({
-              party_id: COUNTER_SALE_PARTY_ID,
-              payment_date: billDate,
-              amount: counterSaleCash,
-              payment_mode: 'Cash',
-            })
-          }
-          if (counterSaleUpi > 0.01) {
-            counterInserts.push({
-              party_id: COUNTER_SALE_PARTY_ID,
-              payment_date: billDate,
-              amount: counterSaleUpi,
-              payment_mode: 'UPI',
-            })
-          }
-          if (counterInserts.length > 0) {
-            await supabase.from('payments').insert(counterInserts)
+          const { error } = await syncCounterSalePayments(
+            counterSaleCash,
+            counterSaleUpi
+          )
+          if (error) {
+            throw new Error(error)
           }
         }
 
@@ -1117,8 +1230,12 @@ export default function DaySalesPage() {
             onCancel={() => setAddOpen(false)}
             onAdd={async (item, qty, rate, partyId) => {
               await addRow(item, qty, rate, partyId)
+              if (partyId !== COUNTER_SALE_PARTY_ID) setLastPartyId(partyId)
             }}
             onCreateNewParty={(name) => setPendingNewParty(name)}
+            onPartyChanged={(partyId) => {
+              if (partyId !== COUNTER_SALE_PARTY_ID) setLastPartyId(partyId)
+            }}
             setItemsCache={setItemsCache}
           />
         )}
@@ -1553,6 +1670,7 @@ function AddRowPanel({
   onCancel,
   onAdd,
   onCreateNewParty,
+  onPartyChanged,
   setItemsCache,
 }: {
   parties: Party[]
@@ -1561,6 +1679,7 @@ function AddRowPanel({
   onCancel: () => void
   onAdd: (item: Item, qty: number, rate: number, partyId: number) => Promise<void>
   onCreateNewParty: (name: string) => void
+  onPartyChanged?: (partyId: number) => void
   setItemsCache: React.Dispatch<React.SetStateAction<Record<number, Item>>>
 }) {
   const [searchResults, setSearchResults] = useState<Item[]>([])
@@ -1764,7 +1883,9 @@ className="w-full h-11 px-3 text-base text-right border border-slate-300 rounded
                   onCreateNewParty(label)
                   return
                 }
-                setPartyId(Number(v))
+                const nextPartyId = Number(v)
+                setPartyId(nextPartyId)
+                onPartyChanged?.(nextPartyId)
               }}
               placeholder="Select party..."
               allowCreate={true}

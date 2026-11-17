@@ -6,6 +6,7 @@ import { supabase } from '../../../lib/supabase'
 import { SmartCombobox } from '../../../components/ui/smart-combobox'
 import { SaleEditModal } from '../../../components/ui/sale-edit-modal'
 import { searchItems, SearchItemResult } from '../../../lib/item-search'
+import { computeDueAmount } from '../../../lib/sale-status'
 import {
   ArrowLeft,
   Search,
@@ -472,7 +473,7 @@ export default function FindSalePage() {
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
             <div className="divide-y divide-slate-100">
               {sales.map((s) => {
-                const due = Math.max(0, s.total_amount - s.paid_amount)
+                const due = computeDueAmount(s.total_amount, s.paid_amount)
                 const isExpanded = expandedSaleId === s.sale_id
                 return (
                   <div key={s.sale_id}>
@@ -502,7 +503,7 @@ export default function FindSalePage() {
                               s.status === 'Paid'
                                 ? 'bg-emerald-100 text-emerald-700'
                                 : s.status === 'Partially Paid'
-                                ? 'bg-amber-100 text-amber-700'
+                                ? 'border border-orange-200 bg-orange-100 text-orange-700'
                                 : 'bg-rose-100 text-rose-700'
                             }`}
                           >
@@ -541,53 +542,132 @@ export default function FindSalePage() {
                     </div>
 
                     {/* Expanded item list */}
-                    {isExpanded && (
-                      <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
-                        <div className="text-[10px] uppercase text-slate-500 font-semibold mb-2 tracking-wide">
-                          Items in this bill
-                        </div>
-                        <div className="space-y-1.5">
-                          {s.lines.map((l) => {
-                            const netQty = l.quantity - l.returned_qty
-                            return (
-                              <div
-                                key={l.detail_id}
-                                className="bg-white border border-slate-200 rounded-lg px-2.5 py-2 flex items-start gap-2"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <div className="font-mono text-[11px] text-slate-800 break-all">
-                                    {l.sku}
-                                  </div>
-                                  <div className="text-[10px] text-slate-500 mt-0.5">
-                                    Qty {l.quantity}
-                                    {l.returned_qty > 0 && (
-                                      <span className="text-amber-700 ml-1">
-                                        (returned {l.returned_qty}, net {netQty})
+                    {isExpanded && (() => {
+                      let paidRemaining = Number(s.paid_amount || 0)
+                      const lineRows = [...s.lines]
+                        .sort((a, b) => a.detail_id - b.detail_id)
+                        .map((l) => {
+                          const netQty = l.quantity - l.returned_qty
+                          const lineAmount = Number(l.amount || 0)
+                          const coveredAmount = Math.min(lineAmount, paidRemaining)
+                          const dueAmount = Math.max(0, lineAmount - coveredAmount)
+                          paidRemaining = Math.max(0, paidRemaining - lineAmount)
+
+                          return {
+                            ...l,
+                            netQty,
+                            coveredAmount,
+                            dueAmount,
+                            settled: dueAmount <= 0.01,
+                          }
+                        })
+
+                      return (
+                        <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                          <div className="text-[10px] uppercase text-slate-500 font-semibold mb-2 tracking-wide">
+                            Items in this bill
+                          </div>
+                          <div className="space-y-1.5">
+                            {lineRows.map((l) => {
+                              const isFullyPaid = l.settled
+                              const isPartPaid = l.coveredAmount > 0 && l.dueAmount > 0
+                              const isDue = !isFullyPaid && !isPartPaid && l.dueAmount > 0
+
+                              const rowTone = isFullyPaid
+                                ? 'bg-emerald-50 border-emerald-300 shadow-sm'
+                                : isPartPaid
+                                ? 'bg-amber-50 border-amber-300 shadow-sm'
+                                : 'bg-rose-50 border-rose-300 shadow-sm'
+
+                              const labelTone = isFullyPaid
+                                ? 'bg-emerald-600 text-white'
+                                : isPartPaid
+                                ? 'bg-amber-500 text-white'
+                                : 'bg-rose-600 text-white'
+
+                              const skuTone = isFullyPaid
+                                ? 'text-slate-500 line-through'
+                                : isPartPaid
+                                ? 'text-amber-900'
+                                : 'text-rose-800'
+
+                              const detailsTone = isFullyPaid
+                                ? 'text-slate-500'
+                                : isPartPaid
+                                ? 'text-amber-800'
+                                : 'text-rose-700'
+
+                              const amountTone = isFullyPaid
+                                ? 'text-slate-400 line-through'
+                                : isPartPaid
+                                ? 'text-amber-800 font-bold'
+                                : 'text-rose-700 font-bold'
+
+                              const stateLabel = isFullyPaid
+                                ? 'Paid'
+                                : isPartPaid
+                                ? 'Part Paid'
+                                : 'Due'
+
+                              return (
+                                <div
+                                  key={l.detail_id}
+                                  className={`border rounded-xl px-2.5 py-2.5 flex items-start gap-2 ${rowTone}`}
+                                >
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <div
+                                        className={`font-mono text-[11px] sm:text-[12px] break-all ${skuTone}`}
+                                      >
+                                        {l.sku}
+                                      </div>
+                                      <span
+                                        className={`inline-block px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${labelTone}`}
+                                      >
+                                        {stateLabel}
                                       </span>
-                                    )}
-                                    {' · '}Rate {money(l.rate)}
+                                    </div>
+                                    <div className={`text-[10px] sm:text-[11px] mt-1 ${detailsTone}`}>
+                                      Qty {l.quantity}
+                                      {l.returned_qty > 0 && (
+                                        <span className="ml-1">
+                                          (returned {l.returned_qty}, net {l.netQty})
+                                        </span>
+                                      )}
+                                      {' · '}Rate {money(l.rate)}
+                                      {l.coveredAmount > 0 && !isFullyPaid && (
+                                        <span className="ml-1 text-emerald-700">
+                                          · paid {money(l.coveredAmount)}
+                                        </span>
+                                      )}
+                                      {l.dueAmount > 0 && (
+                                        <span className="ml-1">
+                                          · due {money(l.dueAmount)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    <div className={`text-xs sm:text-sm font-semibold ${amountTone}`}>
+                                      {money(l.amount)}
+                                    </div>
                                   </div>
                                 </div>
-                                <div className="text-right shrink-0">
-                                  <div className="text-xs font-semibold text-slate-900">
-                                    {money(l.amount)}
-                                  </div>
-                                </div>
-                              </div>
-                            )
-                          })}
+                              )
+                            })}
+                          </div>
+                          <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
+                            <span className="text-slate-500">
+                              {s.lines.length} line
+                              {s.lines.length === 1 ? '' : 's'}
+                            </span>
+                            <span className="font-bold text-slate-900">
+                              Total {money(s.total_amount)}
+                            </span>
+                          </div>
                         </div>
-                        <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
-                          <span className="text-slate-500">
-                            {s.lines.length} line
-                            {s.lines.length === 1 ? '' : 's'}
-                          </span>
-                          <span className="font-bold text-slate-900">
-                            Total {money(s.total_amount)}
-                          </span>
-                        </div>
-                      </div>
-                    )}
+                      )
+                    })()}
                   </div>
                 )
               })}

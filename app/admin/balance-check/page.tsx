@@ -5,7 +5,11 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { supabase } from '../../../lib/supabase'
 import { getRole } from '../../../lib/auth'
-import { recomputePartyBalance } from '../../../lib/balance'
+import {
+  recomputePartyBalance,
+  computeExpectedCustomerBalance,
+  isCounterSaleParty,
+} from '../../../lib/balance'
 import {
   ArrowLeft,
   Loader2,
@@ -21,14 +25,20 @@ type DriftRow = {
   stored: number
   computed: number
   drift: number
+  note: string
+  recentSales: Array<{ sale_id: number; total_amount: number; paid_amount: number; bill_date: string }>
+  recentPayments: Array<{ payment_id: number; amount: number; payment_date: string }>
 }
 
 export default function BalanceCheckPage() {
   const router = useRouter()
   const [isOwner, setIsOwner] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [partyList, setPartyList] = useState<Array<{ party_id: number; party_name: string; current_balance: number }>>([])
   const [rows, setRows] = useState<DriftRow[]>([])
   const [fixing, setFixing] = useState<number | null>(null)
+  const [manualPartyId, setManualPartyId] = useState<number | null>(null)
+  const [manualValue, setManualValue] = useState('')
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState<'success' | 'error'>('success')
 
@@ -57,12 +67,15 @@ export default function BalanceCheckPage() {
       return
     }
 
-    // Fetch all sales + returns in parallel
+    setPartyList(parties)
+
     const partyIds = parties.map((p) => p.party_id)
     const { data: sales } = await supabase
       .from('sales')
-      .select('party_id, total_amount, paid_amount')
+      .select('sale_id, party_id, total_amount, paid_amount, bill_date')
       .in('party_id', partyIds)
+      .order('bill_date', { ascending: false })
+      .order('sale_id', { ascending: false })
 
     const { data: returns } = await supabase
       .from('returns')
@@ -72,66 +85,138 @@ export default function BalanceCheckPage() {
 
     const { data: payments } = await supabase
       .from('payments')
-      .select('party_id, amount')
+      .select('payment_id, party_id, amount, payment_date')
       .in('party_id', partyIds)
-
-    // Compute per party
-    const salesByParty: Record<number, number> = {}
-    for (const s of sales || []) {
-      const unpaid = Number(s.total_amount) - Number(s.paid_amount || 0)
-      salesByParty[s.party_id] = (salesByParty[s.party_id] || 0) + unpaid
-    }
-    const returnsByParty: Record<number, number> = {}
-    for (const r of returns || []) {
-      returnsByParty[r.party_id] = (returnsByParty[r.party_id] || 0) + Number(r.total_amount)
-    }
-
-    const paymentsByParty: Record<number, number> = {}
-    for (const pmt of payments || []) {
-      paymentsByParty[pmt.party_id] = (paymentsByParty[pmt.party_id] || 0) + Number(pmt.amount)
-    }
-
-    const appliedByParty: Record<number, number> = {}
-    for (const s of sales || []) {
-      appliedByParty[s.party_id] = (appliedByParty[s.party_id] || 0) + Number(s.paid_amount || 0)
-    }
+      .order('payment_date', { ascending: false })
+      .order('payment_id', { ascending: false })
 
     const drift: DriftRow[] = []
     for (const p of parties) {
-      const unpaid = salesByParty[p.party_id] || 0
-      const returned = returnsByParty[p.party_id] || 0
-      const totalPayments = paymentsByParty[p.party_id] || 0
-      const totalApplied = appliedByParty[p.party_id] || 0
-      const overpaid = Math.max(0, totalPayments - totalApplied)
-      const computed = Math.round((unpaid - returned - overpaid) * 100) / 100
+      if (isCounterSaleParty(p.party_name, p.party_id)) {
+        continue
+      }
+
+      const salesForParty = (sales || []).filter((s) => s.party_id === p.party_id)
+      const returnsForParty = (returns || []).filter((r) => r.party_id === p.party_id)
+      const recentSales = salesForParty
+        .slice()
+        .sort((a, b) => {
+          const dateA = a.bill_date ? new Date(a.bill_date).getTime() : 0
+          const dateB = b.bill_date ? new Date(b.bill_date).getTime() : 0
+          return dateB - dateA || Number(b.sale_id ?? 0) - Number(a.sale_id ?? 0)
+        })
+        .slice(0, 3)
+      const recentPayments = (payments || [])
+        .filter((x) => x.party_id === p.party_id)
+        .sort((a, b) => {
+          const dateA = a.payment_date ? new Date(a.payment_date).getTime() : 0
+          const dateB = b.payment_date ? new Date(b.payment_date).getTime() : 0
+          return dateB - dateA || Number(b.payment_id ?? 0) - Number(a.payment_id ?? 0)
+        })
+        .slice(0, 3)
+      const computed = computeExpectedCustomerBalance({
+        sales: salesForParty,
+        returns: returnsForParty,
+        partyName: p.party_name,
+        partyId: p.party_id,
+      })
       const stored = Number(p.current_balance || 0)
       const diff = Math.round((stored - computed) * 100) / 100
       if (Math.abs(diff) > 0.01) {
+        const label = diff > 0
+          ? 'Missing payment'
+          : 'Extra payment'
+        const note = diff > 0
+          ? 'Stored balance is too high: payment missing, or sale not cleared from ledger.'
+          : 'Stored balance is too low: extra payment, or sale counted wrongly.'
+        const saleNotCounted = salesForParty.length === 0 && Number(p.current_balance || 0) > 0
+        const finalLabel = saleNotCounted && diff > 0 ? 'Sale not counted' : label
+        const finalNote = saleNotCounted && diff > 0
+          ? 'There may be a customer sale missing from the ledger, which made the stored balance too high.'
+          : note
         drift.push({
           party_id: p.party_id,
           party_name: p.party_name,
           stored,
           computed,
           drift: diff,
+          note: `${finalLabel} · ${finalNote}`,
+          recentSales: recentSales.map((s) => ({
+            sale_id: Number(s.sale_id),
+            total_amount: Number(s.total_amount || 0),
+            paid_amount: Number(s.paid_amount || 0),
+            bill_date: String(s.bill_date || ''),
+          })),
+          recentPayments: recentPayments.map((pmt) => ({
+            payment_id: Number(pmt.payment_id),
+            amount: Number(pmt.amount || 0),
+            payment_date: String(pmt.payment_date || ''),
+          })),
         })
       }
     }
 
     drift.sort((a, b) => Math.abs(b.drift) - Math.abs(a.drift))
     setRows(drift)
+
+    if (!manualPartyId && parties.length > 0) {
+      const firstCustomer = parties.find((p) => !isCounterSaleParty(p.party_name, p.party_id))
+      setManualPartyId(firstCustomer?.party_id ?? null)
+    }
+
     setLoading(false)
   }
 
-  async function handleFix(partyId: number, partyName: string) {
-    if (!confirm(`Recompute balance for "${partyName}"?`)) return
+  async function handleManualAdjust() {
+    if (manualPartyId === null || manualValue === '') return
+    const value = Number(manualValue)
+    if (!Number.isFinite(value)) {
+      setMessage('Enter a valid numeric balance.')
+      setMessageType('error')
+      return
+    }
+
+    try {
+      const { error } = await supabase
+        .from('parties')
+        .update({ current_balance: value })
+        .eq('party_id', manualPartyId)
+
+      if (error) throw error
+
+      setMessage(`Balance updated for party #${manualPartyId}.`)
+      setMessageType('success')
+      setManualValue('')
+      await load()
+    } catch (e: any) {
+      setMessage('Manual balance update failed: ' + (e?.message || 'unknown'))
+      setMessageType('error')
+    }
+  }
+
+  async function applyBalanceDecision(
+    partyId: number,
+    partyName: string,
+    value: number,
+    decision: 'computed' | 'stored'
+  ) {
+    const label = decision === 'computed' ? 'computed' : 'stored'
+    if (!confirm(`Set ${partyName} balance to ₹${value.toFixed(2)} (${label})?`)) return
+
     setFixing(partyId)
     try {
-      const correct = await recomputePartyBalance(partyId)
-      setMessage(`Fixed ${partyName} — new balance ₹${correct.toFixed(2)}`)
+      const { error } = await supabase
+        .from('parties')
+        .update({ current_balance: value })
+        .eq('party_id', partyId)
+
+      if (error) throw error
+
+      setMessage(`Updated ${partyName} using the ${label} balance: ₹${value.toFixed(2)}`)
       setMessageType('success')
       await load()
     } catch (e: any) {
-      setMessage('Fix failed: ' + (e?.message || 'unknown'))
+      setMessage('Update failed: ' + (e?.message || 'unknown'))
       setMessageType('error')
     } finally {
       setFixing(null)
@@ -140,19 +225,23 @@ export default function BalanceCheckPage() {
 
   async function handleFixAll() {
     if (rows.length === 0) return
-    if (!confirm(`Fix all ${rows.length} parties with drift?`)) return
+    if (!confirm(`Apply the computed balance to all ${rows.length} drift rows?`)) return
     setLoading(true)
     let fixed = 0
     let failed = 0
     for (const r of rows) {
       try {
-        await recomputePartyBalance(r.party_id)
+        const { error } = await supabase
+          .from('parties')
+          .update({ current_balance: r.computed })
+          .eq('party_id', r.party_id)
+        if (error) throw error
         fixed++
       } catch {
         failed++
       }
     }
-    setMessage(`Fixed ${fixed} parties${failed > 0 ? `, ${failed} failed` : ''}.`)
+    setMessage(`Applied computed values to ${fixed} rows${failed > 0 ? `, ${failed} failed` : ''}.`)
     setMessageType(failed > 0 ? 'error' : 'success')
     await load()
   }
@@ -209,6 +298,52 @@ export default function BalanceCheckPage() {
           </div>
         )}
 
+        {!loading && (
+          <div className="mb-5 bg-white border border-slate-200 rounded-xl p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                  Manual balance adjust
+                </label>
+                <select
+                  value={manualPartyId ?? ''}
+                  onChange={(e) => setManualPartyId(Number(e.target.value) || null)}
+                  className="w-full h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">Select customer</option>
+                  {partyList
+                    .filter((p) => !isCounterSaleParty(p.party_name, p.party_id))
+                    .map((p) => (
+                      <option key={p.party_id} value={p.party_id}>
+                        {p.party_name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div className="w-full sm:w-40">
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">
+                  New balance
+                </label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={manualValue}
+                  onChange={(e) => setManualValue(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <button
+                onClick={handleManualAdjust}
+                disabled={manualPartyId === null || manualValue === ''}
+                className="h-10 px-4 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                Set balance
+              </button>
+            </div>
+          </div>
+        )}
+
         {loading ? (
           <div className="bg-white border border-slate-200 rounded-xl p-12 text-center">
             <Loader2 className="w-6 h-6 animate-spin text-slate-400 mx-auto" />
@@ -240,7 +375,7 @@ export default function BalanceCheckPage() {
                 className="h-9 px-4 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800 flex items-center gap-1.5 shrink-0"
               >
                 <Wrench className="w-3.5 h-3.5" />
-                Fix all
+                Apply computed to all
               </button>
             </div>
 
@@ -252,7 +387,7 @@ export default function BalanceCheckPage() {
                     <th className="px-3 py-2 text-right font-semibold text-slate-600">Stored</th>
                     <th className="px-3 py-2 text-right font-semibold text-slate-600">Computed</th>
                     <th className="px-3 py-2 text-right font-semibold text-slate-600">Drift</th>
-                    <th className="px-3 py-2 text-right font-semibold text-slate-600 w-24">Action</th>
+                    <th className="px-3 py-2 text-right font-semibold text-slate-600 w-[210px]">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -277,22 +412,50 @@ export default function BalanceCheckPage() {
                           r.drift > 0 ? 'text-rose-700' : 'text-emerald-700'
                         }`}
                       >
-                        {r.drift > 0 ? '+' : ''}
-                        ₹{r.drift.toFixed(2)}
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span>
+                            {r.drift > 0 ? '+' : ''}
+                            ₹{r.drift.toFixed(2)}
+                          </span>
+                          <span className="text-[10px] font-medium text-slate-500 max-w-[180px] text-right leading-tight">
+                            {r.note}
+                          </span>
+                          {r.recentSales.length > 0 && (
+                            <span className="text-[9px] text-slate-500 max-w-[180px] text-right leading-tight">
+                              Sales: {r.recentSales.map((s) => `#${s.sale_id} ₹${s.total_amount.toFixed(2)} / paid ₹${s.paid_amount.toFixed(2)}`).join(' • ')}
+                            </span>
+                          )}
+                          {r.recentPayments.length > 0 && (
+                            <span className="text-[9px] text-slate-500 max-w-[180px] text-right leading-tight">
+                              Payments: {r.recentPayments.map((p) => `#${p.payment_id} ₹${p.amount.toFixed(2)}`).join(' • ')}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-right">
-                        <button
-                          onClick={() => handleFix(r.party_id, r.party_name)}
-                          disabled={fixing !== null}
-                          className="h-7 px-2.5 text-[11px] font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1 ml-auto"
-                        >
-                          {fixing === r.party_id ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Wrench className="w-3 h-3" />
-                          )}
-                          Fix
-                        </button>
+                        <div className="flex flex-col gap-1 items-stretch ml-auto w-[150px] sm:w-[165px]">
+                          <button
+                            onClick={() => applyBalanceDecision(r.party_id, r.party_name, r.computed, 'computed')}
+                            disabled={fixing !== null}
+                            title={`Set balance to computed value: ₹${r.computed.toFixed(2)}`}
+                            className="h-7 w-full px-2 text-[10px] sm:text-[11px] font-semibold text-white bg-blue-600 rounded hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1 whitespace-nowrap"
+                          >
+                            {fixing === r.party_id ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : (
+                              <Wrench className="w-3 h-3" />
+                            )}
+                            Set computed
+                          </button>
+                          <button
+                            onClick={() => applyBalanceDecision(r.party_id, r.party_name, r.stored, 'stored')}
+                            disabled={fixing !== null}
+                            title={`Keep the existing stored value: ₹${r.stored.toFixed(2)}`}
+                            className="h-7 w-full px-2 text-[10px] sm:text-[11px] font-semibold text-slate-700 bg-slate-200 rounded hover:bg-slate-300 disabled:opacity-50 whitespace-nowrap"
+                          >
+                            Keep original
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}

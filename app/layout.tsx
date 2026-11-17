@@ -40,18 +40,18 @@ const dailyNav = [
   { href: '/sales/find', label: 'Find Sale', Icon: FileSearch },
   { href: '/find-stock', label: 'Find Stock', Icon: Search },
   { href: '/reports', label: 'Reports', Icon: BarChart3 },
-  { href: '/parties', label: 'Parties', Icon: Users },
   { href: '/customer-ledger', label: 'Ledger', Icon: BookOpen },
-  
-  { href: '/brands', label: 'Brands', Icon: Tag },
-  { href: '/reference', label: 'Reference', Icon: BookOpen },
 ]
 
 const adminNav = [
   { href: '/expenses', label: 'Expenses', Icon: Receipt },
   { href: '/purchase-returns', label: 'Purch. Ret', Icon: RotateCw },
   { href: '/items', label: 'Items', Icon: Package },
+  { href: '/stock-taking', label: 'Stock Taking', Icon: Package },
   { href: '/categories', label: 'Categories', Icon: Tag },
+  { href: '/parties', label: 'Parties', Icon: Users },
+  { href: '/brands', label: 'Brands', Icon: Tag },
+  { href: '/reference', label: 'Reference', Icon: BookOpen },
   { href: '/admin', label: 'Admin Home', Icon: Hammer },
   { href: '/admin/repair', label: 'Fix & Repair', Icon: Hammer },
   { href: '/admin/aliases', label: 'Aliases', Icon: BookOpen },
@@ -171,7 +171,7 @@ export default function RootLayout({
                   Cellcom Spare
                 </Link>
 
-                <div className="hidden lg:flex items-center gap-0.5 flex-1 min-w-0 justify-start">
+                <div className="hidden lg:flex items-center gap-1 flex-1 min-w-0 justify-start overflow-visible pr-1">
                   {navItems.map((item) => {
                     const active = isActive(item.href)
                     return (
@@ -179,7 +179,7 @@ export default function RootLayout({
                         key={item.href}
                         href={item.href}
                         title={item.label}
-                        className={`flex items-center gap-1.5 text-[13px] px-2 py-1.5 rounded-md whitespace-nowrap transition-colors ${
+                        className={`flex items-center gap-1.5 text-[12px] xl:text-[13px] px-1.5 xl:px-2 py-1.5 rounded-md whitespace-nowrap shrink-0 transition-colors ${
                           active
                             ? 'bg-indigo-600 text-white shadow-sm'
                             : 'text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -195,7 +195,7 @@ export default function RootLayout({
                     <div ref={adminRef} className="relative">
                       <button
                         onClick={() => setAdminOpen((o) => !o)}
-                        className={`flex items-center gap-1 text-[13px] px-2 py-1.5 rounded-md whitespace-nowrap transition-colors ${
+                        className={`flex items-center gap-1 text-[12px] xl:text-[13px] px-1.5 xl:px-2 py-1.5 rounded-md whitespace-nowrap shrink-0 transition-colors ${
                           adminNav.some((a) => isActive(a.href))
                             ? 'bg-indigo-600 text-white shadow-sm'
                             : 'text-slate-300 hover:bg-slate-800 hover:text-white'
@@ -230,12 +230,6 @@ export default function RootLayout({
                 </div>
 
                 <div className="ml-auto flex items-center gap-1.5 sm:gap-2 shrink-0">
-                  {role && (
-                    <span className="hidden sm:inline-flex text-[11px] font-medium px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                      {role === 'owner' ? 'Owner' : 'Staff'}
-                    </span>
-                  )}
-
                   <button
                     onClick={logout}
                     aria-label="Logout"

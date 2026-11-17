@@ -14,7 +14,9 @@ import {
   ChevronRight,
   Banknote,
   Smartphone,
+  Pencil,
 } from 'lucide-react'
+import { SaleEditModal } from '../../components/ui/sale-edit-modal'
 
 type Party = {
   party_id: number
@@ -94,6 +96,7 @@ export default function CustomerLedgerPage() {
   const [loading, setLoading] = useState(false)
 
   const [expandedSaleId, setExpandedSaleId] = useState<number | null>(null)
+  const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
   useEffect(() => {
     const role = getRole()
@@ -334,406 +337,431 @@ export default function CustomerLedgerPage() {
   if (!allowed) return null
 
   return (
-    <div className="min-h-screen bg-slate-50 p-3 sm:p-6">
-      <div className="max-w-5xl mx-auto">
-        <div className="mb-4 flex items-center gap-3">
-          <Link
-            href="/"
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold text-slate-900">
-              Customer Ledger
-            </h1>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Purchases, payments, and balances by customer and date range.
-            </p>
-          </div>
-        </div>
-
-        {/* All-time stats — always visible */}
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          <div className="bg-white border border-rose-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase text-rose-700 tracking-wide">
-              Total Balance
-            </div>
-            <div className="text-base font-bold text-rose-800 mt-0.5">
-              {money(totalBalance)}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-0.5">
-              Outstanding (all-time)
-            </div>
-          </div>
-          <div className="bg-white border border-slate-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase text-slate-500 tracking-wide">
-              Customers Owe
-            </div>
-            <div className="text-base font-bold text-slate-900 mt-0.5">
-              {totalCustomers}
-            </div>
-            <div className="text-[10px] text-slate-500 mt-0.5">All-time</div>
-          </div>
-        </div>
-
-        {/* Customer picker */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4">
-          <label className="block text-xs font-medium text-slate-700 mb-1">
-            <User className="w-3.5 h-3.5 inline mr-1" />
-            Customer
-          </label>
-          <SmartCombobox
-            options={customerOptions}
-            value={pickedCustomerId ? String(pickedCustomerId) : null}
-            onValueChange={(v, _l, isNew) => {
-              if (isNew) return
-              setPickedCustomerId(Number(v))
-            }}
-            placeholder="All customers (aggregate view)"
-            allowCreate={false}
-          />
-          {pickedCustomerId && (
-            <button
-              onClick={() => setPickedCustomerId(null)}
-              className="text-[11px] text-slate-500 hover:text-slate-700 mt-1"
+    <>
+      <div className="min-h-screen bg-slate-50 p-3 sm:p-6">
+        <div className="max-w-5xl mx-auto">
+          <div className="mb-4 flex items-center gap-3">
+            <Link
+              href="/"
+              className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200"
             >
-              Clear — back to aggregate view
-            </button>
-          )}
-        </div>
-
-        {/* Date range — two column From / To */}
-        <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4">
-          <div className="flex items-center gap-2 text-slate-700 mb-2">
-            <Calendar className="w-4 h-4" />
-            <span className="text-xs font-medium">Date range</span>
-            {!from && !to && (
-              <span className="text-[10px] text-slate-500 ml-1">(all time)</span>
-            )}
-          </div>
-          <div className="grid grid-cols-2 gap-2 mb-2">
+              <ArrowLeft className="w-5 h-5" />
+            </Link>
             <div>
-              <label className="block text-[10px] uppercase text-slate-500 mb-0.5">
-                From
-              </label>
-              <input
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className="w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] uppercase text-slate-500 mb-0.5">
-                To
-              </label>
-              <input
-                type="date"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className="w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
+              <h1 className="text-xl sm:text-2xl font-bold text-slate-900">
+                Customer Ledger
+              </h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Purchases, payments, and balances by customer and date range.
+              </p>
             </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            <button
-              onClick={() => setRange('today')}
-              className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
-            >
-              Today
-            </button>
-            <button
-              onClick={() => setRange('yesterday')}
-              className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
-            >
-              Yesterday
-            </button>
-            <button
-              onClick={() => setRange('week')}
-              className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
-            >
-              This Week
-            </button>
-            <button
-              onClick={() => setRange('month')}
-              className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
-            >
-              This Month
-            </button>
-            <button
-              onClick={() => {
-                setFrom('')
-                setTo('')
-              }}
-              className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200 text-rose-700"
-            >
-              Clear (All time)
-            </button>
-          </div>
-        </div>
 
-        {/* Sales + Paid in range */}
-        <div className="grid grid-cols-2 gap-2 mb-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase text-slate-500 tracking-wide">
-              {hasRange ? 'Sales (in range)' : 'Sales'}
-            </div>
-            <div
-              className={`text-base font-bold mt-0.5 ${
-                hasRange ? 'text-slate-900' : 'text-slate-400'
-              }`}
-            >
-              {hasRange ? money(periodTotals.purchases) : 'Select dates'}
-            </div>
-          </div>
-          <div className="bg-white border border-emerald-200 rounded-xl p-3">
-            <div className="text-[10px] uppercase text-emerald-700 tracking-wide">
-              {hasRange ? 'Paid (in range)' : 'Paid'}
-            </div>
-            <div
-              className={`text-base font-bold mt-0.5 ${
-                hasRange ? 'text-emerald-800' : 'text-slate-400'
-              }`}
-            >
-              {hasRange ? money(periodTotals.paid) : 'Select dates'}
-            </div>
-            {hasRange && (
+          {/* All-time stats — always visible */}
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <div className="bg-white border border-rose-200 rounded-xl p-3">
+              <div className="text-[10px] uppercase text-rose-700 tracking-wide">
+                Total Balance
+              </div>
+              <div className="text-base font-bold text-rose-800 mt-0.5">
+                {money(totalBalance)}
+              </div>
               <div className="text-[10px] text-slate-500 mt-0.5">
-                Cash {money(periodTotals.cash)} · UPI {money(periodTotals.upi)}
+                Outstanding (all-time)
               </div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-xl p-3">
+              <div className="text-[10px] uppercase text-slate-500 tracking-wide">
+                Customers Owe
+              </div>
+              <div className="text-base font-bold text-slate-900 mt-0.5">
+                {totalCustomers}
+              </div>
+              <div className="text-[10px] text-slate-500 mt-0.5">All-time</div>
+            </div>
+          </div>
+
+          {/* Customer picker */}
+          <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4">
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              <User className="w-3.5 h-3.5 inline mr-1" />
+              Customer
+            </label>
+            <SmartCombobox
+              options={customerOptions}
+              value={pickedCustomerId ? String(pickedCustomerId) : null}
+              onValueChange={(v, _l, isNew) => {
+                if (isNew) return
+                setPickedCustomerId(Number(v))
+              }}
+              placeholder="All customers (aggregate view)"
+              allowCreate={false}
+            />
+            {pickedCustomerId && (
+              <button
+                onClick={() => setPickedCustomerId(null)}
+                className="text-[11px] text-slate-500 hover:text-slate-700 mt-1"
+              >
+                Clear — back to aggregate view
+              </button>
             )}
           </div>
-        </div>
 
-        {!pickedCustomerId && (
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-            <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
-              All Customers ({customerRows.length})
+          {/* Date range — two column From / To */}
+          <div className="bg-white border border-slate-200 rounded-xl p-3 mb-4">
+            <div className="flex items-center gap-2 text-slate-700 mb-2">
+              <Calendar className="w-4 h-4" />
+              <span className="text-xs font-medium">Date range</span>
+              {!from && !to && (
+                <span className="text-[10px] text-slate-500 ml-1">(all time)</span>
+              )}
             </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 border-b border-slate-200">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-semibold text-slate-600">
-                      Customer
-                    </th>
-                    {hasRange && (
-                      <>
-                        <th className="px-3 py-2 text-right font-semibold text-slate-600">
-                          Purchases
-                        </th>
-                        <th className="px-3 py-2 text-right font-semibold text-slate-600">
-                          Paid
-                        </th>
-                      </>
-                    )}
-                    <th className="px-3 py-2 text-right font-semibold text-slate-600">
-                      Balance
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {customerRows.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={hasRange ? 4 : 2}
-                        className="px-3 py-6 text-center text-slate-400"
-                      >
-                        {hasRange
-                          ? 'No activity in this date range.'
-                          : 'No customers yet.'}
-                      </td>
-                    </tr>
-                  ) : (
-                    customerRows.map((c) => (
-                      <tr
-                        key={c.party_id}
-                        className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
-                        onClick={() => setPickedCustomerId(c.party_id)}
-                      >
-                        <td className="px-3 py-2 text-slate-800">
-                          {c.party_name}
-                        </td>
-                        {hasRange && (
-                          <>
-                            <td className="px-3 py-2 text-right text-slate-700">
-                              {money(c.purchases)}
-                            </td>
-                            <td className="px-3 py-2 text-right text-emerald-700">
-                              {money(c.paid)}
-                            </td>
-                          </>
-                        )}
-                        <td className="px-3 py-2 text-right font-semibold text-slate-900">
-                          {money(Number(c.current_balance))}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+            <div className="grid grid-cols-2 gap-2 mb-2">
+              <div>
+                <label className="block text-[10px] uppercase text-slate-500 mb-0.5">
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                  className="w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] uppercase text-slate-500 mb-0.5">
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  className="w-full h-10 px-3 text-sm border border-slate-300 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                onClick={() => setRange('today')}
+                className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Today
+              </button>
+              <button
+                onClick={() => setRange('yesterday')}
+                className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                Yesterday
+              </button>
+              <button
+                onClick={() => setRange('week')}
+                className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                This Week
+              </button>
+              <button
+                onClick={() => setRange('month')}
+                className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200"
+              >
+                This Month
+              </button>
+              <button
+                onClick={() => {
+                  setFrom('')
+                  setTo('')
+                }}
+                className="h-8 px-3 text-xs bg-slate-100 rounded-lg hover:bg-slate-200 text-rose-700"
+              >
+                Clear (All time)
+              </button>
             </div>
           </div>
-        )}
 
-        {pickedCustomerId && selectedCustomer && (
-          <>
-            <div className="bg-gradient-to-br from-slate-900 to-slate-700 text-white rounded-2xl p-4 mb-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-[10px] uppercase text-slate-300 tracking-wide">
-                    Customer
-                  </div>
-                  <div className="text-lg font-bold mt-0.5">
-                    {selectedCustomer.party_name}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] uppercase text-slate-300 tracking-wide">
-                    Balance
-                  </div>
-                  <div className="text-xl font-bold mt-0.5">
-                    {money(Number(selectedCustomer.current_balance))}
-                  </div>
-                </div>
+          {/* Sales + Paid in range */}
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-3">
+              <div className="text-[10px] uppercase text-slate-500 tracking-wide">
+                {hasRange ? 'Sales (in range)' : 'Sales'}
+              </div>
+              <div
+                className={`text-base font-bold mt-0.5 ${
+                  hasRange ? 'text-slate-900' : 'text-slate-400'
+                }`}
+              >
+                {hasRange ? money(periodTotals.purchases) : 'Select dates'}
               </div>
             </div>
-
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
-              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
-                Invoices ({custSales.length})
+            <div className="bg-white border border-emerald-200 rounded-xl p-3">
+              <div className="text-[10px] uppercase text-emerald-700 tracking-wide">
+                {hasRange ? 'Paid (in range)' : 'Paid'}
               </div>
-              {loading ? (
-                <div className="px-4 py-6 text-center text-slate-400 text-sm">
-                  Loading…
-                </div>
-              ) : custSales.length === 0 ? (
-                <div className="px-4 py-6 text-center text-slate-400 text-sm">
-                  No invoices in this range.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {custSales.map((s) => {
-                    const due = Math.max(
-                      0,
-                      Number(s.total_amount) - Number(s.paid_amount || 0)
-                    )
-                    const isOpen = expandedSaleId === s.sale_id
-                    const saleLines = linesBySale[s.sale_id] || []
-                    return (
-                      <div key={s.sale_id}>
-                        <button
-                          onClick={() =>
-                            setExpandedSaleId(isOpen ? null : s.sale_id)
-                          }
-                          className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
-                        >
-                          <div className="text-slate-400 shrink-0">
-                            {isOpen ? (
-                              <ChevronDown className="w-4 h-4" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-semibold text-slate-900">
-                              #{s.sale_id} · {formatDate(s.bill_date)}
-                            </div>
-                            <div className="text-[11px] text-slate-500">
-                              {saleLines.length} item
-                              {saleLines.length === 1 ? '' : 's'} · Paid{' '}
-                              {money(Number(s.paid_amount || 0))}
-                            </div>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="text-sm font-bold text-slate-900">
-                              {money(Number(s.total_amount))}
-                            </div>
-                            {due > 0 && (
-                              <div className="text-[10px] text-rose-700">
-                                {money(due)} due
-                              </div>
-                            )}
-                          </div>
-                        </button>
-                        {isOpen && (
-                          <div className="bg-slate-50 border-t border-slate-100 px-4 py-3">
-                            <div className="space-y-1.5">
-                              {saleLines.length === 0 ? (
-                                <div className="text-xs text-slate-400">
-                                  No line items.
-                                </div>
-                              ) : (
-                                saleLines.map((l) => (
-                                  <div
-                                    key={l.detail_id}
-                                    className="flex items-center justify-between text-xs bg-white border border-slate-200 rounded px-2 py-1.5"
-                                  >
-                                    <div className="font-mono text-slate-800 truncate flex-1">
-                                      {l.sku}
-                                    </div>
-                                    <div className="text-slate-500 shrink-0 ml-2">
-                                      {Number.isInteger(l.quantity)
-                                        ? l.quantity
-                                        : l.quantity.toFixed(2)}{' '}
-                                      × {money(l.rate)}
-                                    </div>
-                                    <div className="text-slate-900 font-medium w-24 text-right shrink-0">
-                                      {money(l.amount)}
-                                    </div>
-                                  </div>
-                                ))
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
+              <div
+                className={`text-base font-bold mt-0.5 ${
+                  hasRange ? 'text-emerald-800' : 'text-slate-400'
+                }`}
+              >
+                {hasRange ? money(periodTotals.paid) : 'Select dates'}
+              </div>
+              {hasRange && (
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Cash {money(periodTotals.cash)} · UPI {money(periodTotals.upi)}
                 </div>
               )}
             </div>
+          </div>
 
+          {!pickedCustomerId && (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
-                Payments ({custPayments.length})
+                All Customers ({customerRows.length})
               </div>
-              {custPayments.length === 0 ? (
-                <div className="px-4 py-6 text-center text-slate-400 text-sm">
-                  No payments in this range.
-                </div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  {custPayments.map((p) => (
-                    <div
-                      key={p.payment_id}
-                      className="px-4 py-2.5 flex items-center gap-3 text-xs"
-                    >
-                      <div className="text-slate-500 w-24 shrink-0">
-                        {formatDate(p.payment_date)}
-                      </div>
-                      <div className="shrink-0">
-                        {p.payment_mode === 'UPI' ? (
-                          <Smartphone className="w-3.5 h-3.5 text-blue-600" />
-                        ) : (
-                          <Banknote className="w-3.5 h-3.5 text-emerald-600" />
-                        )}
-                      </div>
-                      <div className="text-slate-600 flex-1">
-                        {p.payment_mode}
-                      </div>
-                      <div className="font-semibold text-slate-900 shrink-0">
-                        {money(Number(p.amount))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-semibold text-slate-600">
+                        Customer
+                      </th>
+                      {hasRange && (
+                        <>
+                          <th className="px-3 py-2 text-right font-semibold text-slate-600">
+                            Purchases
+                          </th>
+                          <th className="px-3 py-2 text-right font-semibold text-slate-600">
+                            Paid
+                          </th>
+                        </>
+                      )}
+                      <th className="px-3 py-2 text-right font-semibold text-slate-600">
+                        Balance
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customerRows.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={hasRange ? 4 : 2}
+                          className="px-3 py-6 text-center text-slate-400"
+                        >
+                          {hasRange
+                            ? 'No activity in this date range.'
+                            : 'No customers yet.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      customerRows.map((c) => (
+                        <tr
+                          key={c.party_id}
+                          className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                          onClick={() => setPickedCustomerId(c.party_id)}
+                        >
+                          <td className="px-3 py-2 text-slate-800">
+                            {c.party_name}
+                          </td>
+                          {hasRange && (
+                            <>
+                              <td className="px-3 py-2 text-right text-slate-700">
+                                {money(c.purchases)}
+                              </td>
+                              <td className="px-3 py-2 text-right text-emerald-700">
+                                {money(c.paid)}
+                              </td>
+                            </>
+                          )}
+                          <td className="px-3 py-2 text-right font-semibold text-slate-900">
+                            {money(Number(c.current_balance))}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </>
-        )}
+          )}
+
+          {pickedCustomerId && selectedCustomer && (
+            <>
+              <div className="bg-gradient-to-br from-slate-900 to-slate-700 text-white rounded-2xl p-4 mb-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[10px] uppercase text-slate-300 tracking-wide">
+                      Customer
+                    </div>
+                    <div className="text-lg font-bold mt-0.5">
+                      {selectedCustomer.party_name}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[10px] uppercase text-slate-300 tracking-wide">
+                      Balance
+                    </div>
+                    <div className="text-xl font-bold mt-0.5">
+                      {money(Number(selectedCustomer.current_balance))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
+                  Invoices ({custSales.length})
+                </div>
+                {loading ? (
+                  <div className="px-4 py-6 text-center text-slate-400 text-sm">
+                    Loading…
+                  </div>
+                ) : custSales.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-slate-400 text-sm">
+                    No invoices in this range.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {custSales.map((s) => {
+                      const due = Math.max(
+                        0,
+                        Number(s.total_amount) - Number(s.paid_amount || 0)
+                      )
+                      const isOpen = expandedSaleId === s.sale_id
+                      const saleLines = linesBySale[s.sale_id] || []
+                      return (
+                        <div key={s.sale_id}>
+                          <button
+                            onClick={() =>
+                              setExpandedSaleId(isOpen ? null : s.sale_id)
+                            }
+                            className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
+                          >
+                            <div className="text-slate-400 shrink-0">
+                              {isOpen ? (
+                                <ChevronDown className="w-4 h-4" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4" />
+                              )}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-semibold text-slate-900">
+                                #{s.sale_id} · {formatDate(s.bill_date)}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {saleLines.length} item
+                                {saleLines.length === 1 ? '' : 's'} · Paid{' '}
+                                {money(Number(s.paid_amount || 0))}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <div className="text-right">
+                                <div className="text-sm font-bold text-slate-900">
+                                  {money(Number(s.total_amount))}
+                                </div>
+                                {due > 0 && (
+                                  <div className="text-[10px] text-rose-700">
+                                    {money(due)} due
+                                  </div>
+                                )}
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingSaleId(s.sale_id)
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-blue-700 hover:bg-blue-50 rounded"
+                                aria-label="Edit bill"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </button>
+                          {isOpen && (
+                            <div className="bg-slate-50 border-t border-slate-100 px-4 py-3">
+                              <div className="space-y-1.5">
+                                {saleLines.length === 0 ? (
+                                  <div className="text-xs text-slate-400">
+                                    No line items.
+                                  </div>
+                                ) : (
+                                  saleLines.map((l) => (
+                                    <div
+                                      key={l.detail_id}
+                                      className="flex items-center justify-between text-xs bg-white border border-slate-200 rounded px-2 py-1.5"
+                                    >
+                                      <div className="font-mono text-slate-800 truncate flex-1">
+                                        {l.sku}
+                                      </div>
+                                      <div className="text-slate-500 shrink-0 ml-2">
+                                        {Number.isInteger(l.quantity)
+                                          ? l.quantity
+                                          : l.quantity.toFixed(2)}{' '}
+                                        × {money(l.rate)}
+                                      </div>
+                                      <div className="text-slate-900 font-medium w-24 text-right shrink-0">
+                                        {money(l.amount)}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+                <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
+                  Payments ({custPayments.length})
+                </div>
+                {custPayments.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-slate-400 text-sm">
+                    No payments in this range.
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100">
+                    {custPayments.map((p) => (
+                      <div
+                        key={p.payment_id}
+                        className="px-4 py-2.5 flex items-center gap-3 text-xs"
+                      >
+                        <div className="text-slate-500 w-24 shrink-0">
+                          {formatDate(p.payment_date)}
+                        </div>
+                        <div className="shrink-0">
+                          {p.payment_mode === 'UPI' ? (
+                            <Smartphone className="w-3.5 h-3.5 text-blue-600" />
+                          ) : (
+                            <Banknote className="w-3.5 h-3.5 text-emerald-600" />
+                          )}
+                        </div>
+                        <div className="text-slate-600 flex-1">
+                          {p.payment_mode}
+                        </div>
+                        <div className="font-semibold text-slate-900 shrink-0">
+                          {money(Number(p.amount))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+
+      {editingSaleId !== null && (
+        <SaleEditModal
+          saleId={editingSaleId}
+          onClose={() => setEditingSaleId(null)}
+          onSaved={() => {
+            setEditingSaleId(null)
+            if (pickedCustomerId) loadCustomerDetail(pickedCustomerId)
+          }}
+        />
+      )}
+    </>
   )
 }

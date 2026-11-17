@@ -840,6 +840,7 @@ export default function PartyAccountPage() {
                     {outstandingDays.map((day) => {
                       const isOpen = !!expandedDays[day.date]
                       const age = daysAgo(day.date)
+                      const hasPartialPayment = day.paid > 0 && day.paid < day.total
                       const ageColor =
                         age < 7
                           ? 'text-slate-400'
@@ -870,9 +871,16 @@ export default function PartyAccountPage() {
                                   </span>
                                 )}
                               </div>
-                              <div className="text-[10px] text-slate-500 mt-0.5">
-                                ₹{day.total.toFixed(0)} total · ₹
-                                {day.paid.toFixed(0)} paid
+                              <div className="text-[10px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-1">
+                                {hasPartialPayment && (
+                                  <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
+                                    Partially paid
+                                  </span>
+                                )}
+                                <span>
+                                  ₹{day.total.toFixed(0)} total · ₹
+                                  {day.paid.toFixed(0)} paid
+                                </span>
                               </div>
                             </div>
                             <div className="text-xs font-bold text-rose-700 shrink-0">
@@ -963,6 +971,11 @@ export default function PartyAccountPage() {
                 <div className="divide-y divide-slate-100">
                   {purchaseDays.map((day) => {
                     const isOpen = !!expandedDays[day.date]
+                    const hasPartialPayment = day.bills.some(
+                      (bill) =>
+                        Number(bill.paid_amount || 0) > 0 &&
+                        Number(bill.paid_amount || 0) < Number(bill.total_amount)
+                    )
                     return (
                       <div key={day.date}>
                         <button
@@ -980,18 +993,25 @@ export default function PartyAccountPage() {
                             <div className="text-sm font-semibold text-slate-900">
                               {formatDate(day.date)}
                             </div>
-                            <div className="text-[11px] text-slate-500 mt-0.5">
-                              {day.itemCount} item
-                              {day.itemCount === 1 ? '' : 's'}
-                              {day.bills.length > 1 && (
-                                <> · {day.bills.length} bills</>
+                            <div className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-1">
+                              {hasPartialPayment && (
+                                <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
+                                  Partially paid
+                                </span>
                               )}
+                              <span>
+                                {day.itemCount} item
+                                {day.itemCount === 1 ? '' : 's'}
+                                {day.bills.length > 1 && (
+                                  <> · {day.bills.length} bills</>
+                                )}
+                              </span>
                             </div>
                           </div>
                           <div className="text-sm font-bold text-slate-900 shrink-0">
                             {money(day.total)}
                           </div>
-                          {day.bills.length === 1 && (
+                          {day.bills.length > 0 && (
                             <span
                               role="button"
                               tabIndex={0}
@@ -1016,6 +1036,39 @@ export default function PartyAccountPage() {
 
                         {isOpen && (
                           <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                            {day.bills.length > 0 && (
+                              <div className="mb-2 pb-2 border-b border-slate-200">
+                                <div className="text-[10px] uppercase text-slate-500 mb-1">
+                                  {day.bills.length === 1 ? 'Bill' : `${day.bills.length} bills on this day`}
+                                </div>
+                                {day.bills.map((bill) => (
+                                  <div
+                                    key={bill.sale_id}
+                                    role="button"
+                                    tabIndex={0}
+                                    onClick={() => setEditingSaleId(bill.sale_id)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' || e.key === ' ') {
+                                        e.preventDefault()
+                                        setEditingSaleId(bill.sale_id)
+                                      }
+                                    }}
+                                    className="w-full flex items-center justify-between text-xs py-1 px-1 hover:bg-slate-100 rounded cursor-pointer"
+                                  >
+                                    <span className="text-slate-600">
+                                      {day.bills.length === 1 ? 'Invoice' : `Bill #${bill.sale_id}`}
+                                    </span>
+                                    <span className="flex items-center gap-2">
+                                      <span className="text-slate-800 font-medium">
+                                        {money(Number(bill.total_amount))}
+                                      </span>
+                                      <Pencil className="w-3 h-3 text-slate-400" />
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+
                             {day.items.length === 0 ? (
                               <div className="text-xs text-slate-400 text-center py-2">
                                 No line items.
