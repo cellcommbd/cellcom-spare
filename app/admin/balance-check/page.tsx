@@ -7,6 +7,7 @@ import { supabase } from '../../../lib/supabase'
 import { getRole } from '../../../lib/auth'
 import {
   recomputePartyBalance,
+  alignPartyBalanceToTarget,
   computeExpectedCustomerBalance,
   isCounterSaleParty,
 } from '../../../lib/balance'
@@ -199,14 +200,9 @@ export default function BalanceCheckPage() {
     }
 
     try {
-      const { error } = await supabase
-        .from('parties')
-        .update({ current_balance: value })
-        .eq('party_id', manualPartyId)
+      await alignPartyBalanceToTarget(manualPartyId, value)
 
-      if (error) throw error
-
-      setMessage(`Balance updated for party #${manualPartyId}.`)
+      setMessage(`Balance aligned for party #${manualPartyId}.`)
       setMessageType('success')
       setManualValue('')
       await load()
@@ -227,18 +223,13 @@ export default function BalanceCheckPage() {
 
     setFixing(partyId)
     try {
-      const { error } = await supabase
-        .from('parties')
-        .update({ current_balance: value })
-        .eq('party_id', partyId)
+      const aligned = await alignPartyBalanceToTarget(partyId, value)
 
-      if (error) throw error
-
-      setMessage(`Updated ${partyName} using the ${label} balance: ₹${value.toFixed(2)}`)
+      setMessage(`Aligned ${partyName} to the ${label} balance: ₹${aligned.toFixed(2)}. Sales paid amounts and statuses were updated.`)
       setMessageType('success')
       await load()
     } catch (e: any) {
-      setMessage('Update failed: ' + (e?.message || 'unknown'))
+      setMessage('Alignment failed: ' + (e?.message || 'unknown'))
       setMessageType('error')
     } finally {
       setFixing(null)
@@ -253,11 +244,7 @@ export default function BalanceCheckPage() {
     let failed = 0
     for (const r of rows) {
       try {
-        const { error } = await supabase
-          .from('parties')
-          .update({ current_balance: r.computed })
-          .eq('party_id', r.party_id)
-        if (error) throw error
+        await alignPartyBalanceToTarget(r.party_id, r.computed)
         fixed++
       } catch {
         failed++
@@ -394,7 +381,7 @@ export default function BalanceCheckPage() {
               </div>
               <button
                 onClick={handleFixAll}
-                className="h-10 sm:h-9 w-full sm:w-auto px-4 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800 flex items-center justify-center gap-1.5 shrink-0"
+                className="h-10 sm:h-9 w-full sm:w-auto px-4 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800 flex items-center justify-center gap-1.5"
               >
                 <Wrench className="w-3.5 h-3.5" />
                 Apply computed to all
