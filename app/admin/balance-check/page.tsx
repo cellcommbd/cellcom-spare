@@ -28,6 +28,10 @@ type DriftRow = {
   note: string
   recentSales: Array<{ sale_id: number; total_amount: number; paid_amount: number; bill_date: string }>
   recentPayments: Array<{ payment_id: number; amount: number; payment_date: string }>
+  unpaidSales: number
+  customerReturns: number
+  explanation: string
+  calculation: string
 }
 
 export default function BalanceCheckPage() {
@@ -123,24 +127,42 @@ export default function BalanceCheckPage() {
       const stored = Number(p.current_balance || 0)
       const diff = Math.round((stored - computed) * 100) / 100
       if (Math.abs(diff) > 0.01) {
-        const label = diff > 0
-          ? 'Missing payment'
-          : 'Extra payment'
-        const note = diff > 0
-          ? 'Stored balance is too high: payment missing, or sale not cleared from ledger.'
-          : 'Stored balance is too low: extra payment, or sale counted wrongly.'
-        const saleNotCounted = salesForParty.length === 0 && Number(p.current_balance || 0) > 0
-        const finalLabel = saleNotCounted && diff > 0 ? 'Sale not counted' : label
-        const finalNote = saleNotCounted && diff > 0
-          ? 'There may be a customer sale missing from the ledger, which made the stored balance too high.'
-          : note
+        const unpaidSales = Math.round(salesForParty.reduce(
+          (sum, sale) => sum + (Number(sale.total_amount || 0) - Number(sale.paid_amount || 0)),
+          0
+        ) * 100) / 100
+        const customerReturns = Math.round(returnsForParty.reduce(
+          (sum, entry) => sum + Number(entry.total_amount || 0),
+          0
+        ) * 100) / 100
+
+        let explanation = ''
+        let note = ''
+        if (diff > 0) {
+          note = 'The saved balance is higher than the ledger calculation.'
+          if (salesForParty.length === 0) {
+            explanation = 'No customer sales were found, so the ledger currently calculates this balance as ₹0.00. The saved higher balance likely came from a sale that is missing or was deleted, or from an old balance that was not cleared.'
+          } else {
+            explanation = 'Possible causes: a payment was not recorded, a previous sale was not cleared correctly, or this customer’s balance was changed manually. Compare the recent sales and payments shown below.'
+          }
+        } else {
+          note = 'The saved balance is lower than the ledger calculation.'
+          explanation = 'Possible causes: an extra or duplicate payment was recorded, a sale was reversed or deleted without updating the balance, or a customer return was entered incorrectly.'
+        }
+
+        const calculation = `Outstanding sales ₹${unpaidSales.toFixed(2)} − customer returns ₹${customerReturns.toFixed(2)} = calculated balance ₹${computed.toFixed(2)}. Saved balance is ₹${stored.toFixed(2)}, so the difference is ₹${diff > 0 ? '+' : ''}${diff.toFixed(2)}.`
+
         drift.push({
           party_id: p.party_id,
           party_name: p.party_name,
           stored,
           computed,
           drift: diff,
-          note: `${finalLabel} · ${finalNote}`,
+          note,
+          explanation,
+          calculation,
+          unpaidSales,
+          customerReturns,
           recentSales: recentSales.map((s) => ({
             sale_id: Number(s.sale_id),
             total_amount: Number(s.total_amount || 0),
@@ -253,10 +275,10 @@ export default function BalanceCheckPage() {
   return (
     <div className="min-h-screen bg-slate-50 p-3 sm:p-6">
       <div className="max-w-4xl mx-auto">
-        <div className="mb-5 flex items-center gap-3">
+        <div className="mb-5 flex flex-wrap items-center gap-2 sm:gap-3">
           <Link
             href="/admin"
-            className="w-9 h-9 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200"
+            className="w-9 h-9 shrink-0 flex items-center justify-center rounded-lg text-slate-600 hover:bg-slate-200"
           >
             <ArrowLeft className="w-5 h-5" />
           </Link>
@@ -336,7 +358,7 @@ export default function BalanceCheckPage() {
               <button
                 onClick={handleManualAdjust}
                 disabled={manualPartyId === null || manualValue === ''}
-                className="h-10 px-4 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                className="h-10 w-full sm:w-auto px-4 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50"
               >
                 Set balance
               </button>
@@ -358,7 +380,7 @@ export default function BalanceCheckPage() {
           </div>
         ) : (
           <>
-            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3 flex items-center justify-between gap-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
               <div className="flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
                 <div>
@@ -372,15 +394,87 @@ export default function BalanceCheckPage() {
               </div>
               <button
                 onClick={handleFixAll}
-                className="h-9 px-4 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800 flex items-center gap-1.5 shrink-0"
+                className="h-10 sm:h-9 w-full sm:w-auto px-4 text-xs font-semibold text-white bg-amber-700 rounded-lg hover:bg-amber-800 flex items-center justify-center gap-1.5 shrink-0"
               >
                 <Wrench className="w-3.5 h-3.5" />
                 Apply computed to all
               </button>
             </div>
 
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-              <table className="w-full text-xs sm:text-sm">
+            <div className="space-y-3 md:hidden">
+              {rows.map((r) => (
+                <div key={r.party_id} className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm">
+                  <Link
+                    href={`/parties/${r.party_id}`}
+                    className="block font-semibold text-slate-900 hover:text-blue-600 mb-3"
+                  >
+                    {r.party_name}
+                  </Link>
+
+                  <div className="grid grid-cols-3 gap-2 mb-3">
+                    <div className="rounded-lg bg-slate-50 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Stored</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-700">₹{r.stored.toFixed(2)}</div>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Computed</div>
+                      <div className="mt-1 text-sm font-semibold text-slate-900">₹{r.computed.toFixed(2)}</div>
+                    </div>
+                    <div className="rounded-lg bg-slate-50 p-2">
+                      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Drift</div>
+                      <div className={`mt-1 text-sm font-bold ${r.drift > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                        {r.drift > 0 ? '+' : ''}₹{r.drift.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-slate-600 leading-snug mb-2">{r.note}</div>
+                  {r.recentSales.length > 0 && (
+                    <div className="text-[11px] text-slate-500 leading-snug mb-1">
+                      Sales: {r.recentSales.map((s) => `#${s.sale_id} ₹${s.total_amount.toFixed(2)} / paid ₹${s.paid_amount.toFixed(2)}`).join(' • ')}
+                    </div>
+                  )}
+                  {r.recentPayments.length > 0 && (
+                    <div className="text-[11px] text-slate-500 leading-snug mb-3">
+                      Payments: {r.recentPayments.map((p) => `#${p.payment_id} ₹${p.amount.toFixed(2)}`).join(' • ')}
+                    </div>
+                  )}
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 mb-3">
+                    <div className="text-xs font-semibold text-slate-800 mb-1">Why this drift happened</div>
+                    <div className="text-[11px] text-slate-600 leading-snug">{r.explanation}</div>
+                    <div className="mt-2 text-[11px] font-medium text-slate-700 leading-snug">{r.calculation}</div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={() => applyBalanceDecision(r.party_id, r.party_name, r.computed, 'computed')}
+                      disabled={fixing !== null}
+                      title={`Set balance to computed value: ₹${r.computed.toFixed(2)}`}
+                      className="h-10 px-2 text-xs font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center justify-center gap-1"
+                    >
+                      {fixing === r.party_id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Wrench className="w-3.5 h-3.5" />
+                      )}
+                      Set computed
+                    </button>
+                    <button
+                      onClick={() => applyBalanceDecision(r.party_id, r.party_name, r.stored, 'stored')}
+                      disabled={fixing !== null}
+                      title={`Keep the existing stored value: ₹${r.stored.toFixed(2)}`}
+                      className="h-10 px-2 text-xs font-semibold text-slate-700 bg-slate-200 rounded-lg hover:bg-slate-300 disabled:opacity-50"
+                    >
+                      Keep original
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="hidden md:block bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
                 <thead className="bg-slate-50 border-b border-slate-200">
                   <tr>
                     <th className="px-3 py-2 text-left font-semibold text-slate-600">Customer</th>
@@ -430,6 +524,12 @@ export default function BalanceCheckPage() {
                               Payments: {r.recentPayments.map((p) => `#${p.payment_id} ₹${p.amount.toFixed(2)}`).join(' • ')}
                             </span>
                           )}
+                          <span className="text-[9px] font-medium text-slate-700 max-w-[180px] text-right leading-tight">
+                            {r.explanation}
+                          </span>
+                          <span className="text-[9px] text-slate-500 max-w-[180px] text-right leading-tight">
+                            {r.calculation}
+                          </span>
                         </div>
                       </td>
                       <td className="px-3 py-2 text-right">
