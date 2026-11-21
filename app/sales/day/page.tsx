@@ -616,198 +616,207 @@ export default function DaySalesPage() {
   // Collect payment (per party)
   // ============================================================
 
-  async function collectPayment(
-    partyId: number,
-    cashAmount: number,
-    upiAmount: number
-  ): Promise<{ ok: boolean; error?: string }> {
-    const total = cashAmount + upiAmount
-    if (total <= 0) {
-      return { ok: false, error: 'Amount must be > 0' }
-    }
-
-    try {
-      // 1. Insert day_sales_payments row only once for this party/day
-      const { data: existingDayPayments } = await supabase
-        .from('day_sales_payments')
-        .select('id, cash, upi')
-        .eq('bill_date', billDate)
-        .eq('party_id', partyId)
-
-      const existingCash = (existingDayPayments || []).reduce(
-        (sum, p) => sum + Number(p.cash || 0),
-        0
-      )
-      const existingUpi = (existingDayPayments || []).reduce(
-        (sum, p) => sum + Number(p.upi || 0),
-        0
-      )
-
-      const insertCash = Math.max(0, cashAmount - existingCash)
-      const insertUpi = Math.max(0, upiAmount - existingUpi)
-
-      if (insertCash > 0 || insertUpi > 0) {
-        const { error: dayPayErr } = await supabase
-          .from('day_sales_payments')
-          .insert({
-            bill_date: billDate,
-            party_id: partyId,
-            cash: insertCash,
-            upi: insertUpi,
-          })
-        if (dayPayErr) throw new Error(dayPayErr.message)
-      }
-
-      // 2. Insert only the missing payment rows — avoid duplicate ledger entries
-      const { data: existingPayments } = await supabase
-        .from('payments')
-        .select('amount, payment_mode')
-        .eq('payment_date', billDate)
-        .eq('party_id', partyId)
-
-      const existingCashLedger = (existingPayments || [])
-        .filter((p) => p.payment_mode === 'Cash')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
-      const existingUpiLedger = (existingPayments || [])
-        .filter((p) => p.payment_mode === 'UPI')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
-
-      const inserts: {
-        party_id: number
-        payment_date: string
-        amount: number
-        payment_mode: string
-      }[] = []
-      if (cashAmount > existingCashLedger) {
-        inserts.push({
-          party_id: partyId,
-          payment_date: billDate,
-          amount: cashAmount - existingCashLedger,
-          payment_mode: 'Cash',
-        })
-      }
-      if (upiAmount > existingUpiLedger) {
-        inserts.push({
-          party_id: partyId,
-          payment_date: billDate,
-          amount: upiAmount - existingUpiLedger,
-          payment_mode: 'UPI',
-        })
-      }
-
-      if (inserts.length > 0) {
-        const { data: insertedPayments, error: payErr } = await supabase
-          .from('payments')
-          .insert(inserts)
-          .select('payment_id, amount')
-        if (payErr || !insertedPayments) {
-          throw new Error(payErr?.message || 'Payment insert failed')
-        }
-
-        // 3. Apply FIFO to outstanding bills (per payment row, with allocation)
-        for (const p of insertedPayments) {
-          await applyFIFO(partyId, Number(p.amount), p.payment_id)
-        }
-      }
-
-      // 4. Recompute balance (self-healing)
-      const correctBalance = await recomputePartyBalance(partyId)
-      setParties((prev) =>
-        prev.map((p) =>
-          p.party_id === partyId
-            ? { ...p, current_balance: correctBalance }
-            : p
-        )
-      )
-
-      return { ok: true }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Payment failed'
-      return { ok: false, error: msg }
-    }
+ 
+async function collectPayment(
+  partyId: number,
+  cashAmount: number,
+  upiAmount: number
+): Promise<{ ok: boolean; error?: string }> {
+  if (
+    !Number.isFinite(cashAmount) ||
+    !Number.isFinite(upiAmount) ||
+    cashAmount < 0 ||
+    upiAmount < 0
+  ) {
+    return { ok: false, error: 'Invalid payment amount' }
   }
 
-  async function syncCounterSalePayments(
-    targetCash: number,
-    targetUpi: number
-  ): Promise<{ inserted: number; error?: string }> {
-    try {
-      const { data: existingRows } = await supabase
-        .from('payments')
-        .select('amount, payment_mode')
-        .eq('payment_date', billDate)
-        .eq('party_id', COUNTER_SALE_PARTY_ID)
-
-      const existingCash = (existingRows || [])
-        .filter((p) => p.payment_mode === 'Cash')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
-      const existingUpi = (existingRows || [])
-        .filter((p) => p.payment_mode === 'UPI')
-        .reduce((sum, p) => sum + Number(p.amount || 0), 0)
-
-      const cashToInsert = Math.max(0, targetCash - existingCash)
-      const upiToInsert = Math.max(0, targetUpi - existingUpi)
-
-      if (cashToInsert <= 0.01 && upiToInsert <= 0.01) {
-        return { inserted: 0 }
-      }
-
-      const inserts: {
-        party_id: number
-        payment_date: string
-        amount: number
-        payment_mode: string
-      }[] = []
-
-      if (cashToInsert > 0.01) {
-        inserts.push({
-          party_id: COUNTER_SALE_PARTY_ID,
-          payment_date: billDate,
-          amount: Number(cashToInsert.toFixed(2)),
-          payment_mode: 'Cash',
-        })
-      }
-      if (upiToInsert > 0.01) {
-        inserts.push({
-          party_id: COUNTER_SALE_PARTY_ID,
-          payment_date: billDate,
-          amount: Number(upiToInsert.toFixed(2)),
-          payment_mode: 'UPI',
-        })
-      }
-
-      if (inserts.length > 0) {
-        const { error } = await supabase.from('payments').insert(inserts)
-        if (error) throw new Error(error.message)
-      }
-
-      return { inserted: inserts.length }
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Counter sale payment sync failed'
-      return { inserted: 0, error: msg }
-    }
+  if (cashAmount + upiAmount <= 0) {
+    return { ok: false, error: 'Amount must be greater than zero' }
   }
+
+  try {
+    // Every collection is a new transaction.
+    const { error: dayPayErr } = await supabase
+      .from('day_sales_payments')
+      .insert({
+        bill_date: billDate,
+        party_id: partyId,
+        cash: cashAmount,
+        upi: upiAmount,
+      })
+
+    if (dayPayErr) throw new Error(dayPayErr.message)
+
+    const inserts: {
+      party_id: number
+      payment_date: string
+      amount: number
+      payment_mode: string
+    }[] = []
+
+    if (cashAmount > 0) {
+      inserts.push({
+        party_id: partyId,
+        payment_date: billDate,
+        amount: cashAmount,
+        payment_mode: 'Cash',
+      })
+    }
+
+    if (upiAmount > 0) {
+      inserts.push({
+        party_id: partyId,
+        payment_date: billDate,
+        amount: upiAmount,
+        payment_mode: 'UPI',
+      })
+    }
+
+    const { data: insertedPayments, error: payErr } = await supabase
+      .from('payments')
+      .insert(inserts)
+      .select('payment_id, amount')
+
+    if (payErr || !insertedPayments) {
+      throw new Error(payErr?.message || 'Payment ledger insert failed')
+    }
+
+    for (const p of insertedPayments) {
+      await applyFIFO(partyId, Number(p.amount), p.payment_id)
+    }
+
+    const correctBalance = await recomputePartyBalance(partyId)
+
+    setParties((prev) =>
+      prev.map((p) =>
+        p.party_id === partyId
+          ? { ...p, current_balance: correctBalance }
+          : p
+      )
+    )
+
+    return { ok: true }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Payment failed'
+    return { ok: false, error: msg }
+  }
+}
+
+
+async function syncCounterSalePayments(
+  targetCash: number,
+  targetUpi: number,
+  paymentDate: string = billDate
+): Promise<{ inserted: number; error?: string }> {
+  try {
+    if (
+      !Number.isFinite(targetCash) ||
+      !Number.isFinite(targetUpi) ||
+      targetCash < 0 ||
+      targetUpi < 0
+    ) {
+      throw new Error('Invalid Counter Sale payment amount')
+    }
+
+    const { data: existingRows, error: fetchError } = await supabase
+      .from('payments')
+      .select('amount, payment_mode')
+      .eq('payment_date', paymentDate)
+      .eq('party_id', COUNTER_SALE_PARTY_ID)
+
+    if (fetchError) throw new Error(fetchError.message)
+
+    const existingCash = (existingRows || [])
+      .filter((p) => p.payment_mode === 'Cash')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+
+    const existingUpi = (existingRows || [])
+      .filter((p) => p.payment_mode === 'UPI')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0)
+
+    if (
+      existingCash > targetCash + 0.01 ||
+      existingUpi > targetUpi + 0.01
+    ) {
+      throw new Error(
+        'Existing Counter Sale payments exceed the closing amounts. No changes were made.'
+      )
+    }
+
+    const cashToInsert = Number(
+      Math.max(0, targetCash - existingCash).toFixed(2)
+    )
+
+    const upiToInsert = Number(
+      Math.max(0, targetUpi - existingUpi).toFixed(2)
+    )
+
+    const inserts: {
+      party_id: number
+      payment_date: string
+      amount: number
+      payment_mode: string
+    }[] = []
+
+    if (cashToInsert > 0.01) {
+      inserts.push({
+        party_id: COUNTER_SALE_PARTY_ID,
+        payment_date: paymentDate,
+        amount: cashToInsert,
+        payment_mode: 'Cash',
+      })
+    }
+
+    if (upiToInsert > 0.01) {
+      inserts.push({
+        party_id: COUNTER_SALE_PARTY_ID,
+        payment_date: paymentDate,
+        amount: upiToInsert,
+        payment_mode: 'UPI',
+      })
+    }
+
+    if (inserts.length > 0) {
+      const { error: insertError } = await supabase
+        .from('payments')
+        .insert(inserts)
+
+      if (insertError) throw new Error(insertError.message)
+    }
+
+    return { inserted: inserts.length }
+  } catch (e: unknown) {
+    const msg =
+      e instanceof Error
+        ? e.message
+        : 'Counter Sale payment sync failed'
+
+    return { inserted: 0, error: msg }
+  }
+}
 
   // ============================================================
   // CLOSE DAY
   // ============================================================
 
-  async function checkAlreadyClosed(dayDate: string) {
-    const { data, error } = await supabase
-      .from('sales')
-      .select('sale_id', { count: 'exact', head: true })
-      .eq('bill_date', dayDate)
 
-    if (error) {
-      return { alreadyClosed: false, error: error.message }
-    }
+async function checkAlreadyClosed(dayDate: string) {
+  const { data, error } = await supabase
+    .from('day_sales_closures')
+    .select('bill_date')
+    .eq('bill_date', dayDate)
+    .maybeSingle()
 
-    return {
-      alreadyClosed: (data ?? []).length > 0 || false,
-      error: null as string | null,
-    }
+  if (error) {
+    return { alreadyClosed: false, error: error.message }
   }
 
+  return {
+    alreadyClosed: data !== null,
+    error: null as string | null,
+  }
+}
   // Opens the Close Day dialog — fetches current payment totals first
   const handleCloseDayClick = useCallback(async () => {
     setCloseError('')
@@ -826,13 +835,21 @@ export default function DaySalesPage() {
       return
     }
 
-    // Fetch today's already-recorded payments (Cash + UPI)
-    const { data: payData } = await supabase
-      .from('payments')
-      .select('amount, payment_mode')
-      .eq('payment_date', billDate)
+// Fetch today's already-recorded payments (Cash + UPI)
+const { data: payData, error: payError } = await supabase
+  .from('payments')
+  .select('amount, payment_mode')
+  .eq('payment_date', billDate)
 
-    const rows = (payData || []) as { amount: number; payment_mode: string }[]
+if (payError) {
+  setCloseError(
+    'Could not load today’s payment records. Closing has been stopped: ' +
+      payError.message
+  )
+  return
+}
+
+const rows = (payData || []) as { amount: number; payment_mode: string }[]
     const alreadyCash = rows
       .filter((p) => p.payment_mode === 'Cash')
       .reduce((s, p) => s + Number(p.amount), 0)
@@ -864,8 +881,9 @@ export default function DaySalesPage() {
     items: any[]
   } | null>(null)
 
-  async function openPastDayClose(dayDate: string) {
-    const { data: saleCheck, error: saleErr } = await supabase
+
+async function openPastDayClose(dayDate: string) {
+    const { count: saleCount, error: saleErr } = await supabase
       .from('sales')
       .select('sale_id', { count: 'exact', head: true })
       .eq('bill_date', dayDate)
@@ -875,29 +893,38 @@ export default function DaySalesPage() {
       return
     }
 
-    if ((saleCheck ?? []).length > 0) {
+    if ((saleCount ?? 0) > 0) {
       alert('This day was already closed. Re-closing would create duplicate bills.')
       return
     }
 
     const { data: itemsData, error: itemsErr } = await supabase
       .rpc('get_day_items', { p_bill_date: dayDate })
+
     if (itemsErr) {
       alert('Failed to load items: ' + itemsErr.message)
       return
     }
 
     const items = (itemsData as any[]) || []
+
     if (items.length === 0) {
       alert('No items found for that day.')
       return
     }
 
     const itemIds = Array.from(new Set(items.map((i) => i.item_id))) as number[]
-    const { data: itemRows } = await supabase
+
+    const { data: itemRows, error: itemErr } = await supabase
       .from('items')
       .select('item_id, sku')
       .in('item_id', itemIds)
+
+    if (itemErr) {
+      alert('Failed to load item details: ' + itemErr.message)
+      return
+    }
+
     const skuMap: Record<number, string> = {}
     for (const it of itemRows || []) skuMap[it.item_id] = it.sku
 
@@ -907,18 +934,27 @@ export default function DaySalesPage() {
     }))
 
     const totalSales = items.reduce((s, i) => s + Number(i.amount), 0)
+
     const counterSaleTotal = items
       .filter((i) => Number(i.party_id) === COUNTER_SALE_PARTY_ID)
       .reduce((s, i) => s + Number(i.amount), 0)
 
-    const { data: payData } = await supabase
+    const { data: payData, error: payErr } = await supabase
       .from('payments')
       .select('amount, payment_mode')
       .eq('payment_date', dayDate)
+
+    if (payErr) {
+      alert('Failed to load payment records: ' + payErr.message)
+      return
+    }
+
     const payRows = (payData || []) as { amount: number; payment_mode: string }[]
+
     const alreadyCash = payRows
       .filter((p) => p.payment_mode === 'Cash')
       .reduce((s, p) => s + Number(p.amount), 0)
+
     const alreadyUpi = payRows
       .filter((p) => p.payment_mode === 'UPI')
       .reduce((s, p) => s + Number(p.amount), 0)
@@ -933,79 +969,99 @@ export default function DaySalesPage() {
     })
   }
 
-  async function performPastDayClose(totalUpiToday: number) {
-    if (!pastDayData) return
-    setClosingUnclosed(pastDayData.bill_date)
-    const dayDate = pastDayData.bill_date
 
+
+
+async function performPastDayClose(counterSaleUpi: number) {
+  if (!pastDayData) return
+
+  setClosingUnclosed(pastDayData.bill_date)
+
+  const dayDate = pastDayData.bill_date
+  const counterSaleCash = Math.max(
+    0,
+    pastDayData.counterSaleTotal - counterSaleUpi
+  )
+
+  try {
     const { error } = await supabase.rpc('close_day_sales', {
       p_bill_date: dayDate,
+      p_counter_sale_cash: counterSaleCash,
+      p_counter_sale_upi: counterSaleUpi,
     })
+
     if (error) {
-      alert('Close failed: ' + error.message)
-      setClosingUnclosed(null)
+      throw new Error('Close failed: ' + error.message)
+    }
+
+    setUnclosedDays((prev) =>
+      prev.filter((x) => x.bill_date !== dayDate)
+    )
+
+    setPastDayData(null)
+    alert('Day closed successfully.')
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Past day close failed'
+    throw new Error(msg)
+  } finally {
+    setClosingUnclosed(null)
+  }
+}
+
+  // Actual close — called from the dialog after staff confirms Counter Sale UPI
+const performCloseDay = useCallback(
+  async (counterSaleUpi: number) => {
+    const unresolvedRows = rows.filter(
+      (row) =>
+        row.item_id !== null &&
+        (row.saving || row.db_id === null || Boolean(row.error))
+    )
+
+    if (unresolvedRows.length > 0) {
+      setCloseState('error')
+      setCloseError(
+        `${unresolvedRows.length} item(s) are not safely saved. Check the item errors and save them before closing the day.`
+      )
+      setShowCloseDialog(false)
       return
     }
 
-    if (pastDayData.counterSaleTotal > 0) {
-      const deltaUpi = Math.max(0, totalUpiToday - pastDayData.alreadyUpi)
-      const counterSaleUpi = Math.min(deltaUpi, pastDayData.counterSaleTotal)
-      const counterSaleCash = Math.max(0, pastDayData.counterSaleTotal - counterSaleUpi)
-
-      const { error } = await syncCounterSalePayments(counterSaleCash, counterSaleUpi)
-      if (error) {
-        alert('Counter sale payment sync failed: ' + error)
-      }
-    }
-
-    setUnclosedDays((prev) => prev.filter((x) => x.bill_date !== dayDate))
-    setPastDayData(null)
-    setClosingUnclosed(null)
-    alert('Day closed successfully.')
-  }
-  // Actual close — called from the dialog after staff confirms UPI
-  const performCloseDay = useCallback(
-    async (totalUpiToday: number) => {
-      setCloseState('closing')
-      setShowCloseDialog(false)
+    setCloseState('closing')
+    setShowCloseDialog(false)
       try {
-        const { alreadyClosed, error: closedErr } = await checkAlreadyClosed(billDate)
+        // 1. Check whether this day is already closed.
+        const { alreadyClosed, error: closedErr } =
+          await checkAlreadyClosed(billDate)
+
         if (closedErr) {
           throw new Error(closedErr)
         }
+
         if (alreadyClosed) {
-          throw new Error('This day is already closed. Duplicate closing is blocked.')
+          throw new Error(
+            'This day is already closed. Duplicate closing is blocked.'
+          )
         }
 
-        // 1. Run the close RPC (creates bills, clears day_sales_items)
+ 
+        // 2. Close the day and create invoices.
+        const counterSaleCash = Math.max(
+          0,
+          (dialogData?.counterSaleTotal || 0) - counterSaleUpi
+        )
+
         const { data, error } = await supabase.rpc('close_day_sales', {
           p_bill_date: billDate,
+          p_counter_sale_cash: counterSaleCash,
+          p_counter_sale_upi: counterSaleUpi,
         })
-        if (error) throw new Error(error.message)
 
-        // 2. Insert Counter Sale payment rows only for the missing delta,
-        // so repeated close attempts do not create duplicate payment entries.
-        if (dialogData && dialogData.counterSaleTotal > 0) {
-          const deltaUpi = Math.max(0, totalUpiToday - dialogData.alreadyUpi)
-          const counterSaleUpi = Math.min(
-            deltaUpi,
-            dialogData.counterSaleTotal
-          )
-          const counterSaleCash = Math.max(
-            0,
-            dialogData.counterSaleTotal - counterSaleUpi
-          )
-
-          const { error } = await syncCounterSalePayments(
-            counterSaleCash,
-            counterSaleUpi
-          )
-          if (error) {
-            throw new Error(error)
-          }
+        if (error) {
+          throw new Error(error.message)
         }
 
         const results = (data as CloseResult[]) || []
+
         setCloseResult(results)
         setRows([])
         setPayments([])
@@ -1013,13 +1069,13 @@ export default function DaySalesPage() {
         setCloseState('closed')
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : 'Close failed'
+
         setCloseState('error')
         setCloseError(msg)
         setShowCloseDialog(false)
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    [billDate, dialogData]
+    [billDate, dialogData, rows]
   )
 
   // ============================================================
@@ -2207,9 +2263,9 @@ function CloseDayDialog({
   const enteredUpi = upiInput.trim() === '' ? alreadyUpi : parseFloat(upiInput)
   const validUpi = !isNaN(enteredUpi) && enteredUpi >= 0
 
-  const deltaUpi = validUpi ? Math.max(0, enteredUpi - alreadyUpi) : 0
-  const counterSaleUpi = Math.min(deltaUpi, counterSaleTotal)
-  const counterSaleCash = Math.max(0, counterSaleTotal - counterSaleUpi)
+ const deltaUpi = validUpi ? Math.max(0, enteredUpi - alreadyUpi) : 0
+const counterSaleUpi = deltaUpi
+const counterSaleCash = Math.max(0, counterSaleTotal - counterSaleUpi)
 
   const totalUpiToday = alreadyUpi + counterSaleUpi
   const totalCashToday = alreadyCash + counterSaleCash
@@ -2219,16 +2275,23 @@ function CloseDayDialog({
       setError('Enter a valid UPI amount (or leave empty for all cash)')
       return
     }
-    if (enteredUpi < alreadyUpi - 0.01) {
-      setError(
-        `Total UPI (₹${enteredUpi.toFixed(2)}) cannot be less than already recorded (₹${alreadyUpi.toFixed(2)}). Correct via /payments first.`
-      )
-      return
-    }
+if (enteredUpi < alreadyUpi - 0.01) {
+  setError(
+    `Total UPI (₹${enteredUpi.toFixed(2)}) cannot be less than already recorded (₹${alreadyUpi.toFixed(2)}). Correct via /payments first.`
+  )
+  return
+}
+
+if (enteredUpi > alreadyUpi + counterSaleTotal + 0.01) {
+  setError(
+    `Total UPI cannot exceed ₹${(alreadyUpi + counterSaleTotal).toFixed(2)}.`
+  )
+  return
+}
     setSubmitting(true)
     setError('')
     try {
-      await onConfirm(enteredUpi)
+      await onConfirm(counterSaleUpi)
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Close failed'
       setError(msg)
