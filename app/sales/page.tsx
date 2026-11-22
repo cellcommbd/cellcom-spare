@@ -736,6 +736,28 @@ function SalesEntryPage() {
 
   async function deleteSale(id: number) {
     if (!confirm(`Delete sale #${id}? Stock will go back up.`)) return
+        // Protect payment allocations from accidental deletion.
+    const { data: existingAllocations, error: allocationCheckError } =
+      await supabase
+        .from('payment_allocations')
+        .select('id')
+        .eq('sale_id', id)
+        .limit(1)
+
+    if (allocationCheckError) {
+      setMessage(
+        'Could not verify payment allocations. Sale was not deleted: ' +
+          allocationCheckError.message
+      )
+      return
+    }
+
+    if ((existingAllocations || []).length > 0) {
+      setMessage(
+        `Cannot delete sale #${id} because it has payment allocations. Payment records and allocations have been left untouched.`
+      )
+      return
+    }
 
     const sale = todaySales.find((s) => s.sale_id === id)
 
@@ -1014,6 +1036,42 @@ function SalesEntryPage() {
     const newStatus = isCounterSaleEdit
       ? 'Paid'
       : computeSaleStatus(newTotal, effectivePaid)
+          // Protect existing payment allocations.
+    const { data: existingAllocations, error: allocationCheckError } =
+      await supabase
+        .from('payment_allocations')
+        .select('id')
+        .eq('sale_id', editState.sale_id)
+        .limit(1)
+
+    if (allocationCheckError) {
+      setEditMessage(
+        'Could not verify payment allocations. Invoice was not changed: ' +
+          allocationCheckError.message
+      )
+      setEditSaving(false)
+      return
+    }
+
+    const hasAllocations = (existingAllocations || []).length > 0
+
+    const roundedNewTotal = Math.round((newTotal + Number.EPSILON) * 100) / 100
+    const roundedOriginalTotal =
+      Math.round((oldTotal + Number.EPSILON) * 100) / 100
+
+    if (
+      hasAllocations &&
+      (newPartyId !== oldPartyId ||
+        roundedNewTotal !== roundedOriginalTotal ||
+        effectivePaid !== editState.paid_amount)
+    ) {
+      setEditMessage(
+        'This invoice has payment allocations. Changing its customer, total or paid amount is blocked to protect those allocations. No changes were saved.'
+      )
+      setEditSaving(false)
+      return
+    }
+
 
     const { error: headerErr } = await supabase
       .from('sales')

@@ -627,12 +627,23 @@ export default function CustomerLedgerPage() {
                       const saleLines = linesBySale[s.sale_id] || []
                       return (
                         <div key={s.sale_id}>
-                          <button
-                            onClick={() =>
-                              setExpandedSaleId(isOpen ? null : s.sale_id)
-                            }
-                            className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
-                          >
+                        <div
+  role="button"
+  tabIndex={0}
+  onClick={() =>
+    setExpandedSaleId(isOpen ? null : s.sale_id)
+  }
+  onKeyDown={(e) => {
+    if (
+      e.target === e.currentTarget &&
+      (e.key === 'Enter' || e.key === ' ')
+    ) {
+      e.preventDefault()
+      setExpandedSaleId(isOpen ? null : s.sale_id)
+    }
+  }}
+  className="w-full px-4 py-3 flex items-center gap-3 hover:bg-slate-50 text-left"
+>
                             <div className="text-slate-400 shrink-0">
                               {isOpen ? (
                                 <ChevronDown className="w-4 h-4" />
@@ -672,7 +683,7 @@ export default function CustomerLedgerPage() {
                                 <Pencil className="w-3.5 h-3.5" />
                               </button>
                             </div>
-                          </button>
+                          </div>
                           {isOpen && (
                             <div className="bg-slate-50 border-t border-slate-100 px-4 py-3">
                               <div className="space-y-1.5">

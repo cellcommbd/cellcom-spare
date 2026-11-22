@@ -612,15 +612,15 @@ export default function DaySalesPage() {
     setPendingNewParty(null)
   }
 
-  // ============================================================
-  // Collect payment (per party)
-  // ============================================================
+// ============================================================
+// Collect payment (per party)
+// ============================================================
 
- 
 async function collectPayment(
   partyId: number,
   cashAmount: number,
-  upiAmount: number
+  upiAmount: number,
+  requestId: string
 ): Promise<{ ok: boolean; error?: string }> {
   if (
     !Number.isFinite(cashAmount) ||
@@ -635,51 +635,24 @@ async function collectPayment(
     return { ok: false, error: 'Amount must be greater than zero' }
   }
 
+  if (!requestId) {
+    return { ok: false, error: 'Missing payment request ID' }
+  }
+
   try {
-    // Every collection is a new transaction.
-    const { error: dayPayErr } = await supabase
-      .from('day_sales_payments')
-      .insert({
-        bill_date: billDate,
-        party_id: partyId,
-        cash: cashAmount,
-        upi: upiAmount,
-      })
-
-    if (dayPayErr) throw new Error(dayPayErr.message)
-
-    const inserts: {
-      party_id: number
-      payment_date: string
-      amount: number
-      payment_mode: string
-    }[] = []
-
-    if (cashAmount > 0) {
-      inserts.push({
-        party_id: partyId,
-        payment_date: billDate,
-        amount: cashAmount,
-        payment_mode: 'Cash',
-      })
-    }
-
-    if (upiAmount > 0) {
-      inserts.push({
-        party_id: partyId,
-        payment_date: billDate,
-        amount: upiAmount,
-        payment_mode: 'UPI',
-      })
-    }
-
-    const { data: insertedPayments, error: payErr } = await supabase
-      .from('payments')
-      .insert(inserts)
-      .select('payment_id, amount')
+    const { data: insertedPayments, error: payErr } = await supabase.rpc(
+      'record_day_sales_collection',
+      {
+        p_request_id: requestId,
+        p_party_id: partyId,
+        p_bill_date: billDate,
+        p_cash: cashAmount,
+        p_upi: upiAmount,
+      }
+    )
 
     if (payErr || !insertedPayments) {
-      throw new Error(payErr?.message || 'Payment ledger insert failed')
+      throw new Error(payErr?.message || 'Payment recording failed')
     }
 
     for (const p of insertedPayments) {
@@ -702,7 +675,6 @@ async function collectPayment(
     return { ok: false, error: msg }
   }
 }
-
 
 async function syncCounterSalePayments(
   targetCash: number,
@@ -1311,17 +1283,22 @@ const performCloseDay = useCallback(
               <PartyGroupSection
                 group={group}
                 party={partiesById[group.partyId]}
+                billDate={billDate}
                 onEditRow={(rowId) => setEditingRowId(rowId)}
                 onDeleteRow={(rowId) => deleteRow(rowId)}
                 collecting={collectingPartyId === group.partyId}
                 onCollect={() => setCollectingPartyId(group.partyId)}
                 onCancelCollect={() => setCollectingPartyId(null)}
-                onRecordPayment={async (cash, upi) => {
-                  const res = await collectPayment(group.partyId, cash, upi)
+                onRecordPayment={async (cash, upi, requestId) => {
+                  const res = await collectPayment(
+                    group.partyId,
+                    cash,
+                    upi,
+                    requestId
+                  )
                   if (res.ok) setCollectingPartyId(null)
                   return res
-                }}
-              />
+                }}              />
             </div>
           ))}
         </div>
@@ -1396,6 +1373,7 @@ const performCloseDay = useCallback(
 function PartyGroupSection({
   group,
   party,
+  billDate,
   onEditRow,
   onDeleteRow,
   collecting,
@@ -1412,15 +1390,17 @@ function PartyGroupSection({
     balance: number
   }
   party: Party | undefined
+  billDate: string
   onEditRow: (rowId: number) => void
   onDeleteRow: (rowId: number) => void
   collecting: boolean
   onCollect: () => void
   onCancelCollect: () => void
-  onRecordPayment: (
-    cash: number,
-    upi: number
-  ) => Promise<{ ok: boolean; error?: string }>
+onRecordPayment: (
+  cash: number,
+  upi: number,
+  requestId: string
+) => Promise<{ ok: boolean; error?: string }>
 }) {
   const payAmountRef = useRef<HTMLInputElement>(null)
   const upiAmountRef = useRef<HTMLInputElement>(null)
@@ -1430,6 +1410,16 @@ function PartyGroupSection({
   const [upiAmount, setUpiAmount] = useState('')
   const [recording, setRecording] = useState(false)
   const [payError, setPayError] = useState('')
+  const [requestId, setRequestId] = useState<string | null>(() => {
+  try {
+    const saved = sessionStorage.getItem(
+      `day-payment-request-${group.partyId}-${billDate}`
+    )
+    return saved || null
+  } catch {
+    return null
+  }
+})
 
   const fullName = party?.party_name || `#${group.partyId}`
   const phone = party?.phone
@@ -1441,45 +1431,69 @@ function PartyGroupSection({
   const splitUpi = mode === 'Online' ? Math.min(upiAmt, totalAmt) : 0
   const splitCash = mode === 'Online' ? totalAmt - splitUpi : totalAmt
 
-  function resetCollect() {
-    setPayAmount('')
-    setUpiAmount('')
-    setMode('Cash')
-    setPayError('')
+function resetCollect() {
+  setPayAmount('')
+  setUpiAmount('')
+  setMode('Cash')
+  setPayError('')
+
+  try {
+    sessionStorage.removeItem(
+      `day-payment-request-${group.partyId}-${billDate}`
+    )
+  } catch {
+    // Ignore storage errors.
   }
 
-  useEffect(() => {
-    if (collecting) {
-      setTimeout(() => {
-        payAmountRef.current?.focus()
-        payAmountRef.current?.select()
-      }, 100)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collecting])
+  setRequestId(null)
+}
 
   async function handleRecord() {
+    if (recording) return
+
     if (totalAmt <= 0) {
       setPayError('Amount must be > 0')
       return
     }
+
     if (mode === 'Online' && upiAmt > totalAmt) {
       setPayError('UPI cannot exceed total')
       return
     }
+
+   const currentRequestId = requestId || crypto.randomUUID()
+setRequestId(currentRequestId)
+
+try {
+  sessionStorage.setItem(
+    `day-payment-request-${group.partyId}-${billDate}`,
+    currentRequestId
+  )
+} catch {
+  // React state still protects retries while this page remains open.
+}
     setRecording(true)
     setPayError('')
-    const res = await onRecordPayment(splitCash, splitUpi)
-    if (res.ok) {
-      resetCollect()
-    } else {
-      setPayError(res.error || 'Payment failed')
-    }
-    setRecording(false)
-  }
 
+    try {
+      const res = await onRecordPayment(
+        splitCash,
+        splitUpi,
+        currentRequestId
+      )
+
+      if (res.ok) {
+        resetCollect()
+      } else {
+        setPayError(res.error || 'Payment failed')
+      }
+    } catch (e: unknown) {
+      setPayError(e instanceof Error ? e.message : 'Payment failed')
+    } finally {
+      setRecording(false)
+    }
+  }
   function handleCancel() {
-    resetCollect()
     onCancelCollect()
   }
 

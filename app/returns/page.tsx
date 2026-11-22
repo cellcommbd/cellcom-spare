@@ -302,75 +302,102 @@ export default function SalesReturnPage() {
 
   const totalReturnValue = rows.reduce((s, r) => s + r.return_qty * r.rate, 0)
 
-  async function saveReturn() {
-    setMessage('')
 
-    const validRows = rows.filter((r) => r.return_qty > 0 && r.item_id)
-    if (validRows.length === 0) {
-      setMessage('Select at least one item to return.')
-      return
-    }
+async function saveReturn() {
+  setMessage('')
 
-    // Determine party: all lines must belong to same party for a simple return
-    const partyIds = new Set<number>()
-    for (const r of validRows) {
-      const sale = matchingSales.find((s) =>
-        (itemsBySale[s.sale_id] || []).some((l) => l.detail_id === r.detail_id)
+  const validRows = rows.filter((r) => r.return_qty > 0 && r.item_id)
+
+  if (validRows.length === 0) {
+    setMessage('Select at least one item to return.')
+    return
+  }
+
+  const partyIds = new Set<number>()
+
+  for (const r of validRows) {
+    const sale = matchingSales.find((s) =>
+      (itemsBySale[s.sale_id] || []).some(
+        (l) => l.detail_id === r.detail_id
       )
-      if (sale) partyIds.add(sale.party_id)
-    }
-    if (partyIds.size > 1) {
-      setMessage('All items in a return must be from the same customer.')
-      return
-    }
-    const returnPartyId = Array.from(partyIds)[0]
-    if (!returnPartyId) {
-      setMessage('Could not determine customer.')
-      return
-    }
+    )
 
-    setSaving(true)
+    if (sale) partyIds.add(sale.party_id)
+  }
 
-    const insertRows = validRows.map((r) => ({
-      party_id: returnPartyId,
+  if (partyIds.size > 1) {
+    setMessage('All items in a return must be from the same customer.')
+    return
+  }
+
+  const returnPartyId = Array.from(partyIds)[0]
+
+  if (!returnPartyId) {
+    setMessage('Could not determine customer.')
+    return
+  }
+
+  setSaving(true)
+
+  try {
+    const returnRows = validRows.map((r) => ({
+      detail_id: r.detail_id,
       item_id: r.item_id,
-      return_date: returnDate,
       quantity: r.return_qty,
       rate: r.rate,
-      total_amount: Number((r.return_qty * r.rate).toFixed(2)),
       is_sellable: r.is_sellable,
       reason: r.reason,
-      return_type: 'Customer',
     }))
 
-    const { error: returnError } = await supabase.from('returns').insert(insertRows)
-    if (returnError) {
-      setMessage('Save error: ' + returnError.message)
-      setSaving(false)
+    const { data, error } = await supabase.rpc('save_customer_return', {
+      p_party_id: returnPartyId,
+      p_return_date: returnDate,
+      p_rows: returnRows,
+    })
+
+    if (error || !data || data.success !== true) {
+      setMessage(
+        'Return save could not be confirmed. Do NOT submit it again until you check the Sales Return records. ' +
+        (error?.message || 'Invalid database response.')
+      )
       return
     }
 
-    // Update sale_items.returned_qty
-    for (const r of validRows) {
-      const oldQty = r.already_returned
-      const newQty = oldQty + r.return_qty
-      await supabase
-        .from('sale_items')
-        .update({ returned_qty: newQty })
-        .eq('detail_id', r.detail_id)
-    }
+    const savedTotal = Number(data.total_return_value)
+    const newBalance = Number(data.new_balance)
 
-    // Recompute balance (self-healing)
-    await recomputePartyBalance(returnPartyId)
+    setMessage(
+      `Return saved successfully: ₹${savedTotal.toFixed(2)}. Customer balance: ₹${newBalance.toFixed(2)}.`
+    )
 
-    setMessage(`Saved return of ₹${totalReturnValue.toFixed(2)}.`)
     setCheckedDetailIds([])
     setRows([])
-    await loadBase()
-    await search()
 
+    try {
+      await loadBase()
+      await search()
+    } catch (refreshError) {
+      const details =
+        refreshError instanceof Error
+          ? refreshError.message
+          : String(refreshError)
+
+      setMessage(
+        `Return was saved successfully, but the page could not refresh. Please refresh manually. Details: ${details}`
+      )
+    }
+
+  } catch (error) {
+    const details =
+      error instanceof Error ? error.message : String(error)
+
+    setMessage(
+      `Return save could not be confirmed. Do NOT submit it again until you check the Sales Return records. Details: ${details}`
+    )
+  } finally {
     setSaving(false)
   }
+}
 
   function clearFilters() {
     setPartyId(null)
