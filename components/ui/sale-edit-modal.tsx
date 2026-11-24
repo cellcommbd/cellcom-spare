@@ -1,3 +1,4 @@
+
 'use client'
 
 import { useEffect, useState } from 'react'
@@ -72,7 +73,6 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     setLoading(true)
     setMessage('')
 
-    // Fetch sale header
     const { data: sale, error: saleErr } = await supabase
       .from('sales')
       .select(
@@ -93,18 +93,25 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     setOriginalTotal(Number(sale.total_amount))
     setPaidAmount(Number(sale.paid_amount || 0))
 
-    // Fetch parties
-    const { data: partyData } = await supabase
+    const { data: partyData, error: partyErr } = await supabase
       .from('parties')
       .select('party_id, party_name, party_type, current_balance, phone')
       .eq('party_type', 'Customer')
       .order('party_name')
+
+    if (partyErr) {
+      setMessage('Could not load customers: ' + partyErr.message)
+      setLoading(false)
+      return
+    }
+
     setParties((partyData as Party[]) || [])
 
-    // Fetch sale_items
     const { data: lineData, error: lineErr } = await supabase
       .from('sale_items')
-      .select('detail_id, item_id, quantity, rate, amount, cost_at_sale, returned_qty')
+      .select(
+        'detail_id, item_id, quantity, rate, amount, cost_at_sale, returned_qty'
+      )
       .eq('sale_id', saleId)
       .order('detail_id')
 
@@ -115,32 +122,45 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     }
 
     const lines = (lineData || []) as any[]
+
     if (lines.some((l: any) => Number(l.returned_qty || 0) > 0)) {
-  alert('This sale has returns. Cannot edit.')
-  onClose()
-  return
-}
+      alert('This sale has returns. Cannot edit.')
+      onClose()
+      return
+    }
+
     const itemIds = Array.from(
       new Set(lines.map((l) => l.item_id).filter(Boolean))
     ) as number[]
 
     let cache: Record<number, Item> = {}
+
     if (itemIds.length > 0) {
-      const { data: itemRows } = await supabase
+      const { data: itemRows, error: itemErr } = await supabase
         .from('items')
         .select(
           'item_id, sku, current_stock, cost_price, selling_price, quality, variant'
         )
         .in('item_id', itemIds)
+
+      if (itemErr) {
+        setMessage('Could not load items: ' + itemErr.message)
+        setLoading(false)
+        return
+      }
+
       for (const it of itemRows || []) {
         cache[it.item_id] = it as Item
       }
     }
+
     setItemCache(cache)
 
     let nid = 1
+
     const editRows: EditRow[] = lines.map((l) => {
       const it = cache[l.item_id]
+
       return {
         rowId: nid++,
         detail_id: l.detail_id,
@@ -171,12 +191,29 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     setLoading(false)
   }
 
+  async function checkPaymentAllocations(): Promise<boolean | null> {
+    const { data, error } = await supabase
+      .from('payment_allocations')
+      .select('sale_id')
+      .eq('sale_id', saleId)
+      .limit(1)
+
+    if (error) {
+      setMessage('Could not verify payment allocations: ' + error.message)
+      return null
+    }
+
+    return (data || []).length > 0
+  }
+
   function updateRow(rowId: number, patch: Partial<EditRow>) {
     setRows((prev) =>
       prev.map((r) => {
         if (r.rowId !== rowId) return r
+
         const merged = { ...r, ...patch }
         merged.amount = Number(merged.quantity) * Number(merged.rate)
+
         return merged
       })
     )
@@ -184,6 +221,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
 
   function addRow() {
     const newId = nextRowId
+
     setRows((prev) => [
       ...prev,
       {
@@ -197,16 +235,21 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
         cost_at_sale: 0,
       },
     ])
+
     setNextRowId((n) => n + 1)
   }
 
   function removeRow(rowId: number) {
     setRows((prev) => {
       const filtered = prev.filter((r) => r.rowId !== rowId)
+
       if (filtered.length === 0) {
+        const emptyRowId = nextRowId
+        setNextRowId((n) => n + 1)
+
         return [
           {
-            rowId: nextRowId,
+            rowId: emptyRowId,
             detail_id: null,
             item_id: null,
             sku: '',
@@ -217,8 +260,10 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
           },
         ]
       }
+
       return filtered
     })
+
     setRowOptions((prev) => {
       const next = { ...prev }
       delete next[rowId]
@@ -231,9 +276,12 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       setRowOptions((prev) => ({ ...prev, [rowId]: [] }))
       return
     }
+
     const results = await searchItems(query)
     const items = results as Item[]
+
     setRowOptions((prev) => ({ ...prev, [rowId]: items }))
+
     setItemCache((prev) => {
       const next = { ...prev }
       for (const it of items) next[it.item_id] = it
@@ -244,10 +292,13 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
   function selectItem(rowId: number, itemId: number) {
     const it = itemCache[itemId]
     if (!it) return
+
     setRows((prev) =>
       prev.map((r) => {
         if (r.rowId !== rowId) return r
+
         const qty = r.quantity > 0 ? r.quantity : 1
+
         return {
           ...r,
           item_id: it.item_id,
@@ -265,18 +316,28 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     const seen = new Set<number>()
     const out: { value: number; label: string }[] = []
     const row = rows.find((r) => r.rowId === rowId)
+
     if (row?.item_id) {
       const cached = itemCache[row.item_id]
+
       if (cached) {
         seen.add(cached.item_id)
-        out.push({ value: cached.item_id, label: itemLabel(cached) })
+        out.push({
+          value: cached.item_id,
+          label: itemLabel(cached),
+        })
       }
     }
+
     for (const it of rowOptions[rowId] || []) {
       if (seen.has(it.item_id)) continue
       seen.add(it.item_id)
-      out.push({ value: it.item_id, label: itemLabel(it) })
+      out.push({
+        value: it.item_id,
+        label: itemLabel(it),
+      })
     }
+
     return out
   }
 
@@ -289,6 +350,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       it.quality && it.quality !== 'Normal' ? it.quality : null,
       it.variant || null,
     ].filter(Boolean)
+
     return parts.join(' · ')
   }
 
@@ -299,8 +361,14 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     }
 
     const validRows = rows.filter(
-      (r) => r.item_id && r.quantity > 0 && r.rate > 0
+      (r) =>
+        r.item_id &&
+        Number.isFinite(r.quantity) &&
+        Number.isFinite(r.rate) &&
+        r.quantity > 0 &&
+        r.rate > 0
     )
+
     if (validRows.length === 0) {
       setMessage('Add at least one item with quantity and rate.')
       return
@@ -308,7 +376,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
 
     const newTotal = validRows.reduce((s, r) => s + r.amount, 0)
 
-    if (paidAmount > 0 && newTotal < paidAmount) {
+    if (newTotal < paidAmount) {
       setMessage(
         `Cannot reduce total below what's already paid (₹${paidAmount.toFixed(
           2
@@ -320,19 +388,34 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
     setSaving(true)
     setMessage('')
 
+    // Verify allocations before changing the invoice.
+    const hasAllocations = await checkPaymentAllocations()
+
+    if (hasAllocations === null) {
+      setSaving(false)
+      return
+    }
+
+    if (hasAllocations && partyId !== originalPartyId) {
+      setMessage(
+        'This invoice has payment allocations. Its customer cannot be changed.'
+      )
+      setSaving(false)
+      return
+    }
+
     const newStatus =
       newTotal <= paidAmount
         ? 'Paid'
         : paidAmount > 0
-        ? 'Partially Paid'
-        : 'Pending'
+          ? 'Partially Paid'
+          : 'Pending'
 
-    // 1. Update sale header
+    // 1. Update sale header.
     const { error: headerErr } = await supabase
       .from('sales')
       .update({
         party_id: partyId,
-        bill_date: billDate,
         total_amount: newTotal,
         status: newStatus,
       })
@@ -344,19 +427,19 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       return
     }
 
-    // 2. Delete old lines (triggers restore stock)
+    // 2. Delete old lines (triggers restore stock).
     const { error: delErr } = await supabase
       .from('sale_items')
       .delete()
       .eq('sale_id', saleId)
 
     if (delErr) {
-      setMessage('Save failed: ' + delErr.message)
+      setMessage('Could not delete old sale items: ' + delErr.message)
       setSaving(false)
       return
     }
 
-    // 3. Insert new lines (triggers decrement stock)
+    // 3. Insert replacement lines (triggers decrement stock).
     const lineInserts = validRows.map((r) => ({
       sale_id: saleId,
       item_id: r.item_id,
@@ -371,18 +454,24 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       .insert(lineInserts)
 
     if (insErr) {
-      setMessage('Save failed: ' + insErr.message)
+      setMessage(
+        'Invoice header was updated, but saving the replacement items failed: ' +
+          insErr.message +
+          '. Please do not edit this invoice again until it is checked.'
+      )
       setSaving(false)
       return
     }
 
-    // 4. Balance: recompute for affected parties (self-healing)
+    // 4. Recompute balances for affected parties.
     await recomputePartyBalance(partyId)
+
     if (originalPartyId && originalPartyId !== partyId) {
       await recomputePartyBalance(originalPartyId)
     }
 
     setSaving(false)
+
     if (onSaved) onSaved()
     onClose()
   }
@@ -393,7 +482,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
 
     if (!isOwner && !isToday) {
       setMessage(
-        'Staff can only delete today\'s bills. Ask owner to delete older bills.'
+        "Staff can only delete today's bills. Ask owner to delete older bills."
       )
       return
     }
@@ -402,30 +491,61 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
       !confirm(
         `Delete sale #${saleId}? Stock will be restored. Customer balance will be adjusted.`
       )
-    )
+    ) {
       return
+    }
 
     setSaving(true)
+    setMessage('')
 
-    // Delete lines (trigger restores stock)
-    await supabase.from('sale_items').delete().eq('sale_id', saleId)
+    // Never delete an invoice that has payment allocations.
+    const hasAllocations = await checkPaymentAllocations()
 
-    // Delete header
-    const { error } = await supabase
+    if (hasAllocations === null) {
+      setSaving(false)
+      return
+    }
+
+    if (hasAllocations) {
+      setMessage(
+        'This invoice has payment allocations. Remove or resolve those allocations before deleting the invoice.'
+      )
+      setSaving(false)
+      return
+    }
+
+    // Delete lines first so stock-restoration triggers can run.
+    const { error: lineDeleteErr } = await supabase
+      .from('sale_items')
+      .delete()
+      .eq('sale_id', saleId)
+
+    if (lineDeleteErr) {
+      setMessage('Could not delete sale items: ' + lineDeleteErr.message)
+      setSaving(false)
+      return
+    }
+
+    // Delete invoice header.
+    const { error: headerDeleteErr } = await supabase
       .from('sales')
       .delete()
       .eq('sale_id', saleId)
 
-    setSaving(false)
-    if (error) {
-      setMessage('Delete failed: ' + error.message)
+    if (headerDeleteErr) {
+      setMessage(
+        'Sale items were deleted, but the invoice could not be deleted: ' +
+          headerDeleteErr.message
+      )
+      setSaving(false)
       return
     }
 
-    // Recompute balance (self-healing)
     if (originalPartyId) {
       await recomputePartyBalance(originalPartyId)
     }
+
+    setSaving(false)
 
     if (onSaved) onSaved()
     onClose()
@@ -457,6 +577,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
               {paidAmount > 0 && <> · Paid ₹{paidAmount.toFixed(2)}</>}
             </div>
           </div>
+
           <button
             onClick={onClose}
             disabled={saving}
@@ -473,6 +594,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Customer
               </label>
+
               <SmartCombobox
                 options={parties.map((p) => ({
                   value: p.party_id,
@@ -488,15 +610,18 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                 focusNextOnSelect={false}
               />
             </div>
+
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">
                 Bill Date
               </label>
+
               <input
                 type="date"
                 value={billDate}
-                onChange={(e) => setBillDate(e.target.value)}
-                className="w-full h-11 px-2 text-base sm:text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                disabled
+                title="Bill date cannot be changed while editing an invoice."
+                className="w-full h-11 px-2 text-base sm:text-sm border border-slate-200 rounded-lg bg-slate-100 text-slate-500 cursor-not-allowed"
               />
             </div>
           </div>
@@ -505,6 +630,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
             <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-2">
               Items ({rows.length})
             </div>
+
             <div className="space-y-2">
               {rows.map((row, idx) => (
                 <div
@@ -515,6 +641,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                     <div className="text-xs font-semibold text-slate-500">
                       Item #{idx + 1}
                     </div>
+
                     <button
                       onClick={() => removeRow(row.rowId)}
                       className="p-1.5 text-red-500 hover:text-red-700 hover:bg-red-50 rounded"
@@ -522,6 +649,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
+
                   <SmartCombobox
                     options={optionsFor(row.rowId)}
                     value={row.item_id ? String(row.item_id) : null}
@@ -537,11 +665,13 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                     allowCreate={false}
                     focusNextOnSelect={false}
                   />
+
                   <div className="grid grid-cols-3 gap-2">
                     <div>
                       <label className="block text-[10px] text-slate-500 mb-0.5">
                         Qty
                       </label>
+
                       <input
                         type="number"
                         inputMode="numeric"
@@ -554,10 +684,12 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                         className="w-full h-11 px-2 text-base text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
+
                     <div>
                       <label className="block text-[10px] text-slate-500 mb-0.5">
                         Rate
                       </label>
+
                       <input
                         type="number"
                         inputMode="numeric"
@@ -570,10 +702,12 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                         className="w-full h-11 px-2 text-base text-right border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
+
                     <div>
                       <label className="block text-[10px] text-slate-500 mb-0.5">
                         Amount
                       </label>
+
                       <div className="h-11 px-2 flex items-center justify-end text-sm font-bold text-slate-800">
                         ₹ {row.amount.toFixed(2)}
                       </div>
@@ -581,6 +715,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                   </div>
                 </div>
               ))}
+
               <button
                 onClick={addRow}
                 className="w-full h-11 text-sm font-medium text-blue-600 border-2 border-dashed border-blue-200 rounded-lg hover:bg-blue-50 flex items-center justify-center gap-1"
@@ -598,10 +733,11 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
                 ₹ {runningTotal.toFixed(2)}
               </span>
             </div>
+
             {paidAmount > 0 && (
               <div className="text-[11px] text-amber-800 mt-1">
-                Already paid ₹{paidAmount.toFixed(2)}. Cannot reduce total
-                below that.
+                Already paid ₹{paidAmount.toFixed(2)}. Total cannot be reduced
+                below this amount.
               </div>
             )}
           </div>
@@ -618,13 +754,14 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
           {(() => {
             const today = new Date().toLocaleDateString('en-CA')
             const canDelete = isOwner || billDate === today
+
             return (
               <button
                 onClick={deleteSale}
                 disabled={saving || !canDelete}
                 title={
                   !canDelete
-                    ? 'Staff can only delete today\'s bills'
+                    ? "Staff can only delete today's bills"
                     : 'Delete this sale'
                 }
                 className="h-11 px-3 text-sm font-medium text-rose-700 border border-rose-300 rounded-lg hover:bg-rose-50 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1"
@@ -634,6 +771,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
               </button>
             )
           })()}
+
           <button
             onClick={onClose}
             disabled={saving}
@@ -641,6 +779,7 @@ export function SaleEditModal({ saleId, onClose, onSaved }: Props) {
           >
             Cancel
           </button>
+
           <button
             onClick={save}
             disabled={saving}

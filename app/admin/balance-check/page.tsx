@@ -224,10 +224,7 @@ export default function BalanceCheckPage() {
         // are deliberately not treated as advances.
         const unallocatedCollectionPayments = paymentsForParty
           .filter((payment) => {
-            if (
-              payment.collection_id === null ||
-              reversedPaymentIds.has(Number(payment.payment_id))
-            ) {
+            if (reversedPaymentIds.has(Number(payment.payment_id))) {
               return false
             }
 
@@ -290,7 +287,7 @@ export default function BalanceCheckPage() {
 
         if (unallocatedCollectionPayments.length > 0) {
           possibleReasons.push(
-            `There are ${unallocatedCollectionPayments.length} Day Sales Collection payment(s) with money not allocated to bills. Check whether this money was meant for a particular invoice.`
+        `There are ${unallocatedCollectionPayments.length} customer payment(s) with money not allocated to bills. This remaining amount is treated as customer advance credit.`
           )
         }
 
@@ -357,7 +354,6 @@ export default function BalanceCheckPage() {
               allocatedByPayment.get(Number(p.payment_id)) || 0
 
             const isEligible =
-              p.collection_id !== null &&
               !reversedPaymentIds.has(Number(p.payment_id))
 
             return {
@@ -561,8 +557,9 @@ export default function BalanceCheckPage() {
 
               <p className="text-xs sm:text-sm text-slate-600 mt-1 leading-relaxed">
                 It compares the saved balance with the amount calculated
-                from unpaid bills, customer returns and unused eligible
-                Day Sales Collection payments.
+                              from unpaid bills, customer returns and all unused customer
+              payments. Any payment amount that cannot be allocated to an
+              outstanding invoice remains as an advance.
               </p>
 
               <p className="text-xs text-slate-500 mt-2 leading-relaxed">
@@ -808,7 +805,8 @@ export default function BalanceCheckPage() {
 
                                 <div className="flex justify-between gap-3">
                                   <span className="text-slate-600">
-                                    Less: unused eligible collection payments
+                                    Less: unused customer payment advances
+
                                   </span>
                                   <strong className="text-slate-800">
                                     − {money(r.eligibleAdvances)}

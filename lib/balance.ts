@@ -1,13 +1,16 @@
-
 /**
  * Customer balance calculations.
  *
  * Accounting source of truth:
  *   Invoice balances = sales.total_amount - sales.paid_amount
  *   Customer balance = outstanding invoices - customer returns
- *                     - unallocated collection advances
+ *                     - all unallocated customer payment advances
  *
- * Historical payments with collection_id NULL are excluded.
+ * Any payment remainder that cannot be applied to an outstanding invoice
+ * is a customer advance, whether it was entered through Day Sales or the
+ * standalone Payments page. collection_id only identifies the Day Sales
+ * collection that created a payment; it does not determine whether the
+ * payment is valid customer credit.
  */
 
 type SaleBalanceRow = {
@@ -21,9 +24,11 @@ type ReturnBalanceRow = {
 
 function money(value: unknown): number {
   const n = Number(value ?? 0)
+
   if (!Number.isFinite(n)) {
     throw new Error('Invalid amount found while calculating customer balance.')
   }
+
   return n
 }
 
@@ -84,8 +89,10 @@ async function getSupabaseClient() {
 /**
  * Recalculate and save one customer's stored balance.
  *
- * Only payments with collection_id IS NOT NULL are eligible advances.
- * Original allocation and reversal records are retained by the database.
+ * All customer payments are considered. The unused part of a payment is an
+ * advance even when collection_id is NULL (standalone Payments page entry).
+ * A fully reversed payment contributes no advance; its reversal operation
+ * restores its invoice allocations separately.
  */
 export async function recomputePartyBalance(
   partyId: number
@@ -119,11 +126,11 @@ export async function recomputePartyBalance(
       .eq('party_id', partyId)
       .eq('return_type', 'Customer'),
 
+    // Do not filter by collection_id: standalone payments are advances too.
     supabase
       .from('payments')
       .select('payment_id, amount')
-      .eq('party_id', partyId)
-      .not('collection_id', 'is', null),
+      .eq('party_id', partyId),
   ])
 
   if (partyError) {
@@ -143,7 +150,7 @@ export async function recomputePartyBalance(
   }
 
   if (paymentsError) {
-    throw new Error(`Could not read collection payments: ${paymentsError.message}`)
+    throw new Error(`Could not read customer payments: ${paymentsError.message}`)
   }
 
   const paymentRows = payments || []
@@ -184,9 +191,15 @@ export async function recomputePartyBalance(
 
   for (const allocation of allocations) {
     const id = Number(allocation.payment_id)
+    const amount = money(allocation.amount)
+
+    if (!Number.isInteger(id) || id <= 0 || amount < 0) {
+      throw new Error('Invalid payment allocation record found.')
+    }
+
     allocatedByPayment.set(
       id,
-      (allocatedByPayment.get(id) || 0) + money(allocation.amount)
+      (allocatedByPayment.get(id) || 0) + amount
     )
   }
 
@@ -194,9 +207,15 @@ export async function recomputePartyBalance(
 
   for (const reversal of reversalItems) {
     const id = Number(reversal.payment_id)
+    const amount = money(reversal.reversed_amount)
+
+    if (!Number.isInteger(id) || id <= 0 || amount < 0) {
+      throw new Error('Invalid payment reversal record found.')
+    }
+
     reversedByPayment.set(
       id,
-      (reversedByPayment.get(id) || 0) + money(reversal.reversed_amount)
+      (reversedByPayment.get(id) || 0) + amount
     )
   }
 
@@ -207,15 +226,18 @@ export async function recomputePartyBalance(
       const allocated = allocatedByPayment.get(id) || 0
       const reversed = reversedByPayment.get(id) || 0
 
-      // A fully reversed payment has no remaining advance.
-      // Reversals in the current database function are always full reversals.
-// Original allocation records remain, so a reversed payment contributes zero.
-const remaining =
-  reversed > 0 ? 0 : amount - allocated
+      if (!Number.isInteger(id) || id <= 0 || amount < 0) {
+        throw new Error('Invalid customer payment record found.')
+      }
+
+      // Current reverse_payment RPC creates full-payment reversals.
+      // It retains the original allocation rows, so a reversed payment
+      // must contribute zero advance rather than amount - allocations.
+      const remaining = reversed > 0 ? 0 : amount - allocated
 
       if (remaining < -0.01) {
         throw new Error(
-          `Payment #${id} has allocations and reversals exceeding its amount.`
+          `Payment #${id} has allocations exceeding its amount.`
         )
       }
 
@@ -247,7 +269,8 @@ const remaining =
 /**
  * Set a customer's stored balance to a specified target.
  *
- * Changes ONLY parties.current_balance.
+ * Changes ONLY parties.current_balance. It does not modify invoices,
+ * payments, allocations or returns.
  */
 export async function alignPartyBalanceToTarget(
   partyId: number,
@@ -291,9 +314,7 @@ export async function alignPartyBalanceToTarget(
   return safeTarget
 }
 
-/**
- * Unsafe legacy operations disabled.
- */
+/** Unsafe legacy operations disabled. */
 export async function reverseFIFO(
   _partyId: number,
   _amount: number

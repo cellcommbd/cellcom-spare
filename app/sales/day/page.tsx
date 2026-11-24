@@ -655,10 +655,23 @@ async function collectPayment(
       throw new Error(payErr?.message || 'Payment recording failed')
     }
 
+    const allocationWarnings: string[] = []
+
     for (const p of insertedPayments) {
-      await applyFIFO(partyId, Number(p.amount), p.payment_id)
+      try {
+        await applyFIFO(partyId, Number(p.amount), p.payment_id)
+      } catch (allocationError: unknown) {
+        const details =
+          allocationError instanceof Error
+            ? allocationError.message
+            : String(allocationError)
+
+        allocationWarnings.push(`Payment #${p.payment_id}: ${details}`)
+        // Continue: one failed split payment must not block the other one.
+      }
     }
 
+    // Recalculate from the database even when an allocation needs attention.
     const correctBalance = await recomputePartyBalance(partyId)
 
     setParties((prev) =>
@@ -668,6 +681,16 @@ async function collectPayment(
           : p
       )
     )
+
+    if (allocationWarnings.length > 0) {
+      return {
+        ok: false,
+        error:
+          `Payment was recorded and must not be entered again. ` +
+          `Customer balance was refreshed to ₹${correctBalance.toFixed(2)}. ` +
+          `Allocation needs checking: ${allocationWarnings.join(' | ')}`,
+      }
+    }
 
     return { ok: true }
   } catch (e: unknown) {

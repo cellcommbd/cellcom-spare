@@ -1,3 +1,4 @@
+
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
@@ -52,13 +53,14 @@ function todayStr() {
 }
 
 function money(n: number) {
-  return `₹ ${Number(n).toLocaleString('en-IN', {
+  return `₹ ${Number(n || 0).toLocaleString('en-IN', {
     maximumFractionDigits: 2,
   })}`
 }
 
 function formatDate(d: string) {
   if (!d) return '—'
+
   return new Date(d + 'T00:00:00').toLocaleDateString('en-IN', {
     day: '2-digit',
     month: 'short',
@@ -83,22 +85,28 @@ export default function FindSalePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [expandedSaleId, setExpandedSaleId] = useState<number | null>(null)
-
   const [editingSaleId, setEditingSaleId] = useState<number | null>(null)
 
   useEffect(() => {
     ;(async () => {
-      const { data } = await supabase
+      const { data, error: partyErr } = await supabase
         .from('parties')
         .select('party_id, party_name')
         .eq('party_type', 'Customer')
         .order('party_name')
+
+      if (partyErr) {
+        setError('Could not load customers: ' + partyErr.message)
+        return
+      }
+
       setParties((data as Party[]) || [])
     })()
   }, [])
 
   useEffect(() => {
     if (parties.length === 0) return
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
     search()
   }, [fromDate, toDate, partyId, itemId, parties.length])
@@ -108,7 +116,9 @@ export default function FindSalePage() {
       setItemOptions([])
       return
     }
+
     const results = await searchItems(q)
+
     setItemOptions(
       (results as SearchItemResult[]).map((it) => ({
         value: it.item_id,
@@ -127,6 +137,13 @@ export default function FindSalePage() {
       return
     }
 
+    if (fromDate > toDate) {
+      setError('From date cannot be later than To date.')
+      setSales([])
+      setLoading(false)
+      return
+    }
+
     let salesQuery = supabase
       .from('sales')
       .select(
@@ -137,7 +154,9 @@ export default function FindSalePage() {
       .order('bill_date', { ascending: false })
       .order('sale_id', { ascending: false })
 
-    if (partyId) salesQuery = salesQuery.eq('party_id', Number(partyId))
+    if (partyId) {
+      salesQuery = salesQuery.eq('party_id', Number(partyId))
+    }
 
     const { data: salesData, error: salesErr } = await salesQuery
 
@@ -152,32 +171,58 @@ export default function FindSalePage() {
 
     const saleIds = salesList.map((s) => s.sale_id)
 
-    // Fetch all line items upfront (scoped)
-    let linesBySale: Record<number, SaleLine[]> = {}
-    let itemIds: number[] = []
+    const linesBySale: Record<number, SaleLine[]> = {}
+    const itemIds: number[] = []
 
+    // Fetch all sale lines for the selected invoices.
     if (saleIds.length > 0) {
-      const { data: linesData } = await supabase
+      const { data: linesData, error: linesErr } = await supabase
         .from('sale_items')
-        .select('detail_id, sale_id, item_id, quantity, rate, amount, returned_qty')
+        .select(
+          'detail_id, sale_id, item_id, quantity, rate, amount, returned_qty'
+        )
         .in('sale_id', saleIds)
 
+      if (linesErr) {
+        setError('Could not load sale items: ' + linesErr.message)
+        setSales([])
+        setLoading(false)
+        return
+      }
+
       const rawLines = (linesData as any[]) || []
-      itemIds = Array.from(
+
+      const uniqueItemIds = Array.from(
         new Set(rawLines.map((l) => l.item_id).filter(Boolean))
       ) as number[]
 
-      let skuMap: Record<number, string> = {}
+      itemIds.push(...uniqueItemIds)
+
+      const skuMap: Record<number, string> = {}
+
       if (itemIds.length > 0) {
-        const { data: itemRows } = await supabase
+        const { data: itemRows, error: itemErr } = await supabase
           .from('items')
           .select('item_id, sku')
           .in('item_id', itemIds)
-        for (const it of itemRows || []) skuMap[it.item_id] = it.sku
+
+        if (itemErr) {
+          setError('Could not load item names: ' + itemErr.message)
+          setSales([])
+          setLoading(false)
+          return
+        }
+
+        for (const it of itemRows || []) {
+          skuMap[it.item_id] = it.sku
+        }
       }
 
       for (const l of rawLines) {
-        if (!linesBySale[l.sale_id]) linesBySale[l.sale_id] = []
+        if (!linesBySale[l.sale_id]) {
+          linesBySale[l.sale_id] = []
+        }
+
         linesBySale[l.sale_id].push({
           detail_id: l.detail_id,
           item_id: l.item_id,
@@ -190,31 +235,42 @@ export default function FindSalePage() {
       }
     }
 
-    // Item filter — restrict to sales containing this item
+    // Filter invoices containing the selected item.
     if (itemId && salesList.length > 0) {
       const itemIdNum = Number(itemId)
+
       salesList = salesList.filter((s) => {
         const lines = linesBySale[s.sale_id] || []
+
         return lines.some((l) => l.item_id === itemIdNum)
       })
     }
 
-    // Party name lookup
     const partyMap: Record<number, string> = {}
-    for (const p of parties) partyMap[p.party_id] = p.party_name
+
+    for (const p of parties) {
+      partyMap[p.party_id] = p.party_name
+    }
 
     const enriched: SaleRow[] = salesList.map((s) => {
       const lines = linesBySale[s.sale_id] || []
-      const itemCount = lines.reduce((sum, l) => sum + l.quantity, 0)
-      const preview = lines.slice(0, 3).map((l) => l.sku).join(', ')
+
+      // Count invoice lines, not individual units.
+      const itemCount = lines.length
+
+      const preview = lines
+        .slice(0, 3)
+        .map((l) => l.sku)
+        .join(', ')
+
       return {
         sale_id: s.sale_id,
         bill_date: s.bill_date,
         party_id: s.party_id,
         party_name: partyMap[s.party_id] || `Party #${s.party_id}`,
-        total_amount: Number(s.total_amount),
+        total_amount: Number(s.total_amount || 0),
         paid_amount: Number(s.paid_amount || 0),
-        status: s.status,
+        status: s.status || 'Pending',
         item_count: itemCount,
         items_preview: preview,
         lines,
@@ -227,6 +283,7 @@ export default function FindSalePage() {
 
   function setRange(mode: 'today' | 'yesterday' | 'week' | 'month') {
     const t = todayStr()
+
     if (mode === 'today') {
       setFromDate(t)
       setToDate(t)
@@ -234,6 +291,7 @@ export default function FindSalePage() {
       const d = new Date()
       d.setDate(d.getDate() - 1)
       const y = d.toLocaleDateString('en-CA')
+
       setFromDate(y)
       setToDate(y)
     } else if (mode === 'week') {
@@ -241,14 +299,15 @@ export default function FindSalePage() {
       const day = d.getDay()
       const diff = d.getDate() - day
       const start = new Date(d.setDate(diff))
+
       setFromDate(start.toLocaleDateString('en-CA'))
       setToDate(t)
     } else {
       const d = new Date()
-      const fm = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
-        2,
-        '0'
-      )}-01`
+      const fm = `${d.getFullYear()}-${String(
+        d.getMonth() + 1
+      ).padStart(2, '0')}-01`
+
       setFromDate(fm)
       setToDate(t)
     }
@@ -266,17 +325,22 @@ export default function FindSalePage() {
   }
 
   function toggleExpand(saleId: number) {
-    setExpandedSaleId(expandedSaleId === saleId ? null : saleId)
+    setExpandedSaleId(
+      expandedSaleId === saleId ? null : saleId
+    )
   }
 
   const totalAmount = useMemo(
     () => sales.reduce((s, r) => s + r.total_amount, 0),
     [sales]
   )
+
+  // Use the same due calculation for the summary and each invoice.
   const totalDue = useMemo(
     () =>
       sales.reduce(
-        (s, r) => s + Math.max(0, r.total_amount - r.paid_amount),
+        (s, r) =>
+          s + computeDueAmount(r.total_amount, r.paid_amount),
         0
       ),
     [sales]
@@ -300,6 +364,7 @@ export default function FindSalePage() {
               Find Sale
             </h1>
           </div>
+
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
             Search by date, customer, or item. Tap any bill to expand.
           </p>
@@ -309,13 +374,17 @@ export default function FindSalePage() {
         <div className="bg-white border border-slate-200 rounded-xl p-3 sm:p-4 shadow-sm mb-3">
           <div className="flex items-center gap-2 text-slate-700 mb-2">
             <Calendar className="w-4 h-4 text-slate-500" />
-            <span className="text-xs sm:text-sm font-medium">Date range</span>
+            <span className="text-xs sm:text-sm font-medium">
+              Date range
+            </span>
+
             {loading && (
               <span className="text-[10px] text-slate-400 ml-auto">
                 Searching…
               </span>
             )}
           </div>
+
           <div className="flex items-center gap-2 mb-2">
             <input
               type="date"
@@ -323,7 +392,11 @@ export default function FindSalePage() {
               onChange={(e) => setFromDate(e.target.value)}
               className="flex-1 h-11 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-500 bg-white"
             />
-            <span className="text-slate-400 text-sm shrink-0">to</span>
+
+            <span className="text-slate-400 text-sm shrink-0">
+              to
+            </span>
+
             <input
               type="date"
               value={toDate}
@@ -331,6 +404,7 @@ export default function FindSalePage() {
               className="flex-1 h-11 px-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-500 bg-white"
             />
           </div>
+
           <div className="flex flex-wrap gap-1.5">
             <button
               onClick={() => setRange('today')}
@@ -338,18 +412,21 @@ export default function FindSalePage() {
             >
               Today
             </button>
+
             <button
               onClick={() => setRange('yesterday')}
               className="h-8 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
             >
               Yesterday
             </button>
+
             <button
               onClick={() => setRange('week')}
               className="h-8 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
             >
               This Week
             </button>
+
             <button
               onClick={() => setRange('month')}
               className="h-8 px-3 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg hover:bg-slate-200"
@@ -365,6 +442,7 @@ export default function FindSalePage() {
             <label className="block text-xs font-medium text-slate-700 mb-1">
               Customer
             </label>
+
             <SmartCombobox
               options={parties.map((p) => ({
                 value: p.party_id,
@@ -379,6 +457,7 @@ export default function FindSalePage() {
               allowCreate={false}
               fallbackLabel={partyLabel || null}
             />
+
             {partyId && (
               <button
                 onClick={clearParty}
@@ -394,6 +473,7 @@ export default function FindSalePage() {
             <label className="block text-xs font-medium text-slate-700 mb-1">
               Item
             </label>
+
             <SmartCombobox
               options={itemOptions}
               value={itemId}
@@ -406,6 +486,7 @@ export default function FindSalePage() {
               allowCreate={false}
               fallbackLabel={itemLabel || null}
             />
+
             {itemId && (
               <button
                 onClick={clearItem}
@@ -432,8 +513,11 @@ export default function FindSalePage() {
                 <div className="text-[10px] text-white/70 uppercase tracking-wide">
                   Bills
                 </div>
-                <div className="text-lg font-bold mt-0.5">{sales.length}</div>
+                <div className="text-lg font-bold mt-0.5">
+                  {sales.length}
+                </div>
               </div>
+
               <div className="border-l border-white/20 pl-3">
                 <div className="text-[10px] text-white/70 uppercase tracking-wide">
                   Total
@@ -442,6 +526,7 @@ export default function FindSalePage() {
                   {money(totalAmount)}
                 </div>
               </div>
+
               <div className="border-l border-white/20 pl-3">
                 <div className="text-[10px] text-white/70 uppercase tracking-wide">
                   Due
@@ -462,9 +547,11 @@ export default function FindSalePage() {
         ) : sales.length === 0 ? (
           <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center">
             <Package className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+
             <div className="text-sm font-medium text-slate-600">
               No bills found.
             </div>
+
             <div className="text-xs text-slate-400 mt-1">
               Try a different date range or clear filters.
             </div>
@@ -473,11 +560,16 @@ export default function FindSalePage() {
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
             <div className="divide-y divide-slate-100">
               {sales.map((s) => {
-                const due = computeDueAmount(s.total_amount, s.paid_amount)
+                const due = computeDueAmount(
+                  s.total_amount,
+                  s.paid_amount
+                )
+
                 const isExpanded = expandedSaleId === s.sale_id
+
                 return (
                   <div key={s.sale_id}>
-                    {/* Bill header row — tap to expand */}
+                    {/* Bill header */}
                     <div
                       className="px-3 sm:px-4 py-3 hover:bg-slate-50 flex items-start gap-3 cursor-pointer"
                       onClick={() => toggleExpand(s.sale_id)}
@@ -489,27 +581,31 @@ export default function FindSalePage() {
                           <ChevronRight className="w-4 h-4" />
                         )}
                       </div>
+
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <div className="text-sm font-semibold text-slate-900">
                             {formatDate(s.bill_date)}
                           </div>
+
                           <div className="text-xs text-slate-500 flex items-center gap-1">
                             <User className="w-3 h-3" />
                             {s.party_name}
                           </div>
+
                           <span
                             className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wide ${
                               s.status === 'Paid'
                                 ? 'bg-emerald-100 text-emerald-700'
                                 : s.status === 'Partially Paid'
-                                ? 'border border-orange-200 bg-orange-100 text-orange-700'
-                                : 'bg-rose-100 text-rose-700'
+                                  ? 'border border-orange-200 bg-orange-100 text-orange-700'
+                                  : 'bg-rose-100 text-rose-700'
                             }`}
                           >
                             {s.status}
                           </span>
                         </div>
+
                         <div className="text-xs text-slate-500 mt-0.5">
                           {s.item_count} item
                           {s.item_count === 1 ? '' : 's'} ·{' '}
@@ -519,16 +615,19 @@ export default function FindSalePage() {
                           </span>
                         </div>
                       </div>
+
                       <div className="text-right shrink-0">
                         <div className="text-sm font-bold text-slate-900">
                           {money(s.total_amount)}
                         </div>
+
                         {due > 0 && (
                           <div className="text-[10px] text-rose-700 font-medium">
                             {money(due)} due
                           </div>
                         )}
                       </div>
+
                       <button
                         onClick={(e) => {
                           e.stopPropagation()
@@ -541,133 +640,95 @@ export default function FindSalePage() {
                       </button>
                     </div>
 
-                    {/* Expanded item list */}
-                    {isExpanded && (() => {
-                      let paidRemaining = Number(s.paid_amount || 0)
-                      const lineRows = [...s.lines]
-                        .sort((a, b) => a.detail_id - b.detail_id)
-                        .map((l) => {
-                          const netQty = l.quantity - l.returned_qty
-                          const lineAmount = Number(l.amount || 0)
-                          const coveredAmount = Math.min(lineAmount, paidRemaining)
-                          const dueAmount = Math.max(0, lineAmount - coveredAmount)
-                          paidRemaining = Math.max(0, paidRemaining - lineAmount)
+                    {/* Expanded items */}
+                    {isExpanded && (
+                      <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
+                        <div className="text-[10px] uppercase text-slate-500 font-semibold mb-2 tracking-wide">
+                          Items in this bill
+                        </div>
 
-                          return {
-                            ...l,
-                            netQty,
-                            coveredAmount,
-                            dueAmount,
-                            settled: dueAmount <= 0.01,
-                          }
-                        })
-
-                      return (
-                        <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
-                          <div className="text-[10px] uppercase text-slate-500 font-semibold mb-2 tracking-wide">
-                            Items in this bill
-                          </div>
-                          <div className="space-y-1.5">
-                            {lineRows.map((l) => {
-                              const isFullyPaid = l.settled
-                              const isPartPaid = l.coveredAmount > 0 && l.dueAmount > 0
-                              const isDue = !isFullyPaid && !isPartPaid && l.dueAmount > 0
-
-                              const rowTone = isFullyPaid
-                                ? 'bg-emerald-50 border-emerald-300 shadow-sm'
-                                : isPartPaid
-                                ? 'bg-amber-50 border-amber-300 shadow-sm'
-                                : 'bg-rose-50 border-rose-300 shadow-sm'
-
-                              const labelTone = isFullyPaid
-                                ? 'bg-emerald-600 text-white'
-                                : isPartPaid
-                                ? 'bg-amber-500 text-white'
-                                : 'bg-rose-600 text-white'
-
-                              const skuTone = isFullyPaid
-                                ? 'text-slate-500 line-through'
-                                : isPartPaid
-                                ? 'text-amber-900'
-                                : 'text-rose-800'
-
-                              const detailsTone = isFullyPaid
-                                ? 'text-slate-500'
-                                : isPartPaid
-                                ? 'text-amber-800'
-                                : 'text-rose-700'
-
-                              const amountTone = isFullyPaid
-                                ? 'text-slate-400 line-through'
-                                : isPartPaid
-                                ? 'text-amber-800 font-bold'
-                                : 'text-rose-700 font-bold'
-
-                              const stateLabel = isFullyPaid
-                                ? 'Paid'
-                                : isPartPaid
-                                ? 'Part Paid'
-                                : 'Due'
+                        <div className="space-y-1.5">
+                          {s.lines
+                            .slice()
+                            .sort((a, b) => a.detail_id - b.detail_id)
+                            .map((l) => {
+                              const netQty = Math.max(
+                                0,
+                                l.quantity - l.returned_qty
+                              )
 
                               return (
                                 <div
                                   key={l.detail_id}
-                                  className={`border rounded-xl px-2.5 py-2.5 flex items-start gap-2 ${rowTone}`}
+                                  className="bg-white border border-slate-200 rounded-xl px-2.5 py-2.5 flex items-start gap-2"
                                 >
                                   <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <div
-                                        className={`font-mono text-[11px] sm:text-[12px] break-all ${skuTone}`}
-                                      >
-                                        {l.sku}
-                                      </div>
-                                      <span
-                                        className={`inline-block px-1.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-bold uppercase tracking-wide ${labelTone}`}
-                                      >
-                                        {stateLabel}
-                                      </span>
+                                    <div className="font-mono text-[11px] sm:text-[12px] text-slate-800 break-all">
+                                      {l.sku}
                                     </div>
-                                    <div className={`text-[10px] sm:text-[11px] mt-1 ${detailsTone}`}>
+
+                                    <div className="text-[10px] sm:text-[11px] mt-1 text-slate-600">
                                       Qty {l.quantity}
+
                                       {l.returned_qty > 0 && (
-                                        <span className="ml-1">
-                                          (returned {l.returned_qty}, net {l.netQty})
+                                        <span className="ml-1 text-orange-700">
+                                          (returned {l.returned_qty}, net {netQty})
                                         </span>
                                       )}
+
                                       {' · '}Rate {money(l.rate)}
-                                      {l.coveredAmount > 0 && !isFullyPaid && (
-                                        <span className="ml-1 text-emerald-700">
-                                          · paid {money(l.coveredAmount)}
-                                        </span>
-                                      )}
-                                      {l.dueAmount > 0 && (
-                                        <span className="ml-1">
-                                          · due {money(l.dueAmount)}
-                                        </span>
-                                      )}
                                     </div>
+
+                                    {l.returned_qty > 0 && (
+                                      <div className="text-[10px] text-orange-700 mt-1">
+                                        Return recorded — invoice-level due shown above.
+                                      </div>
+                                    )}
                                   </div>
+
                                   <div className="text-right shrink-0">
-                                    <div className={`text-xs sm:text-sm font-semibold ${amountTone}`}>
+                                    <div className="text-xs sm:text-sm font-semibold text-slate-800">
                                       {money(l.amount)}
+                                    </div>
+                                    <div className="text-[9px] text-slate-400">
+                                      Line amount
                                     </div>
                                   </div>
                                 </div>
                               )
                             })}
+                        </div>
+
+                        {/* Payment is shown at invoice level only. */}
+                        <div className="mt-3 pt-3 border-t border-slate-200 grid grid-cols-3 gap-2 text-xs">
+                          <div>
+                            <div className="text-slate-500">Invoice total</div>
+                            <div className="font-bold text-slate-900 mt-0.5">
+                              {money(s.total_amount)}
+                            </div>
                           </div>
-                          <div className="mt-2 pt-2 border-t border-slate-200 flex items-center justify-between text-xs">
-                            <span className="text-slate-500">
-                              {s.lines.length} line
-                              {s.lines.length === 1 ? '' : 's'}
-                            </span>
-                            <span className="font-bold text-slate-900">
-                              Total {money(s.total_amount)}
-                            </span>
+
+                          <div>
+                            <div className="text-slate-500">Paid</div>
+                            <div className="font-bold text-emerald-700 mt-0.5">
+                              {money(s.paid_amount)}
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="text-slate-500">Outstanding</div>
+                            <div className="font-bold text-rose-700 mt-0.5">
+                              {money(due)}
+                            </div>
                           </div>
                         </div>
-                      )
-                    })()}
+
+                        <div className="mt-2 text-[10px] text-slate-500">
+                          {s.lines.length} line
+                          {s.lines.length === 1 ? '' : 's'} in this invoice
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )
               })}

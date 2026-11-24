@@ -18,7 +18,7 @@ const tools = [
       {
         href: '/payment-admin/explorer',
         title: 'Payment Explorer',
-        summary: 'Search customers, inspect payments, collections, invoice allocations and reversal history.',
+        summary: 'Inspect customer payments, collections, invoice allocations and reversal history.',
         tone: 'bg-sky-50 border-sky-200 text-sky-900',
       },
       {
@@ -30,7 +30,7 @@ const tools = [
       {
         href: '/payment-admin/reversals',
         title: 'Payment Reversals',
-        summary: 'Find payments by date, review them and reverse incorrect entries.',
+        summary: 'Review payments and reverse incorrect entries.',
         tone: 'bg-rose-50 border-rose-200 text-rose-900',
       },
     ],
@@ -39,16 +39,22 @@ const tools = [
     section: 'Reconciliation & Verification',
     items: [
       {
-        href: '/admin/balance-check',
-        title: 'Balance Check',
-        summary: 'Compare stored and calculated customer balances and investigate drift.',
-        tone: 'bg-amber-50 border-amber-200 text-amber-900',
+        href: '/payment-admin/reconciliation',
+        title: 'Payment Reconciliation & Bulk Allocation',
+        summary: 'Find unallocated payments, investigate balance drift and preview FIFO invoice allocations customer by customer.',
+        tone: 'bg-teal-50 border-teal-200 text-teal-900',
       },
       {
-        href: '/sales/day',
-        title: 'Day Sales & Collection',
-        summary: 'Manage daily sales, customer collections and payment application.',
+        href: '/payment-admin/investigation',
+        title: 'Payment & Balance Investigation',
+        summary: 'Find customer payment discrepancies and invoice amounts that cannot be matched to payment allocations.',
         tone: 'bg-violet-50 border-violet-200 text-violet-900',
+      },
+      {
+        href: '/admin/balance-check',
+        title: 'Balance Check',
+        summary: 'Compare stored and calculated customer balances and investigate discrepancies.',
+        tone: 'bg-amber-50 border-amber-200 text-amber-900',
       },
     ],
   },
@@ -87,7 +93,7 @@ export default function PaymentAdminPage() {
   return (
     <main className="min-h-screen bg-slate-50 p-4 sm:p-6">
       <div className="mx-auto max-w-4xl">
-        <header className="mb-6">
+        <header className="mb-7">
           <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
             Owner tools
           </div>
@@ -102,7 +108,7 @@ export default function PaymentAdminPage() {
         </header>
 
         {tools.map((group) => (
-          <section key={group.section} className="mb-7">
+          <section key={group.section} className="mb-8">
             <h2 className="mb-3 text-lg font-semibold text-slate-800">
               {group.section}
             </h2>
@@ -112,13 +118,15 @@ export default function PaymentAdminPage() {
                 <Link
                   key={tool.href}
                   href={tool.href}
-                  className={`group block rounded-2xl border p-4 transition hover:-translate-y-0.5 hover:shadow-sm ${tool.tone}`}
+                  className={`group block rounded-2xl border p-4 transition duration-200 hover:-translate-y-0.5 hover:shadow-md ${tool.tone}`}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="text-base font-semibold">
                       {tool.title}
                     </div>
-                    <span className="text-xl leading-none">→</span>
+                    <span className="text-xl leading-none transition-transform group-hover:translate-x-1">
+                      →
+                    </span>
                   </div>
 
                   <div className="mt-2 text-sm leading-5 opacity-80">

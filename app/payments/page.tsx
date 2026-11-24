@@ -651,7 +651,7 @@ function PaymentsPageInner() {
 
       const previousBalance = currentBalance
       const allTouched: number[] = []
-      let allocationWarning = ''
+      const allocationWarnings: string[] = []
 
       for (const p of insertedPayments) {
         try {
@@ -666,10 +666,12 @@ function PaymentsPageInner() {
           const details =
             error instanceof Error ? error.message : String(error)
 
-          allocationWarning =
-            `Allocation for payment #${p.payment_id} could not be confirmed. ${details}`
-
-          break
+          allocationWarnings.push(
+            `Payment #${p.payment_id}: ${details}`
+          )
+          // Do not stop here: a failure for one split payment must not
+          // prevent the other independently-created payment from being allocated.
+          continue
         }
       }
 
@@ -693,9 +695,9 @@ function PaymentsPageInner() {
         setReceiptLines([])
       }
 
-      if (allocationWarning) {
+      if (allocationWarnings.length > 0) {
         setMessage(
-          `Payment saved. Customer balance: ₹${correctBalance.toFixed(2)}. WARNING: ${allocationWarning} Do not enter this payment again.`
+          `Payment saved. Customer balance: ₹${correctBalance.toFixed(2)}. WARNING: Allocation could not be confirmed for: ${allocationWarnings.join(' | ')}. Do not enter this payment again; check the payment ledger.`
         )
       } else {
         setMessage(
