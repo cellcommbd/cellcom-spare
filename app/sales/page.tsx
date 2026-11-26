@@ -993,73 +993,31 @@ function SalesEntryPage() {
     setMessage('')
   }
 
-  async function deleteSale(id: number) {
-    if (!window.confirm(`Delete sale #${id}? Stock will go back up.`)) {
-      return
-    }
-
-    // Protect existing payment allocations.
-    const { data: existingAllocations, error: allocationCheckError } =
-      await supabase
-        .from('payment_allocations')
-        .select('id')
-        .eq('sale_id', id)
-        .limit(1)
-
-    if (allocationCheckError) {
-      setMessage(
-        'Could not verify payment allocations. Sale was not deleted: ' +
-          allocationCheckError.message
-      )
-      return
-    }
-
-    if ((existingAllocations || []).length > 0) {
-      setMessage(
-        `Cannot delete sale #${id} because it has payment allocations. Payment records and allocations have been left untouched.`
-      )
-      return
-    }
-
-    const sale = todaySales.find((s) => s.sale_id === id)
-
-    if (!sale) {
-      setMessage(
-        'Sale not found in the current list. Nothing was deleted.'
-      )
-      return
-    }
-
-    // Stop if deleting the item rows fails.
-    const { error: linesDeleteError } = await supabase
-      .from('sale_items')
-      .delete()
-      .eq('sale_id', id)
-
-    if (linesDeleteError) {
-      setMessage(
-        'Could not delete invoice items. Invoice was not deleted: ' +
-          linesDeleteError.message
-      )
-      return
-    }
-
-    const { error } = await supabase
-      .from('sales')
-      .delete()
-      .eq('sale_id', id)
-
-    if (error) {
-      setMessage('Delete error: ' + error.message)
-      return
-    }
-
-    await recomputePartyBalance(sale.party_id)
-
-    setMessage('Deleted sale #' + id)
-    await loadData()
-    await loadReport()
+async function deleteSale(id: number) {
+  if (!window.confirm(`Delete sale #${id}? Any payments allocated to it will be reassigned to other pending invoices of the same customer.`)) {
+    return
   }
+
+  const sale = todaySales.find((s) => s.sale_id === id)
+
+  if (!sale) {
+    setMessage('Sale not found in the current list. Nothing was deleted.')
+    return
+  }
+
+  const { error } = await supabase.rpc('delete_sale_with_reallocation', {
+    p_sale_id: id,
+  })
+
+  if (error) {
+    setMessage('Delete error: ' + error.message)
+    return
+  }
+
+  setMessage('Deleted sale #' + id + '. Payments were reallocated where possible.')
+  await loadData()
+  await loadReport()
+}
 
   // ============ EDIT MODAL HANDLERS ============
 
@@ -1327,165 +1285,74 @@ if (saleError || !sale) {
     return out
   }
 
-  async function saveEdit() {
-    if (!editState || editSaving) return
 
-    setEditMessage('')
+async function saveEdit() {
+  if (!editState || editSaving) return
 
-    const validRows = editState.rows.filter(
-      (r) => r.item_id && r.quantity > 0 && r.rate > 0
+  setEditMessage('')
+
+  const validRows = editState.rows.filter(
+    (r) => r.item_id && r.quantity > 0 && r.rate > 0
+  )
+
+  if (validRows.length === 0) {
+    setEditMessage('Add at least one item with quantity and rate.')
+    return
+  }
+
+  const newTotal = validRows.reduce(
+    (s, r) => s + r.quantity * r.rate,
+    0
+  )
+
+  const newPartyId = editState.party_id
+
+  const isCounterSaleEdit =
+    shops.find((s) => s.party_id === newPartyId)?.party_name ===
+    COUNTER_SALE_NAME
+
+  const effectivePaid = isCounterSaleEdit
+    ? newTotal
+    : Math.min(normalizeAmount(editState.paid_amount), newTotal)
+
+  setEditSaving(true)
+
+  try {
+    const { error } = await supabase.rpc(
+      'edit_sale_with_reallocation',
+      {
+        p_sale_id: editState.sale_id,
+        p_party_id: newPartyId,
+        p_bill_date: editState.bill_date,
+        p_total_amount: Number(newTotal.toFixed(2)),
+        p_paid_amount: Number(effectivePaid.toFixed(2)),
+        p_lines: validRows.map((r) => ({
+          item_id: r.item_id,
+          quantity: r.quantity,
+          rate: r.rate,
+          cost_at_sale: r.cost_at_sale || 0,
+        })),
+      }
     )
 
-    if (validRows.length === 0) {
-      setEditMessage('Add at least one item with quantity and rate.')
+    if (error) {
+      setEditMessage('Save failed: ' + error.message)
       return
     }
 
-    const newTotal = validRows.reduce((s, r) => s + r.amount, 0)
+    await loadData()
+    await loadReport()
 
-    if (editState.paid_amount > 0 && newTotal < editState.paid_amount) {
-      setEditMessage(
-        `Cannot reduce total below what's already paid (₹${editState.paid_amount.toFixed(
-          2
-        )}). Adjust the payment first.`
-      )
-      return
-    }
-
-    setEditSaving(true)
-
-    try {
-      const oldSale = todaySales.find(
-        (s) => s.sale_id === editState.sale_id
-      )
-
-      const oldPartyId = oldSale?.party_id ?? editState.party_id
-      const oldTotal = editState.original_total
-      const newPartyId = editState.party_id
-
-      const { data: existingAllocations, error: allocationCheckError } =
-        await supabase
-          .from('payment_allocations')
-          .select('id')
-          .eq('sale_id', editState.sale_id)
-          .limit(1)
-
-      if (allocationCheckError) {
-        setEditMessage(
-          'Could not verify payment allocations. Invoice was not changed: ' +
-            allocationCheckError.message
-        )
-        return
-      }
-
-      const hasAllocations = (existingAllocations || []).length > 0
-
-      const roundedNewTotal =
-        Math.round((newTotal + Number.EPSILON) * 100) / 100
-
-      const roundedOriginalTotal =
-        Math.round((oldTotal + Number.EPSILON) * 100) / 100
-
-      const isCounterSaleEdit =
-        shops.find((s) => s.party_id === newPartyId)?.party_name ===
-        COUNTER_SALE_NAME
-
-      const effectivePaid = isCounterSaleEdit
-        ? newTotal
-        : Math.min(normalizeAmount(editState.paid_amount), newTotal)
-
-      const newStatus = isCounterSaleEdit
-        ? 'Paid'
-        : computeSaleStatus(newTotal, effectivePaid)
-
-      if (
-        hasAllocations &&
-        (newPartyId !== oldPartyId ||
-          roundedNewTotal !== roundedOriginalTotal ||
-          effectivePaid !== editState.paid_amount)
-      ) {
-        setEditMessage(
-          'This invoice has payment allocations. Changing its customer, total or paid amount is blocked to protect those allocations. No changes were saved.'
-        )
-        return
-      }
-
-      // Preserve the existing stock-trigger sequence:
-      // deleting old sale_items restores stock; inserting replacements
-      // decreases stock again.
-      //
-      // The operations are not one database transaction. A database-side
-      // RPC would be needed for full atomicity.
-
-      const { error: headerErr } = await supabase
-        .from('sales')
-        .update({
-          party_id: newPartyId,
-          bill_date: editState.bill_date,
-          total_amount: newTotal,
-          status: newStatus,
-          paid_amount: effectivePaid,
-        })
-        .eq('sale_id', editState.sale_id)
-
-      if (headerErr) {
-        setEditMessage('Save failed: ' + headerErr.message)
-        return
-      }
-
-      const { error: delErr } = await supabase
-        .from('sale_items')
-        .delete()
-        .eq('sale_id', editState.sale_id)
-
-      if (delErr) {
-        setEditMessage(
-          'Invoice header was updated, but old item rows could not be removed: ' +
-            delErr.message +
-            '. Please do not retry blindly; check this invoice first.'
-        )
-        return
-      }
-
-      const lineInserts = validRows.map((r) => ({
-        sale_id: editState.sale_id,
-        item_id: r.item_id,
-        quantity: r.quantity,
-        rate: r.rate,
-        amount: Number((r.rate * r.quantity).toFixed(2)),
-        cost_at_sale: r.cost_at_sale || 0,
-      }))
-
-      const { error: insErr } = await supabase
-        .from('sale_items')
-        .insert(lineInserts)
-
-      if (insErr) {
-        setEditMessage(
-          'New item rows could not be saved: ' +
-            insErr.message +
-            '. The old rows were already removed. Please check this invoice before making another change.'
-        )
-        return
-      }
-
-      await recomputePartyBalance(newPartyId)
-
-      if (oldPartyId !== newPartyId) {
-        await recomputePartyBalance(oldPartyId)
-      }
-
-      await loadData()
-      await loadReport()
-
-      closeEdit()
-      setMessage(`Updated sale #${editState.sale_id}.`)
-    } catch (error: any) {
-      setEditMessage('Save failed: ' + (error?.message || 'Unknown error'))
-    } finally {
-      setEditSaving(false)
-    }
+    closeEdit()
+    setMessage(`Updated sale #${editState.sale_id}. Payments were reallocated where possible.`)
+  } catch (error: any) {
+    setEditMessage(
+      'Save failed: ' + (error?.message || 'Unknown error')
+    )
+  } finally {
+    setEditSaving(false)
   }
+}
 
   const shopName = (id: number) =>
     shops.find((s) => s.party_id === id)?.party_name || '—'

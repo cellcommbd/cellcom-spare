@@ -53,7 +53,11 @@ type SaleRow = {
   total_amount: number
   paid_amount: number | null
   status: string
+  net_total?: number
+  returned_amount?: number
 }
+
+type ItemPaymentStatus = 'Paid' | 'Partially Paid' | 'Unpaid'
 
 type SaleItem = {
   detail_id: number
@@ -62,7 +66,11 @@ type SaleItem = {
   quantity: number
   rate: number
   amount: number
+  returned_qty: number
   sku: string
+  paidAmount: number
+  dueAmount: number
+  paymentStatus: ItemPaymentStatus
 }
 
 type StatementLine = {
@@ -125,6 +133,10 @@ function daysAgo(d: string) {
   const then = new Date(d + 'T00:00:00').getTime()
   const now = new Date(todayStr() + 'T00:00:00').getTime()
   return Math.max(0, Math.floor((now - then) / (1000 * 60 * 60 * 24)))
+}
+
+function money(value: number) {
+  return Number(value || 0).toFixed(2)
 }
 
 // ---------- Component ----------
@@ -294,8 +306,28 @@ function PaymentsPageInner() {
     setTodayPayments((p.data as Payment[]) || [])
   }
 
+  async function refreshShopBalance(id: number) {
+    const { data } = await supabase
+      .from('parties')
+      .select('current_balance')
+      .eq('party_id', id)
+      .single()
+
+    if (data) {
+      setShops((prev) =>
+        prev.map((s) =>
+          s.party_id === id
+            ? { ...s, current_balance: Number(data.current_balance) }
+            : s
+        )
+      )
+    }
+  }
+
   async function loadShopOutstanding(shopId: number) {
-    const { data: bills } = await supabase
+    await refreshShopBalance(shopId)
+
+    const { data: bills, error: billsError } = await supabase
       .from('sales')
       .select(
         'sale_id, party_id, bill_date, total_amount, paid_amount, status'
@@ -304,11 +336,15 @@ function PaymentsPageInner() {
       .order('bill_date', { ascending: true })
       .order('sale_id', { ascending: true })
 
-    const rows = ((bills || []) as SaleRow[]).filter(
+    if (billsError) {
+      setMessage(`Could not load outstanding bills: ${billsError.message}`)
+      return
+    }
+
+    // Returns reduce the invoice's net value.
+    const candidates = ((bills || []) as SaleRow[]).filter(
       (s) => Number(s.paid_amount || 0) < Number(s.total_amount)
     )
-
-    setOutstandingBills(rows)
 
     const { data: lastPay } = await supabase
       .from('payments')
@@ -328,18 +364,26 @@ function PaymentsPageInner() {
         : null
     )
 
-    if (rows.length === 0) {
+    if (candidates.length === 0) {
+      setOutstandingBills([])
       setOutstandingItems([])
       setStatementLines([])
       return
     }
 
-    const saleIds = rows.map((r) => r.sale_id)
+    const saleIds = candidates.map((r) => r.sale_id)
 
-    const { data: itemsData } = await supabase
+    const { data: itemsData, error: itemsError } = await supabase
       .from('sale_items')
-      .select('detail_id, sale_id, item_id, quantity, rate, amount')
+      .select(
+        'detail_id, sale_id, item_id, quantity, rate, amount, returned_qty'
+      )
       .in('sale_id', saleIds)
+
+    if (itemsError) {
+      setMessage(`Could not load invoice items: ${itemsError.message}`)
+      return
+    }
 
     const rawItems = (itemsData || []) as {
       detail_id: number
@@ -348,33 +392,51 @@ function PaymentsPageInner() {
       quantity: number
       rate: number
       amount: number
+      returned_qty: number | null
     }[]
 
     const itemIds = Array.from(new Set(rawItems.map((x) => x.item_id)))
     const skuMap: Record<number, string> = {}
 
     if (itemIds.length > 0) {
-      const { data: itemRows } = await supabase
+      const { data: itemRows, error: skuError } = await supabase
         .from('items')
         .select('item_id, sku')
         .in('item_id', itemIds)
+
+      if (skuError) {
+        setMessage(`Could not load item descriptions: ${skuError.message}`)
+        return
+      }
 
       for (const it of itemRows || []) {
         skuMap[it.item_id] = it.sku
       }
     }
 
-    const items: SaleItem[] = rawItems.map((it) => ({
-      detail_id: it.detail_id,
-      sale_id: it.sale_id,
-      item_id: it.item_id,
-      quantity: Number(it.quantity),
-      rate: Number(it.rate),
-      amount: Number(it.amount),
-      sku: skuMap[it.item_id] || '(unknown)',
-    }))
+    // Net of returns: quantity and amount after returned_qty.
+    const items: SaleItem[] = rawItems
+      .map((it) => {
+        const qty = Number(it.quantity)
+        const netQty = Math.max(0, qty - Number(it.returned_qty || 0))
+        const netAmount = qty > 0 ? (Number(it.amount) * netQty) / qty : 0
 
-    // Display-only FIFO: hide items fully covered by paid_amount.
+        return {
+          detail_id: it.detail_id,
+          sale_id: it.sale_id,
+          item_id: it.item_id,
+          quantity: netQty,
+          rate: Number(it.rate),
+          amount: netAmount,
+          returned_qty: Number(it.returned_qty || 0),
+          sku: skuMap[it.item_id] || '(unknown)',
+          paidAmount: 0,
+          dueAmount: netAmount,
+          paymentStatus: 'Unpaid' as ItemPaymentStatus,
+        }
+      })
+      .filter((it) => it.quantity > 0)
+
     const itemsBySale: Record<number, SaleItem[]> = {}
 
     for (const it of items) {
@@ -382,32 +444,72 @@ function PaymentsPageInner() {
       itemsBySale[it.sale_id].push(it)
     }
 
-    const filteredOutstanding: SaleItem[] = []
+    const hasLines: Record<number, boolean> = {}
+    for (const r of rawItems) hasLines[r.sale_id] = true
+
+    // Bills with net total, dropping bills fully covered after returns.
+    const rows: SaleRow[] = candidates
+      .map((b) => {
+        if (!hasLines[b.sale_id]) return b
+
+        const netTotal = (itemsBySale[b.sale_id] || []).reduce(
+          (s, it) => s + it.amount,
+          0
+        )
+
+        return {
+          ...b,
+          total_amount: netTotal,
+          net_total: netTotal,
+        }
+      })
+      .filter(
+        (b) => Number(b.paid_amount || 0) < Number(b.total_amount) - 0.005
+      )
+
+    setOutstandingBills(rows)
+
+    // Display-only FIFO within each invoice.
+    // Preserve the full amount of every item. Calculate paid and due separately.
+    const displayItems: SaleItem[] = []
 
     for (const bill of rows) {
       const billItems = (itemsBySale[bill.sale_id] || [])
         .slice()
         .sort((a, b) => a.detail_id - b.detail_id)
 
-      let paidRemaining = Number(bill.paid_amount || 0)
+      const billTotal = billItems.reduce((sum, it) => sum + it.amount, 0)
+
+      // Invoice-level paid_amount is authoritative; cap it at the net bill total.
+      let paidRemaining = Math.min(
+        Math.max(0, Number(bill.paid_amount || 0)),
+        billTotal
+      )
 
       for (const it of billItems) {
-        if (paidRemaining <= 0) {
-          filteredOutstanding.push(it)
-        } else if (paidRemaining >= it.amount) {
-          paidRemaining -= it.amount
-        } else {
-          const unpaidAmount = it.amount - paidRemaining
-          filteredOutstanding.push({
-            ...it,
-            amount: unpaidAmount,
-          })
-          paidRemaining = 0
+        const paidForItem = Math.min(it.amount, paidRemaining)
+        const dueForItem = Math.max(0, it.amount - paidForItem)
+
+        paidRemaining = Math.max(0, paidRemaining - paidForItem)
+
+        let paymentStatus: ItemPaymentStatus = 'Unpaid'
+
+        if (dueForItem <= 0.005) {
+          paymentStatus = 'Paid'
+        } else if (paidForItem > 0.005) {
+          paymentStatus = 'Partially Paid'
         }
+
+        displayItems.push({
+          ...it,
+          paidAmount: paidForItem,
+          dueAmount: dueForItem,
+          paymentStatus,
+        })
       }
     }
 
-    setOutstandingItems(filteredOutstanding)
+    setOutstandingItems(displayItems)
 
     // Statement lines: today's items first, then older.
     const billDateById: Record<number, string> = {}
@@ -418,15 +520,17 @@ function PaymentsPageInner() {
 
     const today = todayStr()
 
-    const sortedForStatement = [...items].sort((a, b) => {
-      const aDate = billDateById[a.sale_id] || ''
-      const bDate = billDateById[b.sale_id] || ''
-      const aToday = aDate === today ? 1 : 0
-      const bToday = bDate === today ? 1 : 0
+    const sortedForStatement = items
+      .filter((it) => billDateById[it.sale_id])
+      .sort((a, b) => {
+        const aDate = billDateById[a.sale_id] || ''
+        const bDate = billDateById[b.sale_id] || ''
+        const aToday = aDate === today ? 1 : 0
+        const bToday = bDate === today ? 1 : 0
 
-      if (aToday !== bToday) return bToday - aToday
-      return aDate < bDate ? -1 : aDate > bDate ? 1 : a.sale_id - b.sale_id
-    })
+        if (aToday !== bToday) return bToday - aToday
+        return aDate < bDate ? -1 : aDate > bDate ? 1 : a.sale_id - b.sale_id
+      })
 
     setStatementLines(
       sortedForStatement.map((it) => ({
@@ -514,16 +618,21 @@ function PaymentsPageInner() {
         }
 
         const total = bills.reduce(
-          (s, b) => s + Number(b.total_amount),
+          (s, b) => s + Number(b.net_total ?? b.total_amount),
           0
         )
 
         const paid = bills.reduce(
-          (s, b) => s + Number(b.paid_amount || 0),
+          (s, b) =>
+            s +
+            Math.min(
+              Math.max(0, Number(b.paid_amount || 0)),
+              Number(b.net_total ?? b.total_amount)
+            ),
           0
         )
 
-        const due = items.reduce((s, it) => s + Number(it.amount), 0)
+        const due = items.reduce((s, it) => s + Number(it.dueAmount), 0)
 
         return { date, bills, total, paid, due, itemCount, items }
       })
@@ -1058,15 +1167,46 @@ function PaymentsPageInner() {
           </div>
 
           {pickedShop.id && (
-            <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 flex items-center justify-between">
-              <span className="text-xs text-slate-600">Current Balance</span>
-              <span
-                className={`text-sm font-bold ${
-                  currentBalance > 0 ? 'text-red-700' : 'text-slate-500'
-                }`}
-              >
-                ₹ {currentBalance.toFixed(2)}
-              </span>
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-600">
+                  {currentBalance < 0 ? 'Customer Credit' : 'Balance Due'}
+                </span>
+                <span
+                  className={`text-sm font-bold ${
+                    currentBalance > 0
+                      ? 'text-red-700'
+                      : currentBalance < 0
+                        ? 'text-emerald-700'
+                        : 'text-slate-500'
+                  }`}
+                >
+                  ₹ {Math.abs(currentBalance).toFixed(2)}
+                </span>
+              </div>
+
+              {outstandingDays.length > 0 && (
+                <>
+                  <div className="flex justify-between text-[11px] text-slate-500">
+                    <span>
+                      Unpaid bills ({outstandingDays.length} day
+                      {outstandingDays.length === 1 ? '' : 's'} ·{' '}
+                      {outstandingItemCount} item
+                      {outstandingItemCount === 1 ? '' : 's'})
+                    </span>
+                    <span>₹ {outstandingTotal.toFixed(2)}</span>
+                  </div>
+
+                  {Math.abs(outstandingTotal - currentBalance) > 0.005 && (
+                    <div className="flex justify-between text-[11px] text-slate-500">
+                      <span>Credit from returns on already-paid bills</span>
+                      <span>
+                        − ₹ {(outstandingTotal - currentBalance).toFixed(2)}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
 
@@ -1236,7 +1376,7 @@ function PaymentsPageInner() {
           )}
         </div>
 
-        {/* Outstanding — grouped by day */}
+        {/* Outstanding — grouped by day and then by invoice */}
         {pickedShop.id && outstandingDays.length > 0 && (
           <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden mb-5">
             <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
@@ -1267,7 +1407,6 @@ function PaymentsPageInner() {
               {outstandingDays.map((day) => {
                 const isOpen = !!expandedDays[day.date]
                 const age = daysAgo(day.date)
-                const hasPartialPayment = day.paid > 0 && day.paid < day.total
 
                 const ageColor =
                   age < 7
@@ -1296,21 +1435,17 @@ function PaymentsPageInner() {
                         </div>
 
                         <div className="text-[11px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-1">
-                          {hasPartialPayment ? (
-                            <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
-                              Partially paid
-                            </span>
-                          ) : (
-                            <span>
-                              {day.itemCount} item
-                              {day.itemCount === 1 ? '' : 's'} · ₹
-                              {day.total.toFixed(0)} total
-                            </span>
-                          )}
+                          <span>
+                            {day.itemCount} item
+                            {day.itemCount === 1 ? '' : 's'} ·{' '}
+                            {day.bills.length} bill
+                            {day.bills.length === 1 ? '' : 's'} · ₹
+                            {day.total.toFixed(2)} total
+                          </span>
 
                           {day.paid > 0 && (
                             <span className="text-emerald-700">
-                              · ₹{day.paid.toFixed(0)} paid
+                              · ₹{day.paid.toFixed(2)} paid
                             </span>
                           )}
 
@@ -1350,89 +1485,192 @@ function PaymentsPageInner() {
 
                     {isOpen && (
                       <div className="bg-slate-50 border-t border-slate-100 px-3 sm:px-4 py-3">
-                        {day.bills.length > 0 && (
-                          <div className="mb-2 pb-2 border-b border-slate-200">
-                            <div className="text-[10px] uppercase text-slate-500 mb-1">
-                              {day.bills.length === 1
-                                ? 'Bill'
-                                : `${day.bills.length} bills on this day`}
-                            </div>
-
-                            {day.bills.map((bill) => (
-                              <div
-                                key={bill.sale_id}
-                                role="button"
-                                tabIndex={0}
-                                onClick={() => setEditingSaleId(bill.sale_id)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter' || e.key === ' ') {
-                                    e.preventDefault()
-                                    setEditingSaleId(bill.sale_id)
-                                  }
-                                }}
-                                className="w-full flex items-center justify-between text-xs py-1 px-1 hover:bg-slate-100 rounded cursor-pointer"
-                              >
-                                <span className="text-slate-600">
-                                  {day.bills.length === 1
-                                    ? 'Invoice'
-                                    : `Bill #${bill.sale_id}`}
-                                </span>
-
-                                <span className="flex items-center gap-2">
-                                  <span className="text-slate-800 font-medium">
-                                    ₹ {Number(bill.total_amount).toFixed(2)}
-                                  </span>
-                                  <Pencil className="w-3 h-3 text-slate-400" />
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        {day.items.length === 0 ? (
+                        {day.bills.length === 0 ? (
                           <div className="text-xs text-slate-400 text-center py-2">
-                            No line items.
+                            No bills.
                           </div>
                         ) : (
-                          <div className="space-y-1">
-                            {day.items.map((it) => (
-                              <div
-                                key={it.detail_id}
-                                className="flex items-center justify-between text-xs gap-2"
-                              >
-                                <div className="font-mono text-slate-700 truncate flex-1">
-                                  {it.sku}
-                                </div>
+                          <div className="space-y-3">
+                            {day.bills.map((bill) => {
+                              const billItems = day.items
+                                .filter((it) => it.sale_id === bill.sale_id)
+                                .sort((a, b) => a.detail_id - b.detail_id)
 
-                                <div className="text-slate-500 shrink-0">
-                                  {it.quantity} × ₹{it.rate.toFixed(0)}
-                                </div>
+                              const billTotal = billItems.reduce(
+                                (sum, it) => sum + it.amount,
+                                0
+                              )
 
-                                <div className="font-medium text-slate-800 w-20 text-right shrink-0">
-                                  ₹ {it.amount.toFixed(2)}
-                                </div>
-                              </div>
-                            ))}
+                              const billPaid = billItems.reduce(
+                                (sum, it) => sum + it.paidAmount,
+                                0
+                              )
 
-                            <div className="pt-2 mt-2 border-t border-slate-200 flex justify-between items-center gap-2 text-xs">
+                              const billDue = billItems.reduce(
+                                (sum, it) => sum + it.dueAmount,
+                                0
+                              )
+
+                              return (
+                                <div
+                                  key={bill.sale_id}
+                                  className="bg-white border border-slate-200 rounded-lg overflow-hidden"
+                                >
+                                  {/* Invoice heading */}
+                                  <div className="px-3 py-2 bg-slate-100 border-b border-slate-200 flex flex-wrap items-center justify-between gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingSaleId(bill.sale_id)}
+                                      className="flex items-center gap-2 text-xs font-semibold text-slate-700 hover:text-blue-700"
+                                    >
+                                      Invoice #{bill.sale_id}
+                                      <Pencil className="w-3 h-3 text-slate-400" />
+                                    </button>
+
+                                    <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-[11px]">
+                                      <span className="text-slate-600">
+                                        Total ₹{billTotal.toFixed(2)}
+                                      </span>
+                                      <span className="text-emerald-700">
+                                        Paid ₹{billPaid.toFixed(2)}
+                                      </span>
+                                      <span className="font-semibold text-rose-700">
+                                        Due ₹{billDue.toFixed(2)}
+                                      </span>
+                                    </div>
+                                  </div>
+
+                                  {billItems.length === 0 ? (
+                                    <div className="px-3 py-3 text-xs text-slate-400 text-center">
+                                      No line items.
+                                    </div>
+                                  ) : (
+                                    <div className="divide-y divide-slate-100">
+                                      {billItems.map((it) => {
+                                        const paid = it.paymentStatus === 'Paid'
+                                        const partial =
+                                          it.paymentStatus === 'Partially Paid'
+
+                                        const itemColor = paid
+                                          ? 'text-emerald-800'
+                                          : partial
+                                            ? 'text-amber-800'
+                                            : 'text-rose-800'
+
+                                        const itemBackground = paid
+                                          ? 'bg-emerald-50'
+                                          : partial
+                                            ? 'bg-amber-50'
+                                            : 'bg-rose-50'
+
+                                        const statusClass = paid
+                                          ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                          : partial
+                                            ? 'bg-amber-100 text-amber-800 border-amber-200'
+                                            : 'bg-rose-100 text-rose-800 border-rose-200'
+
+                                        return (
+                                          <div
+                                            key={it.detail_id}
+                                            className="px-3 py-2 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3"
+                                          >
+                                            <div className="flex-1 min-w-0">
+                                              <div
+                                                className={`font-mono text-xs font-semibold break-words ${
+                                                  paid
+                                                    ? 'text-emerald-800 line-through'
+                                                    : partial
+                                                      ? 'text-amber-900'
+                                                      : 'text-slate-800'
+                                                }`}
+                                              >
+                                                {it.sku}
+                                              </div>
+
+                                              <div className="text-[11px] text-slate-500 mt-0.5">
+                                                {it.quantity} × ₹{it.rate.toFixed(2)}
+                                              </div>
+                                            </div>
+
+                                            <div className="grid grid-cols-3 sm:flex sm:items-center gap-2 sm:gap-3 text-[11px] sm:text-xs">
+                                              <div className="sm:text-right">
+                                                <div className="text-slate-400">
+                                                  Amount
+                                                </div>
+                                                <div
+                                                  className={`font-semibold ${
+                                                    paid
+                                                      ? 'text-emerald-800 line-through'
+                                                      : 'text-slate-800'
+                                                  }`}
+                                                >
+                                                  ₹{it.amount.toFixed(2)}
+                                                </div>
+                                              </div>
+
+                                              <div className="sm:text-right">
+                                                <div className="text-slate-400">
+                                                  Paid
+                                                </div>
+                                                <div className="font-medium text-emerald-700">
+                                                  ₹{it.paidAmount.toFixed(2)}
+                                                </div>
+                                              </div>
+
+                                              <div className="sm:text-right">
+                                                <div className="text-slate-400">
+                                                  Due
+                                                </div>
+                                                <div
+                                                  className={`font-semibold ${
+                                                    paid
+                                                      ? 'text-emerald-700'
+                                                      : partial
+                                                        ? 'text-amber-700'
+                                                        : 'text-rose-700'
+                                                  }`}
+                                                >
+                                                  ₹{it.dueAmount.toFixed(2)}
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <div className="sm:w-28 sm:text-right">
+                                              <span
+                                                className={`inline-flex items-center justify-center rounded-full border px-2 py-1 text-[10px] font-semibold ${statusClass}`}
+                                              >
+                                                {it.paymentStatus}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        )
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+
+                            {/* Day summary */}
+                            <div className="pt-2 border-t border-slate-200 flex flex-wrap justify-between items-center gap-2 text-xs">
                               <span className="text-slate-500">
-                                {hasPartialPayment ? (
-                                  <span className="inline-flex items-center rounded-full border border-orange-200 bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold text-orange-700">
-                                    Partially paid
-                                  </span>
-                                ) : (
-                                  <>
-                                    {day.itemCount} item
-                                    {day.itemCount === 1 ? '' : 's'} ·{' '}
-                                    {day.bills.length} bill
-                                    {day.bills.length === 1 ? '' : 's'}
-                                  </>
-                                )}
+                                {day.itemCount} item
+                                {day.itemCount === 1 ? '' : 's'} ·{' '}
+                                {day.bills.length} bill
+                                {day.bills.length === 1 ? '' : 's'}
                               </span>
 
-                              <span className="font-semibold text-slate-800">
-                                Total ₹{day.total.toFixed(2)}
-                              </span>
+                              <div className="flex flex-wrap gap-3">
+                                <span className="text-slate-700">
+                                  Total ₹{day.total.toFixed(2)}
+                                </span>
+                                <span className="text-emerald-700">
+                                  Paid ₹{day.paid.toFixed(2)}
+                                </span>
+                                <span className="font-semibold text-rose-700">
+                                  Due ₹{day.due.toFixed(2)}
+                                </span>
+                              </div>
                             </div>
                           </div>
                         )}
